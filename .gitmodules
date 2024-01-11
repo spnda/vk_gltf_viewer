@@ -1,0 +1,30 @@
+[submodule "submodules/vulkan-headers"]
+	path = submodules/vulkan-headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers
+[submodule "submodules/meshoptimizer"]
+	path = submodules/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer
+[submodule "submodules/vk-bootstrap"]
+	path = submodules/vk-bootstrap
+	url = https://github.com/charles-lunarg/vk-bootstrap
+[submodule "submodules/volk"]
+	path = submodules/volk
+	url = https://github.com/zeux/volk
+[submodule "submodules/vulkanmemoryallocator"]
+	path = submodules/vulkanmemoryallocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+[submodule "submodules/enkits"]
+	path = submodules/enkits
+	url = https://github.com/dougbinks/enkiTS
+[submodule "submodules/fastgltf"]
+	path = submodules/fastgltf
+	url = https://github.com/spnda/fastgltf
+[submodule "submodules/stb"]
+	path = submodules/stb
+	url = https://github.com/nothings/stb
+[submodule "submodules/glfw"]
+	path = submodules/glfw
+	url = https://github.com/glfw/glfw
+[submodule "submodules/glm"]
+	path = submodules/glm
+	url = https://github.com/g-truc/glm
