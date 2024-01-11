@@ -15,3 +15,26 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 // clang-format on
+
+namespace vk {
+	template<typename T = void>
+	class ScopedMap {
+		VmaAllocator allocator;
+		VmaAllocation allocation;
+		void* data;
+
+	public:
+		ScopedMap(VmaAllocator allocator, VmaAllocation allocation) : allocator(allocator), allocation(allocation),
+																	  data(nullptr) {
+			vmaMapMemory(allocator, allocation, &data);
+		}
+
+		T *get() {
+			return static_cast<T*>(data);
+		}
+
+		~ScopedMap() {
+			vmaUnmapMemory(allocator, allocation);
+		}
+	};
+}

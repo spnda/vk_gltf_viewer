@@ -22,6 +22,16 @@
 
 #include <vulkan/vk_fmt.hpp>
 
+class vulkan_error : public std::runtime_error {
+	VkResult result;
+
+public:
+	vulkan_error(const std::string& message, VkResult result) : std::runtime_error(message), result(result) {}
+	vulkan_error(const char* message, VkResult result) : std::runtime_error(message), result(result) {}
+
+	[[nodiscard]] VkResult what_result() const noexcept { return result; }
+};
+
 namespace vk {
     template <typename R, typename F, typename... Args>
     requires std::is_constructible_v<R> && requires(F func, Args... args, std::uint32_t count) {
@@ -37,13 +47,13 @@ namespace vk {
 
     [[gnu::always_inline]] inline void checkResult(VkResult result, const char* message) noexcept(false) {
         if (result != VK_SUCCESS) {
-            throw std::runtime_error(fmt::format(fmt::runtime(message), result));
+			throw vulkan_error(fmt::format(fmt::runtime(message), result), result);
         }
     }
 
     [[gnu::always_inline]] inline void checkResult(VkResult result, const std::string& message) noexcept(false) {
         if (result != VK_SUCCESS) {
-            throw std::runtime_error(message);
+			throw vulkan_error(message, result);
         }
     }
 } // namespace vk

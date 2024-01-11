@@ -5,6 +5,8 @@
 
 #include <glfw/glfw3.h>
 
+#include <glm/mat4x4.hpp>
+
 struct FrameSyncData {
     VkSemaphore imageAvailable;
     VkSemaphore renderingFinished;
@@ -20,11 +22,23 @@ static constexpr const std::size_t frameOverlap = 2;
 
 class FileLoadTask;
 
+struct PerFrameCameraBuffer {
+	VkBuffer handle;
+	VmaAllocation allocation;
+
+	VkDescriptorSet cameraSet;
+};
+
+struct Camera {
+	glm::mat4 viewProjectionMatrix;
+};
+
 struct Viewer {
     enki::TaskScheduler taskScheduler;
 
     vkb::Instance instance;
     vkb::Device device;
+	VmaAllocator allocator = VK_NULL_HANDLE;
 
     //using queue_type = std::pair<std::uint32_t, VkQueue>;
     //queue_type graphicsQueue;
@@ -41,6 +55,11 @@ struct Viewer {
 
     std::vector<FrameSyncData> frameSyncData;
     std::vector<FrameCommandPools> frameCommandPools;
+
+	std::vector<PerFrameCameraBuffer> cameraBuffers;
+
+	VkDescriptorPool descriptorPool;
+	VkDescriptorSetLayout cameraSetLayout;
 
     VkPipelineLayout meshPipelineLayout = VK_NULL_HANDLE;
     VkPipeline meshPipeline = VK_NULL_HANDLE;
@@ -79,6 +98,9 @@ struct Viewer {
     void setupVulkanInstance();
     void setupVulkanDevice();
     void rebuildSwapchain(std::uint32_t width, std::uint32_t height);
+
+	void createDescriptorPool();
+	void buildCameraDescriptor();
 
     /** Builds the Vulkan pipeline used for rendering meshes */
     void buildMeshPipeline();

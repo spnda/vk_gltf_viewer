@@ -16,6 +16,9 @@
 #define GLFW_INCLUDE_VULKAN
 #include <glfw/glfw3.h>
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <fastgltf/base64.hpp>
 #include <fastgltf/types.hpp>
 #include <fastgltf/parser.hpp>
@@ -50,16 +53,6 @@ VkBool32 vulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT          mes
     std::cout << pCallbackData->pMessage << '\n';
     return VK_FALSE; // Beware: VK_TRUE here and the layers will kill the app instantly.
 }
-
-class vulkan_error : public std::runtime_error {
-    VkResult result;
-
-public:
-    vulkan_error(const std::string& message, VkResult result) : std::runtime_error(message), result(result) {}
-    vulkan_error(const char* message, VkResult result) : std::runtime_error(message), result(result) {}
-
-    [[nodiscard]] VkResult what_result() const noexcept { return result; }
-};
 
 template <typename T>
 void checkResult(vkb::Result<T> result) noexcept(false) {
@@ -121,6 +114,7 @@ void Viewer::setupVulkanDevice() {
         .meshShader = VK_TRUE,
     };
 
+	// Select an appropriate device with the given requirements.
     vkb::PhysicalDeviceSelector selector(instance);
     auto selectionResult = selector
             .set_surface(surface)
@@ -146,6 +140,28 @@ void Viewer::setupVulkanDevice() {
 
     volkLoadDevice(device);
 
+	// Create the VMA allocator
+	// Create the VMA allocator object
+	const VmaVulkanFunctions vmaFunctions {
+		.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
+		.vkGetDeviceProcAddr = vkGetDeviceProcAddr,
+	};
+	const VmaAllocatorCreateInfo allocatorInfo {
+		.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+		.physicalDevice = device.physical_device,
+		.device = device,
+		.pVulkanFunctions = &vmaFunctions,
+		.instance = instance,
+		.vulkanApiVersion = VK_API_VERSION_1_3,
+	};
+	auto result = vmaCreateAllocator(&allocatorInfo, &allocator);
+	vk::checkResult(result, "Failed to create VMA allocator: {}");
+
+	deletionQueue.push([&]() {
+		vmaDestroyAllocator(allocator);
+	});
+
+	// Get the queues
     auto graphicsQueue = device.get_queue(vkb::QueueType::graphics);
     checkResult(graphicsQueue);
     this->graphicsQueue = graphicsQueue.value();
@@ -176,9 +192,125 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
     swapchainImageViews = std::move(imageViewResult.value());
 }
 
+void Viewer::createDescriptorPool() {
+	// TODO: Update this according to the actual data passed to the shader. Currently this is
+	//       1 uniform and 1 storage buffer, but that might change.
+	std::array<VkDescriptorPoolSize, 2> sizes = {{
+		{
+			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+		},
+		{
+			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+		}
+	}};
+	const VkDescriptorPoolCreateInfo poolCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.maxSets = frameOverlap,
+		.poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
+		.pPoolSizes = sizes.data(),
+	};
+	auto result = vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &descriptorPool);
+	vk::checkResult(result, "Failed to create descriptor pool");
+
+	deletionQueue.push([&]() {
+		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+	});
+}
+
+void Viewer::buildCameraDescriptor() {
+	// The camera descriptor layout
+	std::array<VkDescriptorSetLayoutBinding, 1> layoutBindings = {{
+		{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		},
+	}};
+	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = static_cast<std::uint32_t>(layoutBindings.size()),
+		.pBindings = layoutBindings.data(),
+	};
+	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
+											  VK_NULL_HANDLE, &cameraSetLayout);
+	vk::checkResult(result, "Failed to create camera descriptor set layout: {}");
+
+	deletionQueue.push([&]() {
+		vkDestroyDescriptorSetLayout(device, cameraSetLayout, nullptr);
+	});
+
+	// Allocate frameOverlap descriptor sets used for the camera buffer.
+	// We update their contents at the end of the function
+	std::vector<VkDescriptorSetLayout> setLayouts(frameOverlap, cameraSetLayout);
+	const VkDescriptorSetAllocateInfo allocateInfo {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = descriptorPool,
+		.descriptorSetCount = static_cast<std::uint32_t>(setLayouts.size()),
+		.pSetLayouts = setLayouts.data(),
+	};
+
+	// Allocate the sets. We copy each member of the sets vector in the loop below.
+	std::vector<VkDescriptorSet> sets(frameOverlap);
+	result = vkAllocateDescriptorSets(device, &allocateInfo, sets.data());
+	vk::checkResult(result, "Failed to allocate camera descriptor set: {}");
+
+	// Generate descriptor writes to update the descriptor
+	std::vector<VkWriteDescriptorSet> descriptorWrites;
+	descriptorWrites.reserve(frameOverlap);
+	cameraBuffers.resize(frameOverlap);
+	for (auto& cameraBuffer : cameraBuffers) {
+		// Copy the created camera sets into the every cameraBuffer structs.
+		// Small hack to use descriptorWrites.size() here but it represents the same index.
+		cameraBuffer.cameraSet = sets[descriptorWrites.size()];
+
+		// Create the camera buffers
+		const VmaAllocationCreateInfo allocationCreateInfo {
+			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		};
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = sizeof(Camera),
+			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		};
+		result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+									  &cameraBuffer.handle, &cameraBuffer.allocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate camera buffer: {}");
+
+		deletionQueue.push([&]() {
+			vmaDestroyBuffer(allocator, cameraBuffer.handle, cameraBuffer.allocation);
+		});
+
+		// Initialise the camera descriptor set
+		const VkDescriptorBufferInfo bufferInfo = {
+			.buffer = cameraBuffer.handle,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE,
+		};
+		const VkWriteDescriptorSet descriptorWrite = {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = cameraBuffer.cameraSet,
+			.dstBinding = 0,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.pBufferInfo = &bufferInfo,
+		};
+		descriptorWrites.emplace_back(descriptorWrite);
+	}
+
+	// Update the descriptors
+	vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(descriptorWrites.size()),
+						   descriptorWrites.data(), 0, nullptr);
+}
+
 void Viewer::buildMeshPipeline() {
     // Build the mesh pipeline layout
-    std::array<VkDescriptorSetLayout, 0> layouts;
+    std::array<VkDescriptorSetLayout, 1> layouts = {{ cameraSetLayout }};
     const VkPipelineLayoutCreateInfo layoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
@@ -426,6 +558,8 @@ int main(int argc, char* argv[]) {
         // Create the swapchain
         viewer.rebuildSwapchain(videoMode->width, videoMode->height);
 
+		viewer.createDescriptorPool();
+		viewer.buildCameraDescriptor();
         viewer.buildMeshPipeline();
 
         // Creates the required fences and semaphores for frame sync
@@ -449,6 +583,22 @@ int main(int argc, char* argv[]) {
             // using the semaphores and command buffers.
             vkWaitForFences(viewer.device, 1, &frameSyncData.presentFinished, VK_TRUE, UINT64_MAX);
             vkResetFences(viewer.device, 1, &frameSyncData.presentFinished);
+
+			// Calculate new camera matrices, upload to GPU
+			{
+				auto& cameraBuffer = viewer.cameraBuffers[currentFrame];
+				vk::ScopedMap<Camera> map(viewer.allocator, cameraBuffer.allocation);
+				auto& camera = *map.get();
+
+				// TODO: Allow camera movement
+				auto viewMatrix = glm::lookAt(glm::vec3(5.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+				auto projectionMatrix = glm::perspective(glm::radians(75.0f),
+														 static_cast<float>(viewer.swapchain.extent.width) / static_cast<float>(viewer.swapchain.extent.height),
+														 0.01f, 1000.0f);
+
+				camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+			}
 
             // Reset the command pool
             auto& commandPool = viewer.frameCommandPools[currentFrame];
@@ -522,6 +672,11 @@ int main(int argc, char* argv[]) {
 				vkCmdBeginRendering(cmd, &renderingInfo);
 
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipeline);
+
+				// Bind the camera descriptor set
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipelineLayout,
+										0, 1, &viewer.cameraBuffers[currentFrame].cameraSet,
+										0, nullptr);
 
 				const VkViewport viewport = {
 					.x = 0.0F,

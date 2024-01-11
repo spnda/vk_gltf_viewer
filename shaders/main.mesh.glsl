@@ -4,6 +4,10 @@
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 3, max_primitives = 1) out;
 
+layout(set = 0, binding = 0) uniform Camera {
+    mat4 viewProjection;
+} camera;
+
 // Fragment input
 layout (location = 0) out Outputs {
     vec3 color;
@@ -27,9 +31,9 @@ void main() {
         vec3(00.f, 0.0f, 1.0f)
     );
 
-    gl_MeshVerticesEXT[0].gl_Position = vec4(positions[0], 1);
-    gl_MeshVerticesEXT[1].gl_Position = vec4(positions[1], 1);
-    gl_MeshVerticesEXT[2].gl_Position = vec4(positions[2], 1);
+    gl_MeshVerticesEXT[0].gl_Position = camera.viewProjection * vec4(positions[0], 1);
+    gl_MeshVerticesEXT[1].gl_Position = camera.viewProjection * vec4(positions[1], 1);
+    gl_MeshVerticesEXT[2].gl_Position = camera.viewProjection * vec4(positions[2], 1);
     gl_PrimitiveTriangleIndicesEXT[0] =  uvec3(0, 1, 2);
 
     outp[0].color = colors[0];
