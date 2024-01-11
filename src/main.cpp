@@ -46,6 +46,55 @@ void glfwResizeCallback(GLFWwindow* window, int width, int height) {
     }
 }
 
+void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
+	void* ptr = glfwGetWindowUserPointer(window);
+	auto& movement = static_cast<Viewer*>(ptr)->movement;
+
+	if (movement.firstMouse) {
+		movement.lastCursorPosition = { xpos, ypos };
+		movement.firstMouse = false;
+	}
+
+	auto offset = glm::vec2(xpos - movement.lastCursorPosition.x, movement.lastCursorPosition.y - ypos);
+	movement.lastCursorPosition = { xpos, ypos };
+	offset *= 0.1f;
+
+	movement.yaw   += offset.x;
+	movement.pitch -= offset.y; // This has to be negative for Vulkan because of flipped viewport.
+	movement.pitch = glm::clamp(movement.pitch, -89.0f, 89.0f);
+
+	auto& direction = movement.direction;
+	direction.x = cos(glm::radians(movement.yaw)) * cos(glm::radians(movement.pitch));
+	direction.y = sin(glm::radians(movement.pitch));
+	direction.z = sin(glm::radians(movement.yaw)) * cos(glm::radians(movement.pitch));
+	direction = glm::normalize(direction);
+}
+
+static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+
+void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+	void* ptr = glfwGetWindowUserPointer(window);
+	auto& movement = static_cast<Viewer*>(ptr)->movement;
+
+	auto& acceleration = movement.accelerationVector;
+	switch (key) {
+		case GLFW_KEY_W:
+			acceleration += movement.direction;
+			break;
+		case GLFW_KEY_S:
+			acceleration -= movement.direction;
+			break;
+		case GLFW_KEY_D:
+			acceleration += glm::normalize(glm::cross(movement.direction, cameraUp));
+			break;
+		case GLFW_KEY_A:
+			acceleration -= glm::normalize(glm::cross(movement.direction, cameraUp));
+			break;
+		default:
+			break;
+	}
+}
+
 VkBool32 vulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT          messageSeverity,
                              VkDebugUtilsMessageTypeFlagsEXT                  messageTypes,
                              const VkDebugUtilsMessengerCallbackDataEXT*      pCallbackData,
@@ -116,6 +165,7 @@ void Viewer::setupVulkanDevice() {
 
 	// Select an appropriate device with the given requirements.
     vkb::PhysicalDeviceSelector selector(instance);
+
     auto selectionResult = selector
             .set_surface(surface)
             .set_minimum_version(1, 3) // We want Vulkan 1.3.
@@ -128,7 +178,13 @@ void Viewer::setupVulkanDevice() {
             .select();
     checkResult(selectionResult);
 
-    vkb::DeviceBuilder deviceBuilder(selectionResult.value());
+	VmaAllocatorCreateFlags allocatorFlags;
+	auto& physicalDevice = selectionResult.value();
+	if (physicalDevice.enable_extension_if_present(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+		allocatorFlags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+	}
+
+	vkb::DeviceBuilder deviceBuilder(selectionResult.value());
     auto creationResult = deviceBuilder
             .build();
     checkResult(creationResult);
@@ -147,7 +203,7 @@ void Viewer::setupVulkanDevice() {
 		.vkGetDeviceProcAddr = vkGetDeviceProcAddr,
 	};
 	const VmaAllocatorCreateInfo allocatorInfo {
-		.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+		.flags = allocatorFlags | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
 		.physicalDevice = device.physical_device,
 		.device = device,
 		.pVulkanFunctions = &vmaFunctions,
@@ -543,6 +599,10 @@ int main(int argc, char* argv[]) {
         glfwSetWindowUserPointer(viewer.window, &viewer);
         glfwSetWindowSizeCallback(viewer.window, glfwResizeCallback);
 
+		glfwSetKeyCallback(viewer.window, keyCallback);
+		glfwSetCursorPosCallback(viewer.window, cursorCallback);
+		glfwSetInputMode(viewer.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
         // Create the Vulkan surface
         auto surfaceResult = glfwCreateWindowSurface(viewer.instance, viewer.window, nullptr, &viewer.surface);
         if (surfaceResult != VK_SUCCESS) {
@@ -569,12 +629,19 @@ int main(int argc, char* argv[]) {
         std::size_t currentFrame = 0;
         while (glfwWindowShouldClose(viewer.window) != GLFW_TRUE) {
             if (!viewer.swapchainNeedsRebuild) {
+				// Reset the acceleration before updating it through input events
+				viewer.movement.accelerationVector = glm::vec3(0.0f);
+
                 glfwPollEvents();
             } else {
                 // This will wait until we get an event, like the resize event which will recreate the swapchain.
                 glfwWaitEvents();
                 continue;
             }
+
+			auto currentTime = static_cast<float>(glfwGetTime());
+			viewer.deltaTime = currentTime - viewer.lastFrame;
+			viewer.lastFrame = currentTime;
 
             currentFrame = ++currentFrame % frameOverlap;
             auto& frameSyncData = viewer.frameSyncData[currentFrame];
@@ -590,8 +657,14 @@ int main(int argc, char* argv[]) {
 				vk::ScopedMap<Camera> map(viewer.allocator, cameraBuffer.allocation);
 				auto& camera = *map.get();
 
-				// TODO: Allow camera movement
-				auto viewMatrix = glm::lookAt(glm::vec3(5.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+				auto& movement = viewer.movement;
+				// Factor the deltaTime into the amount of acceleration
+				movement.velocity += (movement.accelerationVector * 50.0f) * viewer.deltaTime;
+				// Lerp the velocity to 0, adding deceleration.
+				movement.velocity = movement.velocity + (2.0f * viewer.deltaTime) * (glm::vec3(0.0f) - movement.velocity);
+				// Add the velocity into the position
+				movement.position += movement.velocity * viewer.deltaTime;
+				auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
 
 				auto projectionMatrix = glm::perspective(glm::radians(75.0f),
 														 static_cast<float>(viewer.swapchain.extent.width) / static_cast<float>(viewer.swapchain.extent.height),

@@ -33,6 +33,18 @@ struct Camera {
 	glm::mat4 viewProjectionMatrix;
 };
 
+struct CameraMovement {
+	glm::vec3 accelerationVector = glm::vec3(0.0f);
+	glm::vec3 velocity = glm::vec3(0.0f);
+	glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f);
+
+	glm::dvec2 lastCursorPosition = glm::dvec2(0.0f);
+	glm::vec3 direction = glm::vec3(0.0f, 0.0f, -1.0f);
+	float yaw = -90.0f;
+	float pitch = 0.0f;
+	bool firstMouse = false;
+};
+
 struct Viewer {
     enki::TaskScheduler taskScheduler;
 
@@ -57,6 +69,9 @@ struct Viewer {
     std::vector<FrameCommandPools> frameCommandPools;
 
 	std::vector<PerFrameCameraBuffer> cameraBuffers;
+	float lastFrame = 0.0f;
+	float deltaTime = 0.0f;
+	CameraMovement movement;
 
 	VkDescriptorPool descriptorPool;
 	VkDescriptorSetLayout cameraSetLayout;
