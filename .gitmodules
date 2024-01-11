@@ -28,3 +28,12 @@
 [submodule "submodules/glm"]
 	path = submodules/glm
 	url = https://github.com/g-truc/glm
+[submodule "submodules/fmt"]
+	path = submodules/fmt
+	url = https://github.com/fmtlib/fmt
+[submodule "submodules/tracy"]
+	path = submodules/tracy
+	url = https://github.com/wolfpld/tracy
+[submodule "submodules/vulkan-utils"]
+	path = submodules/vulkan-utils
+	url = https://github.com/KhronosGroup/Vulkan-Utility-Libraries/

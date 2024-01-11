@@ -5,16 +5,13 @@
 
 #include <TaskScheduler.h>
 
-#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-#define VOLK_IMPLEMENTATION
-#include <volk.h>
-
+#include <vulkan/vk.hpp>
 #include <VkBootstrap.h>
+#include <vulkan/vma.hpp>
 
-#define VMA_IMPLEMENTATION
-#include <vk_mem_alloc.h>
+#include <vulkan/pipeline_builder.hpp>
 
 #define GLFW_INCLUDE_VULKAN
 #include <glfw/glfw3.h>
@@ -23,9 +20,9 @@
 #include <fastgltf/types.hpp>
 #include <fastgltf/parser.hpp>
 
+#include <vk_gltf_viewer/viewer.hpp>
+
 struct Viewer;
-class FileLoadTask;
-void rebuildSwapchain(Viewer& viewer, std::uint32_t width, std::uint32_t height);
 
 void glfwErrorCallback(int errorCode, const char* description) {
     if (errorCode != GLFW_NO_ERROR) {
@@ -42,7 +39,7 @@ void glfwErrorCallback(int errorCode, const char* description) {
 void glfwResizeCallback(GLFWwindow* window, int width, int height) {
     if (width > 0 && height > 0) {
         auto* viewer = static_cast<Viewer*>(glfwGetWindowUserPointer(window));
-        rebuildSwapchain(*viewer, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        viewer->rebuildSwapchain(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
     }
 }
 
@@ -71,74 +68,7 @@ void checkResult(vkb::Result<T> result) noexcept(false) {
     }
 }
 
-struct FrameSyncData {
-    VkSemaphore imageAvailable;
-    VkSemaphore renderingFinished;
-    VkFence presentFinished;
-};
-
-struct FrameCommandPools {
-    VkCommandPool pool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> commandBuffers;
-};
-
-static constexpr const std::size_t frameOverlap = 2;
-
-struct Viewer {
-    enki::TaskScheduler taskScheduler;
-
-    vkb::Instance instance;
-    vkb::Device device;
-
-    //using queue_type = std::pair<std::uint32_t, VkQueue>;
-    //queue_type graphicsQueue;
-    //queue_type transferQueue;
-    VkQueue graphicsQueue = VK_NULL_HANDLE;
-    VkQueue transferQueue = VK_NULL_HANDLE;
-
-    GLFWwindow* window = nullptr;
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    vkb::Swapchain swapchain;
-    std::vector<VkImage> swapchainImages;
-    std::vector<VkImageView> swapchainImageViews;
-    bool swapchainNeedsRebuild = false;
-
-    std::vector<FrameSyncData> frameSyncData;
-    std::vector<FrameCommandPools> frameCommandPools;
-
-    fastgltf::Asset asset {};
-    std::vector<std::shared_ptr<FileLoadTask>> fileLoadTasks;
-
-    // This is the same paradigm as used by vkguide.dev. This makes sure every object
-    // is properly destroyed in reverse-order to creation.
-    class DeletionQueue {
-        friend struct Viewer;
-        std::deque<std::function<void()>> deletors;
-
-    public:
-        void push(std::function<void()>&& function) {
-            deletors.emplace_back(function);
-        }
-
-        void flush() {
-            for (auto it = deletors.rbegin(); it != deletors.rend(); ++it) {
-                (*it)();
-            }
-            deletors.clear();
-        }
-    };
-    DeletionQueue deletionQueue;
-
-    Viewer() = default;
-    ~Viewer() = default;
-
-    void flushObjects() {
-        vkDeviceWaitIdle(device);
-        deletionQueue.flush();
-    }
-};
-
-void setupVulkanInstance(Viewer& viewer) {
+void Viewer::setupVulkanInstance() {
     if (auto result = volkInitialize(); result != VK_SUCCESS) {
         throw vulkan_error("No compatible Vulkan loader or driver found.", result);
     }
@@ -165,25 +95,40 @@ void setupVulkanInstance(Viewer& viewer) {
             .build();
     checkResult(instanceResult);
 
-    viewer.instance = instanceResult.value();
-    viewer.deletionQueue.push([&]() {
-        vkb::destroy_instance(viewer.instance);
+    instance = instanceResult.value();
+    deletionQueue.push([&]() {
+        vkb::destroy_instance(instance);
     });
 
-    volkLoadInstanceOnly(viewer.instance);
+    volkLoadInstanceOnly(instance);
 }
 
-void setupVulkanDevice(Viewer& viewer) {
-    VkPhysicalDeviceVulkan13Features vulkan13Features {};
-    vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    vulkan13Features.dynamicRendering = VK_TRUE;
-    vulkan13Features.synchronization2 = VK_TRUE;
+void Viewer::setupVulkanDevice() {
+    VkPhysicalDeviceVulkan12Features vulkan12Features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .bufferDeviceAddress = VK_TRUE,
+    };
 
-    vkb::PhysicalDeviceSelector selector(viewer.instance);
+    VkPhysicalDeviceVulkan13Features vulkan13Features {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .synchronization2 = VK_TRUE,
+        .dynamicRendering = VK_TRUE,
+		.maintenance4 = VK_TRUE,
+    };
+
+    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+        .meshShader = VK_TRUE,
+    };
+
+    vkb::PhysicalDeviceSelector selector(instance);
     auto selectionResult = selector
-            .set_surface(viewer.surface)
+            .set_surface(surface)
             .set_minimum_version(1, 3) // We want Vulkan 1.3.
+            .set_required_features_12(vulkan12Features)
             .set_required_features_13(vulkan13Features)
+            .add_required_extension(VK_EXT_MESH_SHADER_EXTENSION_NAME)
+            .add_required_extension_features(meshShaderFeatures)
             .require_present()
             .require_dedicated_transfer_queue()
             .select();
@@ -194,52 +139,117 @@ void setupVulkanDevice(Viewer& viewer) {
             .build();
     checkResult(creationResult);
 
-    viewer.device = creationResult.value();
-    viewer.deletionQueue.push([&]() {
-        vkb::destroy_device(viewer.device);
+    device = creationResult.value();
+    deletionQueue.push([&]() {
+        vkb::destroy_device(device);
     });
 
-    volkLoadDevice(viewer.device);
+    volkLoadDevice(device);
 
-    auto graphicsQueue = viewer.device.get_queue(vkb::QueueType::graphics);
+    auto graphicsQueue = device.get_queue(vkb::QueueType::graphics);
     checkResult(graphicsQueue);
-    viewer.graphicsQueue = graphicsQueue.value();
+    this->graphicsQueue = graphicsQueue.value();
 
-    auto transferQueue = viewer.device.get_dedicated_queue(vkb::QueueType::transfer);
+    auto transferQueue = device.get_dedicated_queue(vkb::QueueType::transfer);
     checkResult(transferQueue);
-    viewer.transferQueue = transferQueue.value();
+    this->transferQueue = transferQueue.value();
 }
 
-void rebuildSwapchain(Viewer& viewer, std::uint32_t width, std::uint32_t height) {
-    vkb::SwapchainBuilder swapchainBuilder(viewer.device);
+void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
+    vkb::SwapchainBuilder swapchainBuilder(device);
     auto swapchainResult = swapchainBuilder
-            .set_old_swapchain(viewer.swapchain)
+            .set_old_swapchain(swapchain)
+			.set_desired_extent(width, height)
             .build();
     checkResult(swapchainResult);
 
     // The swapchain is not added to the deletionQueue, as it gets recreated throughout the application's lifetime.
-    vkb::destroy_swapchain(viewer.swapchain);
-    viewer.swapchain = swapchainResult.value();
+    vkb::destroy_swapchain(swapchain);
+    swapchain = swapchainResult.value();
 
-    auto imageResult = viewer.swapchain.get_images();
+    auto imageResult = swapchain.get_images();
     checkResult(imageResult);
-    viewer.swapchainImages = std::move(imageResult.value());
+    swapchainImages = std::move(imageResult.value());
 
-    auto imageViewResult = viewer.swapchain.get_image_views();
+    auto imageViewResult = swapchain.get_image_views();
     checkResult(imageViewResult);
-    viewer.swapchainImageViews = std::move(imageViewResult.value());
+    swapchainImageViews = std::move(imageViewResult.value());
 }
 
-void createFrameData(Viewer& viewer) {
-    viewer.frameSyncData.resize(frameOverlap);
-    for (auto& frame : viewer.frameSyncData) {
+void Viewer::buildMeshPipeline() {
+    // Build the mesh pipeline layout
+    std::array<VkDescriptorSetLayout, 0> layouts;
+    const VkPipelineLayoutCreateInfo layoutCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
+        .pSetLayouts = layouts.data(),
+        .pushConstantRangeCount = 0,
+        .pPushConstantRanges = nullptr,
+    };
+    auto result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &meshPipelineLayout);
+    if (result != VK_SUCCESS) {
+        throw vulkan_error("Failed to create mesh pipeline layout", result);
+    }
+
+    // Load the mesh pipeline shaders
+    VkShaderModule fragModule, meshModule;
+    vk::loadShaderModule("main.frag.glsl.spv", device, &fragModule);
+    vk::loadShaderModule("main.mesh.glsl.spv", device, &meshModule);
+
+    // Build the mesh pipeline
+    const auto colorAttachmentFormat = swapchain.image_format;
+    const VkPipelineRenderingCreateInfo renderingCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = &colorAttachmentFormat,
+    };
+
+    const VkPipelineColorBlendAttachmentState blendAttachment = {
+        .blendEnable = VK_FALSE,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+
+    auto builder = vk::GraphicsPipelineBuilder(device, nullptr)
+        .setPipelineCount(1)
+        .setPipelineLayout(0, meshPipelineLayout)
+        .pushPNext(0, &renderingCreateInfo)
+        .addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
+        .addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
+        .setBlendAttachment(0, &blendAttachment)
+        .setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+        .setDepthState(0, VK_FALSE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL)
+        .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
+        .setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
+        .setScissorCount(0, 1U)
+        .setViewportCount(0, 1U)
+        .addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, "main")
+        .addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule, "main");
+
+    result = builder.build(&meshPipeline);
+    if (result != VK_SUCCESS) {
+        throw vulkan_error("Failed to create mesh pipeline", result);
+    }
+
+    // We don't need the shader modules after creating the pipeline anymore.
+    vkDestroyShaderModule(device, fragModule, VK_NULL_HANDLE);
+    vkDestroyShaderModule(device, meshModule, VK_NULL_HANDLE);
+
+    deletionQueue.push([&]() {
+        vkDestroyPipeline(device, meshPipeline, VK_NULL_HANDLE);
+        vkDestroyPipelineLayout(device, meshPipelineLayout, VK_NULL_HANDLE);
+    });
+}
+
+void Viewer::createFrameData() {
+    frameSyncData.resize(frameOverlap);
+    for (auto& frame : frameSyncData) {
         VkSemaphoreCreateInfo semaphoreCreateInfo = {};
         semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        auto semaphoreResult = vkCreateSemaphore(viewer.device, &semaphoreCreateInfo, nullptr, &frame.imageAvailable);
+        auto semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.imageAvailable);
         if (semaphoreResult != VK_SUCCESS) {
             throw vulkan_error("Failed to create image semaphore", semaphoreResult);
         }
-        semaphoreResult = vkCreateSemaphore(viewer.device, &semaphoreCreateInfo, nullptr, &frame.renderingFinished);
+        semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.renderingFinished);
         if (semaphoreResult != VK_SUCCESS) {
             throw vulkan_error("Failed to create rendering semaphore", semaphoreResult);
         }
@@ -247,25 +257,25 @@ void createFrameData(Viewer& viewer) {
         VkFenceCreateInfo fenceCreateInfo = {};
         fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        auto fenceResult = vkCreateFence(viewer.device, &fenceCreateInfo, nullptr, &frame.presentFinished);
+        auto fenceResult = vkCreateFence(device, &fenceCreateInfo, nullptr, &frame.presentFinished);
         if (fenceResult != VK_SUCCESS) {
             throw vulkan_error("Failed to create present fence", fenceResult);
         }
 
-        viewer.deletionQueue.push([&]() {
-            vkDestroyFence(viewer.device, frame.presentFinished, nullptr);
-            vkDestroySemaphore(viewer.device, frame.renderingFinished, nullptr);
-            vkDestroySemaphore(viewer.device, frame.imageAvailable, nullptr);
+        deletionQueue.push([&]() {
+            vkDestroyFence(device, frame.presentFinished, nullptr);
+            vkDestroySemaphore(device, frame.renderingFinished, nullptr);
+            vkDestroySemaphore(device, frame.imageAvailable, nullptr);
         });
     }
 
-    viewer.frameCommandPools.resize(frameOverlap);
-    for (auto& frame : viewer.frameCommandPools) {
+    frameCommandPools.resize(frameOverlap);
+    for (auto& frame : frameCommandPools) {
         VkCommandPoolCreateInfo commandPoolInfo = {};
         commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         // commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         commandPoolInfo.queueFamilyIndex = 0;
-        auto createResult = vkCreateCommandPool(viewer.device, &commandPoolInfo, nullptr, &frame.pool);
+        auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &frame.pool);
         if (createResult != VK_SUCCESS) {
             throw vulkan_error("Failed to create command pool", createResult);
         }
@@ -276,12 +286,12 @@ void createFrameData(Viewer& viewer) {
         allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocateInfo.commandBufferCount = 1;
         frame.commandBuffers.resize(1);
-        auto allocateResult = vkAllocateCommandBuffers(viewer.device, &allocateInfo, frame.commandBuffers.data());
+        auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, frame.commandBuffers.data());
         if (allocateResult != VK_SUCCESS) {
             throw vulkan_error("Failed to allocate command buffers", allocateResult);
         }
-        viewer.deletionQueue.push([&]() {
-            vkDestroyCommandPool(viewer.device, frame.pool, nullptr);
+        deletionQueue.push([&]() {
+            vkDestroyCommandPool(device, frame.pool, nullptr);
         });
     }
 }
@@ -380,7 +390,7 @@ int main(int argc, char* argv[]) {
         loadGltf(viewer, gltfFile);
 
         // Setup the Vulkan instance
-        setupVulkanInstance(viewer);
+        viewer.setupVulkanInstance();
 
         // Create the window
         auto* mainMonitor = glfwGetPrimaryMonitor();
@@ -411,13 +421,15 @@ int main(int argc, char* argv[]) {
         });
 
         // Create the Vulkan device
-        setupVulkanDevice(viewer);
+        viewer.setupVulkanDevice();
 
         // Create the swapchain
-        rebuildSwapchain(viewer, videoMode->width, videoMode->height);
+        viewer.rebuildSwapchain(videoMode->width, videoMode->height);
+
+        viewer.buildMeshPipeline();
 
         // Creates the required fences and semaphores for frame sync
-        createFrameData(viewer);
+        viewer.createFrameData();
 
         // The render loop
         std::size_t currentFrame = 0;
@@ -457,59 +469,132 @@ int main(int argc, char* argv[]) {
             }
 
             // Begin the command buffer
-            VkCommandBufferBeginInfo beginInfo = {};
-            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // We're only using once, then resetting.
+            VkCommandBufferBeginInfo beginInfo = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, // We're only using once, then resetting.
+            };
             vkBeginCommandBuffer(cmd, &beginInfo);
 
-            // Transition the swapchain image from (possibly) UNDEFINED -> PRESENT_SRC_KHR
-            VkImageMemoryBarrier2 swapchainImageBarrier {};
-            swapchainImageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            swapchainImageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            swapchainImageBarrier.srcAccessMask = VK_ACCESS_2_NONE;
-            swapchainImageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-            swapchainImageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
-            swapchainImageBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            swapchainImageBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-            swapchainImageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            swapchainImageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            swapchainImageBarrier.image = viewer.swapchainImages[swapchainImageIndex];
-            swapchainImageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            swapchainImageBarrier.subresourceRange.levelCount = 1;
-            swapchainImageBarrier.subresourceRange.layerCount = 1;
+            {
+				// Transition the swapchain image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL for rendering
+				const VkImageMemoryBarrier2 swapchainAttachmentImageBarrier {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+					.srcAccessMask = VK_ACCESS_2_NONE,
+					.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+					.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = viewer.swapchainImages[swapchainImageIndex],
+					.subresourceRange = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.levelCount = 1,
+						.layerCount = 1,
+					},
+                };
+				const VkDependencyInfo dependencyInfo {
+					.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+					.imageMemoryBarrierCount = 1,
+					.pImageMemoryBarriers = &swapchainAttachmentImageBarrier,
+				};
+				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 
-            VkDependencyInfo dependencyInfo {};
-            dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependencyInfo.imageMemoryBarrierCount = 1;
-            dependencyInfo.pImageMemoryBarriers = &swapchainImageBarrier;
+				const VkRenderingAttachmentInfo swapchainAttachment = {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = viewer.swapchainImageViews[swapchainImageIndex],
+					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.resolveMode = VK_RESOLVE_MODE_NONE,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+				};
+				const VkRenderingInfo renderingInfo {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+					.renderArea = {
+						.offset = {},
+						.extent = viewer.swapchain.extent,
+					},
+					.layerCount = 1,
+					.colorAttachmentCount = 1,
+					.pColorAttachments = &swapchainAttachment,
+				};
+				vkCmdBeginRendering(cmd, &renderingInfo);
+
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipeline);
+
+				const VkViewport viewport = {
+					.x = 0.0F,
+					.y = 0.0F,
+					.width = static_cast<float>(viewer.swapchain.extent.width),
+					.height = static_cast<float>(viewer.swapchain.extent.height),
+					.minDepth = 0.0F,
+					.maxDepth = 1.0F,
+				};
+				vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+				const VkRect2D scissor = renderingInfo.renderArea;
+				vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+				vkCmdDrawMeshTasksEXT(cmd, 1, 1, 1);
+
+				vkCmdEndRendering(cmd);
+            }
+
+            // Transition the swapchain image from (possibly) UNDEFINED -> PRESENT_SRC_KHR
+			const VkImageMemoryBarrier2 swapchainImageBarrier {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+				.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+				.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+				.dstAccessMask = VK_ACCESS_2_NONE,
+				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = viewer.swapchainImages[swapchainImageIndex],
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.levelCount = 1,
+					.layerCount = 1,
+				},
+			};
+
+			const VkDependencyInfo dependencyInfo {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 1,
+				.pImageMemoryBarriers = &swapchainImageBarrier,
+			};
             vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 
             vkEndCommandBuffer(cmd);
 
             // Submit the command buffer
             const VkPipelineStageFlags submitWaitStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-            VkSubmitInfo submitInfo {};
-            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submitInfo.waitSemaphoreCount = 1;
-            submitInfo.pWaitSemaphores = &frameSyncData.imageAvailable;
-            submitInfo.pWaitDstStageMask = &submitWaitStages;
-            submitInfo.commandBufferCount = 1;
-            submitInfo.pCommandBuffers = &cmd;
-            submitInfo.signalSemaphoreCount = 1;
-            submitInfo.pSignalSemaphores = &frameSyncData.renderingFinished;
+            VkSubmitInfo submitInfo {
+				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+				.waitSemaphoreCount = 1,
+				.pWaitSemaphores = &frameSyncData.imageAvailable,
+				.pWaitDstStageMask = &submitWaitStages,
+				.commandBufferCount = 1,
+				.pCommandBuffers = &cmd,
+				.signalSemaphoreCount = 1,
+				.pSignalSemaphores = &frameSyncData.renderingFinished,
+			};
             auto submitResult = vkQueueSubmit(viewer.graphicsQueue, 1, &submitInfo, frameSyncData.presentFinished);
             if (submitResult != VK_SUCCESS) {
                 throw vulkan_error("Failed to submit to queue", submitResult);
             }
 
             // Present the rendered image
-            VkPresentInfoKHR presentInfo {};
-            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-            presentInfo.waitSemaphoreCount = 1;
-            presentInfo.pWaitSemaphores = &frameSyncData.renderingFinished;
-            presentInfo.swapchainCount = 1;
-            presentInfo.pSwapchains = &viewer.swapchain.swapchain;
-            presentInfo.pImageIndices = &swapchainImageIndex;
+            VkPresentInfoKHR presentInfo {
+				.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+				.waitSemaphoreCount = 1,
+				.pWaitSemaphores = &frameSyncData.renderingFinished,
+				.swapchainCount = 1,
+				.pSwapchains = &viewer.swapchain.swapchain,
+				.pImageIndices = &swapchainImageIndex,
+			};
             auto presentResult = vkQueuePresentKHR(viewer.graphicsQueue, &presentInfo);
             if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
                 viewer.swapchainNeedsRebuild = true;
