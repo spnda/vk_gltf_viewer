@@ -421,12 +421,18 @@ void Viewer::buildCameraDescriptor() {
 void Viewer::buildMeshPipeline() {
     // Build the mesh pipeline layout
     std::array<VkDescriptorSetLayout, 2> layouts = {{ cameraSetLayout, meshletSetLayout }};
+	const VkPushConstantRange pushConstantRange {
+		.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		.offset = 0,
+		.size = sizeof(MeshPushConstants),
+	};
+
     const VkPipelineLayoutCreateInfo layoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
         .pSetLayouts = layouts.data(),
-        .pushConstantRangeCount = 0,
-        .pPushConstantRanges = nullptr,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pushConstantRange,
     };
     auto result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &meshPipelineLayout);
     if (result != VK_SUCCESS) {
@@ -869,6 +875,54 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 	vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }
 
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
+
+glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
+	/** Both a matrix and TRS values are not allowed
+	 * to exist at the same time according to the spec */
+	if (const auto* pMatrix = std::get_if<fastgltf::Node::TransformMatrix>(&node.transform)) {
+		return base * glm::mat4x4(glm::make_mat4x4(pMatrix->data()));
+	}
+
+	if (const auto* pTransform = std::get_if<fastgltf::TRS>(&node.transform)) {
+		return base
+			   * glm::translate(glm::mat4(1.0f), glm::make_vec3(pTransform->translation.data()))
+			   * glm::toMat4(glm::quat::wxyz(pTransform->rotation[3], pTransform->rotation[0], pTransform->rotation[1], pTransform->rotation[2]))
+			   * glm::scale(glm::mat4(1.0f), glm::make_vec3(pTransform->scale.data()));
+	}
+
+	return base;
+}
+
+void Viewer::drawNode(VkCommandBuffer cmd, std::size_t nodeIndex, glm::mat4 matrix) {
+	auto& node = asset.nodes[nodeIndex];
+	matrix = getTransformMatrix(node, matrix);
+
+	if (node.meshIndex.has_value()) {
+		drawMesh(cmd, node.meshIndex.value(), matrix);
+	}
+
+	for (auto& child : node.children) {
+		drawNode(cmd, child, matrix);
+	}
+}
+
+void Viewer::drawMesh(VkCommandBuffer cmd, std::size_t meshIndex, glm::mat4 matrix) {
+	auto& mesh = meshes[meshIndex];
+
+	for (auto& primitive : mesh.primitives) {
+		vkCmdPushConstants(cmd, meshPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT,
+						   0, sizeof(MeshPushConstants), &matrix);
+
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipelineLayout,
+								1, 1, &primitive.descriptor,
+								0, nullptr);
+
+		vkCmdDrawMeshTasksEXT(cmd, primitive.meshlet_count, 1, 1);
+	}
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "No gltf file specified." << '\n';
@@ -1097,14 +1151,10 @@ int main(int argc, char* argv[]) {
 				const VkRect2D scissor = renderingInfo.renderArea;
 				vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-				for (auto& mesh : viewer.meshes) {
-					for (auto& primitive: mesh.primitives) {
-						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipelineLayout,
-												1, 1, &primitive.descriptor,
-												0, nullptr);
-
-						vkCmdDrawMeshTasksEXT(cmd, primitive.meshlet_count, 1, 1);
-					}
+				std::size_t sceneIndex = viewer.asset.defaultScene.value_or(0);
+				auto& scene = viewer.asset.scenes[sceneIndex];
+				for (auto& node : scene.nodeIndices) {
+					viewer.drawNode(cmd, node, glm::mat4(1.0f));
 				}
 
 				vkCmdEndRendering(cmd);

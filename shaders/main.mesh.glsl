@@ -42,6 +42,10 @@ layout(set = 1, binding = 3, scalar) buffer VertexBuffer {
     Vertex vertices[];
 };
 
+layout(push_constant) uniform PushConstants {
+    mat4 modelMatrix;
+};
+
 // Fragment input
 layout (location = 0) out Outputs {
     vec4 color;
@@ -84,7 +88,7 @@ void main() {
         uint vertexIndex = vertexIndices[meshlet.vertexOffset + vidx];
         vec4 vertex = vertices[vertexIndex].position;
 
-        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * vertex;
+        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * modelMatrix * vertex;
 
         // TODO: Assign actual vertex colors.
         outp[vidx].color = vec4(meshletcolors[gl_WorkGroupID.x % MAX_COLORS], 1.0f); // vec3(vidx / maxVertices);

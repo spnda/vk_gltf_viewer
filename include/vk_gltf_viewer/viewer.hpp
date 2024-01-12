@@ -62,6 +62,10 @@ struct CameraMovement {
 	bool firstMouse = false;
 };
 
+struct MeshPushConstants {
+	glm::mat4 modelMatrix;
+};
+
 struct Vertex {
 	glm::vec4 position;
 };
@@ -181,4 +185,7 @@ struct Viewer {
     void buildMeshPipeline();
 
     void createFrameData();
+
+	void drawNode(VkCommandBuffer cmd, std::size_t nodeIndex, glm::mat4 matrix);
+	void drawMesh(VkCommandBuffer cmd, std::size_t meshIndex, glm::mat4 matrix);
 };
