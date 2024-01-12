@@ -71,6 +71,20 @@ struct Vertex {
 };
 
 struct Primitive {
+	// TODO: Switch these to VkDeviceSize/uint64_t
+	std::uint32_t descOffset;
+	std::uint32_t vertexIndicesOffset;
+	std::uint32_t triangleIndicesOffset;
+	std::uint32_t verticesOffset;
+
+	std::size_t meshlet_count;
+};
+
+struct Mesh {
+	std::vector<Primitive> primitives;
+};
+
+struct MeshBuffers {
 	VkBuffer descHandle = VK_NULL_HANDLE;
 	VmaAllocation descAllocation = VK_NULL_HANDLE;
 
@@ -83,13 +97,7 @@ struct Primitive {
 	VkBuffer verticesHandle = VK_NULL_HANDLE;
 	VmaAllocation verticesAllocation = VK_NULL_HANDLE;
 
-	std::size_t meshlet_count;
-
 	VkDescriptorSet descriptor = VK_NULL_HANDLE;
-};
-
-struct Mesh {
-	std::vector<Primitive> primitives;
 };
 
 struct Viewer {
@@ -136,6 +144,7 @@ struct Viewer {
 	// The mesh data required for rendering the meshlets
 	VkDescriptorSetLayout meshletSetLayout = VK_NULL_HANDLE;
 	std::vector<Mesh> meshes;
+	MeshBuffers globalMeshBuffers;
 
     // This is the same paradigm as used by vkguide.dev. This makes sure every object
     // is properly destroyed in reverse-order to creation.
@@ -166,7 +175,7 @@ struct Viewer {
     }
 
 	void loadGltf(std::string_view file);
-	void uploadMeshlets(Primitive& primitive, std::vector<meshopt_Meshlet>& meshlets,
+	void uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 						std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 						std::vector<Vertex>& vertices);
 	/** Takes glTF meshes and uploads them to the GPU */

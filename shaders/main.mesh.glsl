@@ -2,6 +2,8 @@
 #extension GL_EXT_mesh_shader : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
 const uint maxVertices = 64;
 const uint maxPrimitives = 126;
@@ -44,6 +46,10 @@ layout(set = 1, binding = 3, scalar) buffer VertexBuffer {
 
 layout(push_constant) uniform PushConstants {
     mat4 modelMatrix;
+    uint descOffset;
+    uint vertexIndicesOffset;
+    uint triangleIndicesOffset;
+    uint verticesOffset;
 };
 
 // Fragment input
@@ -66,7 +72,7 @@ vec3 meshletcolors[MAX_COLORS] = {
 };
 
 void main() {
-    Meshlet meshlet = meshlets[gl_WorkGroupID.x];
+    Meshlet meshlet = meshlets[descOffset + gl_WorkGroupID.x];
 
     // This defines the array size of gl_MeshVerticesEXT
     if (gl_LocalInvocationID.x == 0) {
@@ -85,8 +91,8 @@ void main() {
         // Lowering the workgroup size will reduce this over-computation.
         vidx = min(vidx, meshlet.vertexCount - 1);
 
-        uint vertexIndex = vertexIndices[meshlet.vertexOffset + vidx];
-        vec4 vertex = vertices[vertexIndex].position;
+        uint vertexIndex = vertexIndices[vertexIndicesOffset + meshlet.vertexOffset + vidx];
+        vec4 vertex = vertices[verticesOffset + vertexIndex].position;
 
         gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * modelMatrix * vertex;
 
@@ -100,9 +106,9 @@ void main() {
 
         pidx = min(pidx, meshlet.triangleCount - 1);
 
-        uvec3 indices = uvec3(primitiveIndices[meshlet.triangleOffset + pidx * 3 + 0],
-                              primitiveIndices[meshlet.triangleOffset + pidx * 3 + 1],
-                              primitiveIndices[meshlet.triangleOffset + pidx * 3 + 2]);
+        uvec3 indices = uvec3(primitiveIndices[triangleIndicesOffset + meshlet.triangleOffset + pidx * 3 + 0],
+                              primitiveIndices[triangleIndicesOffset + meshlet.triangleOffset + pidx * 3 + 1],
+                              primitiveIndices[triangleIndicesOffset + meshlet.triangleOffset + pidx * 3 + 2]);
 
         gl_PrimitiveTriangleIndicesEXT[pidx] = indices;
     }

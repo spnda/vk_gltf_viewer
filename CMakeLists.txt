@@ -23,7 +23,7 @@ if (NOT GLSLANG_EXECUTABLE)
     message(FATAL_ERROR "Failed to find glslangValidator executable required for compiling shaders")
 endif()
 
-message("Found glslangValidator: ${GLSLANG_EXECUTABLE}")
+message(STATUS "Found glslangValidator: ${GLSLANG_EXECUTABLE}")
 
 # Get a list of all GLSL shaders in the shaders directory and generate CMake targets for them
 # This piece of code is largely copied/refactored from my shader_processor project.

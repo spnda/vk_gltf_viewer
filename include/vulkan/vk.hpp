@@ -20,7 +20,7 @@
 // volk.h already does a correct setup of all Vulkan headers.
 #define VULKAN_H_ 1
 
-#include <vulkan/vk_fmt.hpp>
+#include <vulkan/fmt.hpp>
 
 class vulkan_error : public std::runtime_error {
 	VkResult result;

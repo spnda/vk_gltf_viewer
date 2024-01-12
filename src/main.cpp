@@ -12,6 +12,7 @@
 #include <vulkan/vma.hpp>
 
 #include <vulkan/pipeline_builder.hpp>
+#include <vulkan/debug_utils.hpp>
 
 #define GLFW_INCLUDE_VULKAN
 #include <glfw/glfw3.h>
@@ -424,7 +425,7 @@ void Viewer::buildMeshPipeline() {
 	const VkPushConstantRange pushConstantRange {
 		.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
 		.offset = 0,
-		.size = sizeof(MeshPushConstants),
+		.size = sizeof(MeshPushConstants) + sizeof(VkDeviceSize) * 4,
 	};
 
     const VkPipelineLayoutCreateInfo layoutCreateInfo = {
@@ -590,7 +591,6 @@ void multithreadedBase64Decoding(std::string_view encodedData, uint8_t* outputDa
     editor->taskScheduler.WaitforTask(&task);
 }
 
-
 void Viewer::loadGltf(std::string_view file) {
     const std::filesystem::path filePath(file);
 
@@ -663,8 +663,13 @@ void Viewer::loadGltfMeshes() {
 	vk::checkResult(result, "Failed to create meshlet descriptor set layout: {}");
 
 	deletionQueue.push([&]() {
-		vkDestroyDescriptorSetLayout(device, cameraSetLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, meshletSetLayout, nullptr);
 	});
+
+	std::vector<Vertex> globalVertices;
+	std::vector<meshopt_Meshlet> globalMeshlets;
+	std::vector<unsigned int> globalMeshletVertices;
+	std::vector<unsigned char> globalMeshletTriangles;
 
 	// Generate the meshes
 	for (auto& gltfMesh : asset.meshes) {
@@ -710,12 +715,29 @@ void Viewer::loadGltfMeshes() {
 				&vertices[0].position.x, vertices.size(), sizeof(decltype(vertices)::value_type),
 				maxVertices, maxTriangles, coneWeight);
 
-			uploadMeshlets(primitive, meshlets, meshlet_vertices, meshlet_triangles, vertices);
+			primitive.descOffset = globalMeshlets.size();
+			primitive.vertexIndicesOffset = globalMeshletVertices.size();
+			primitive.triangleIndicesOffset = globalMeshletTriangles.size();
+			primitive.verticesOffset = globalVertices.size();
+
+			// Trim the buffers
+			const auto& lastMeshlet = meshlets[primitive.meshlet_count - 1];
+			meshlet_vertices.resize(lastMeshlet.vertex_count + lastMeshlet.vertex_offset);
+			meshlet_triangles.resize(((lastMeshlet.triangle_count * 3 + 3) & ~3) + lastMeshlet.triangle_offset);
+			meshlets.resize(primitive.meshlet_count);
+
+			// Append the data to the end of the global buffers.
+			globalVertices.insert(globalVertices.end(), vertices.begin(), vertices.end());
+			globalMeshlets.insert(globalMeshlets.end(), meshlets.begin(), meshlets.end());
+			globalMeshletVertices.insert(globalMeshletVertices.end(), meshlet_vertices.begin(), meshlet_vertices.end());
+			globalMeshletTriangles.insert(globalMeshletTriangles.end(), meshlet_triangles.begin(), meshlet_triangles.end());
 		}
 	}
+
+	uploadMeshlets(globalMeshlets, globalMeshletVertices, globalMeshletTriangles, globalVertices);
 }
 
-void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& meshlets,
+void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 							std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 							std::vector<Vertex>& vertices) {
 	{
@@ -731,10 +753,11 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &primitive.descHandle, &primitive.descAllocation, VK_NULL_HANDLE);
+									  &globalMeshBuffers.descHandle, &globalMeshBuffers.descAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate meshlet description buffer: {}");
+		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, "Meshlet descriptions");
 
-		vk::ScopedMap<meshopt_Meshlet> map(allocator, primitive.descAllocation);
+		vk::ScopedMap<meshopt_Meshlet> map(allocator, globalMeshBuffers.descAllocation);
 		auto* descriptions = map.get();
 		std::memcpy(descriptions, meshlets.data(), meshlets.size() * sizeof(meshopt_Meshlet));
 	}
@@ -751,10 +774,11 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &primitive.vertexIndiciesHandle, &primitive.vertexIndiciesAllocation, VK_NULL_HANDLE);
+									  &globalMeshBuffers.vertexIndiciesHandle, &globalMeshBuffers.vertexIndiciesAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate vertex index buffer: {}");
+		vk::setDebugUtilsName(device, globalMeshBuffers.vertexIndiciesHandle, "Meshlet vertex indices");
 
-		vk::ScopedMap<unsigned int> map(allocator, primitive.vertexIndiciesAllocation);
+		vk::ScopedMap<unsigned int> map(allocator, globalMeshBuffers.vertexIndiciesAllocation);
 		auto* vertexIndices = map.get();
 		std::memcpy(vertexIndices, meshletVertices.data(), meshletVertices.size() * sizeof(unsigned int));
 	}
@@ -771,10 +795,11 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &primitive.triangleIndicesHandle, &primitive.triangleIndicesAllocation, VK_NULL_HANDLE);
+									  &globalMeshBuffers.triangleIndicesHandle, &globalMeshBuffers.triangleIndicesAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
+		vk::setDebugUtilsName(device, globalMeshBuffers.triangleIndicesHandle, "Meshlet triangle indices");
 
-		vk::ScopedMap<unsigned char> map(allocator, primitive.triangleIndicesAllocation);
+		vk::ScopedMap<unsigned char> map(allocator, globalMeshBuffers.triangleIndicesAllocation);
 		auto* triangleIndices = map.get();
 		std::memcpy(triangleIndices, meshletTriangles.data(), meshletTriangles.size() * sizeof(unsigned char));
 	}
@@ -791,13 +816,21 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &primitive.verticesHandle, &primitive.verticesAllocation, VK_NULL_HANDLE);
-		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
+									  &globalMeshBuffers.verticesHandle, &globalMeshBuffers.verticesAllocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate vertex buffer: {}");
+		vk::setDebugUtilsName(device, globalMeshBuffers.verticesHandle, "Meshlet vertices");
 
-		vk::ScopedMap<Vertex> map(allocator, primitive.verticesAllocation);
+		vk::ScopedMap<Vertex> map(allocator, globalMeshBuffers.verticesAllocation);
 		auto* vertexBuffer = map.get();
 		std::memcpy(vertexBuffer, vertices.data(), vertices.size() * sizeof(Vertex));
 	}
+
+	deletionQueue.push([&]() {
+		vmaDestroyBuffer(allocator, globalMeshBuffers.verticesHandle, globalMeshBuffers.verticesAllocation);
+		vmaDestroyBuffer(allocator, globalMeshBuffers.triangleIndicesHandle, globalMeshBuffers.triangleIndicesAllocation);
+		vmaDestroyBuffer(allocator, globalMeshBuffers.vertexIndiciesHandle, globalMeshBuffers.vertexIndiciesAllocation);
+		vmaDestroyBuffer(allocator, globalMeshBuffers.descHandle, globalMeshBuffers.descAllocation);
+	});
 
 	// Allocate the primitive descriptor set
 	const VkDescriptorSetAllocateInfo allocateInfo {
@@ -808,28 +841,28 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 	};
 
 	// Allocate the sets. We copy each member of the sets vector in the loop below.
-	auto result = vkAllocateDescriptorSets(device, &allocateInfo, &primitive.descriptor);
-	vk::checkResult(result, "Failed to allocate primitive descriptor set: {}");
+	auto result = vkAllocateDescriptorSets(device, &allocateInfo, &globalMeshBuffers.descriptor);
+	vk::checkResult(result, "Failed to allocate mesh buffers descriptor set: {}");
 
 	// Update the descriptor with the buffer handles
 	std::array<VkDescriptorBufferInfo, 4> descriptorBufferInfos {{
 		{
-			.buffer = primitive.descHandle,
+			.buffer = globalMeshBuffers.descHandle,
 			.offset = 0,
 			.range = VK_WHOLE_SIZE,
 		},
 		{
-			.buffer = primitive.vertexIndiciesHandle,
+			.buffer = globalMeshBuffers.vertexIndiciesHandle,
 			.offset = 0,
 			.range = VK_WHOLE_SIZE,
 		},
 		{
-			.buffer = primitive.triangleIndicesHandle,
+			.buffer = globalMeshBuffers.triangleIndicesHandle,
 			.offset = 0,
 			.range = VK_WHOLE_SIZE,
 		},
 		{
-			.buffer = primitive.verticesHandle,
+			.buffer = globalMeshBuffers.verticesHandle,
 			.offset = 0,
 			.range = VK_WHOLE_SIZE,
 		},
@@ -837,7 +870,7 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 	std::array<VkWriteDescriptorSet, 4> descriptorWrites {{
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = primitive.descriptor,
+			.dstSet = globalMeshBuffers.descriptor,
 			.dstBinding = 0,
 			.dstArrayElement = 0,
 			.descriptorCount = 1,
@@ -846,7 +879,7 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 		},
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = primitive.descriptor,
+			.dstSet = globalMeshBuffers.descriptor,
 			.dstBinding = 1,
 			.dstArrayElement = 0,
 			.descriptorCount = 1,
@@ -855,7 +888,7 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 		},
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = primitive.descriptor,
+			.dstSet = globalMeshBuffers.descriptor,
 			.dstBinding = 2,
 			.dstArrayElement = 0,
 			.descriptorCount = 1,
@@ -864,7 +897,7 @@ void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& 
 		},
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = primitive.descriptor,
+			.dstSet = globalMeshBuffers.descriptor,
 			.dstBinding = 3,
 			.dstArrayElement = 0,
 			.descriptorCount = 1,
@@ -915,9 +948,9 @@ void Viewer::drawMesh(VkCommandBuffer cmd, std::size_t meshIndex, glm::mat4 matr
 		vkCmdPushConstants(cmd, meshPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT,
 						   0, sizeof(MeshPushConstants), &matrix);
 
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipelineLayout,
-								1, 1, &primitive.descriptor,
-								0, nullptr);
+		// TODO: This abuses that the first four fields of Primitive are what we want to copy.
+		vkCmdPushConstants(cmd, meshPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT,
+						   sizeof(MeshPushConstants), sizeof(VkDeviceSize) * 4, &primitive);
 
 		vkCmdDrawMeshTasksEXT(cmd, primitive.meshlet_count, 1, 1);
 	}
@@ -957,7 +990,7 @@ int main(int argc, char* argv[]) {
         viewer.window = glfwCreateWindow(
                 static_cast<int>(static_cast<float>(videoMode->width) * 0.9f),
                 static_cast<int>(static_cast<float>(videoMode->height) * 0.9f),
-                "vk_viewer", nullptr, nullptr);
+                "vk_viewer", mainMonitor, nullptr);
 
         if (viewer.window == nullptr) {
             throw std::runtime_error("Failed to create window");
@@ -1138,6 +1171,11 @@ int main(int argc, char* argv[]) {
 										0, 1, &viewer.cameraBuffers[currentFrame].cameraSet,
 										0, nullptr);
 
+				// Bind the global mesh buffers
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipelineLayout,
+										1, 1, &viewer.globalMeshBuffers.descriptor,
+										0, nullptr);
+
 				const VkViewport viewport = {
 					.x = 0.0F,
 					.y = 0.0F,
@@ -1238,6 +1276,9 @@ int main(int argc, char* argv[]) {
     // with this paradigm is quite hard.
     viewer.swapchain.destroy_image_views(viewer.swapchainImageViews);
     vkb::destroy_swapchain(viewer.swapchain);
+	vkDestroyImageView(viewer.device, viewer.depthImageView, VK_NULL_HANDLE);
+	vmaDestroyImage(viewer.allocator, viewer.depthImage, viewer.depthImageAllocation);
+
     viewer.flushObjects();
     glfwDestroyWindow(viewer.window);
     glfwTerminate();
