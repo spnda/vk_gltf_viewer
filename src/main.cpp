@@ -64,7 +64,7 @@ void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
 	offset *= 0.1f;
 
 	movement.yaw   += offset.x;
-	movement.pitch -= offset.y; // This has to be negative for Vulkan because of flipped viewport.
+	movement.pitch += offset.y;
 	movement.pitch = glm::clamp(movement.pitch, -89.0f, 89.0f);
 
 	auto& direction = movement.direction;
@@ -251,6 +251,50 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
     auto imageViewResult = swapchain.get_image_views();
     checkResult(imageViewResult);
     swapchainImageViews = std::move(imageViewResult.value());
+
+	if (depthImage != VK_NULL_HANDLE) {
+		vkDestroyImageView(device, depthImageView, VK_NULL_HANDLE);
+		vmaDestroyImage(allocator, depthImage, depthImageAllocation);
+	}
+
+	const VmaAllocationCreateInfo allocationInfo {
+		.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+	};
+	const VkImageCreateInfo imageInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_D16_UNORM,
+		.extent = {
+			.width = width,
+			.height = height,
+			.depth = 1,
+		},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+	};
+	auto result = vmaCreateImage(allocator, &imageInfo, &allocationInfo, &depthImage, &depthImageAllocation, VK_NULL_HANDLE);
+	vk::checkResult(result, "Failed to create depth image: {}");
+
+	const VkImageViewCreateInfo imageViewInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = depthImage,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = imageInfo.format,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		}
+	};
+	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &depthImageView);
+	vk::checkResult(result, "Failed to create depth image view: {}");
 }
 
 void Viewer::createDescriptorPool() {
@@ -396,10 +440,12 @@ void Viewer::buildMeshPipeline() {
 
     // Build the mesh pipeline
     const auto colorAttachmentFormat = swapchain.image_format;
+	const auto depthAttachmentFormat = VK_FORMAT_D16_UNORM;
     const VkPipelineRenderingCreateInfo renderingCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .colorAttachmentCount = 1,
             .pColorAttachmentFormats = &colorAttachmentFormat,
+			.depthAttachmentFormat = depthAttachmentFormat,
     };
 
     const VkPipelineColorBlendAttachmentState blendAttachment = {
@@ -415,7 +461,7 @@ void Viewer::buildMeshPipeline() {
         .addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
         .setBlendAttachment(0, &blendAttachment)
         .setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-        .setDepthState(0, VK_FALSE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL)
+        .setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
         .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
         .setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
         .setScissorCount(0, 1U)
@@ -945,6 +991,8 @@ int main(int argc, char* argv[]) {
 														 static_cast<float>(viewer.swapchain.extent.width) / static_cast<float>(viewer.swapchain.extent.height),
 														 0.01f, 1000.0f);
 
+				// Invert the Y-Axis to use the same coordinate system as glTF.
+				projectionMatrix[1][1] *= -1;
 				camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 			}
 
@@ -999,13 +1047,22 @@ int main(int argc, char* argv[]) {
 				};
 				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 
-				const VkRenderingAttachmentInfo swapchainAttachment = {
+				const VkRenderingAttachmentInfo swapchainAttachment {
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 					.imageView = viewer.swapchainImageViews[swapchainImageIndex],
 					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 					.resolveMode = VK_RESOLVE_MODE_NONE,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+				};
+				const VkRenderingAttachmentInfo depthAttachment {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = viewer.depthImageView,
+					.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+					.resolveMode = VK_RESOLVE_MODE_NONE,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {1.0f, 0.0f},
 				};
 				const VkRenderingInfo renderingInfo {
 					.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -1016,6 +1073,7 @@ int main(int argc, char* argv[]) {
 					.layerCount = 1,
 					.colorAttachmentCount = 1,
 					.pColorAttachments = &swapchainAttachment,
+					.pDepthAttachment = &depthAttachment,
 				};
 				vkCmdBeginRendering(cmd, &renderingInfo);
 

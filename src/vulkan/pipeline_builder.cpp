@@ -198,6 +198,7 @@ vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setDepthState(std::uin
             .depthTestEnable = depthTestEnable,
             .depthWriteEnable = depthWriteEnable,
             .depthCompareOp = depthCompareOp,
+			.depthBoundsTestEnable = VK_FALSE,
             .stencilTestEnable = VK_FALSE, // TODO: Expose.
             .minDepthBounds = 0.0f,
             .maxDepthBounds = 1.0f,

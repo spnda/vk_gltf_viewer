@@ -108,6 +108,10 @@ struct Viewer {
     std::vector<VkImageView> swapchainImageViews;
     bool swapchainNeedsRebuild = false;
 
+	VkImage depthImage = VK_NULL_HANDLE;
+	VmaAllocation depthImageAllocation = VK_NULL_HANDLE;
+	VkImageView depthImageView = VK_NULL_HANDLE;
+
     std::vector<FrameSyncData> frameSyncData;
     std::vector<FrameCommandPools> frameCommandPools;
 
@@ -166,6 +170,8 @@ struct Viewer {
 
     void setupVulkanInstance();
     void setupVulkanDevice();
+
+	/** Rebuilds the swapchain after a resize, including other screen targets such as the depth texture */
     void rebuildSwapchain(std::uint32_t width, std::uint32_t height);
 
 	void createDescriptorPool();
