@@ -7,6 +7,23 @@
 
 #include <glm/mat4x4.hpp>
 
+template <typename T>
+requires requires (T t) {
+	{ t > t } -> std::same_as<bool>;
+}
+[[nodiscard]] constexpr T max(T a, T b) noexcept {
+	return (a > b) ? a : b;
+}
+
+template <typename T>
+requires requires (T t) {
+	{ t < t } -> std::same_as<bool>;
+}
+[[nodiscard]] constexpr T min(T a, T b) noexcept {
+	return (a < b) ? a : b;
+}
+
+
 struct FrameSyncData {
     VkSemaphore imageAvailable;
     VkSemaphore renderingFinished;
@@ -45,6 +62,32 @@ struct CameraMovement {
 	bool firstMouse = false;
 };
 
+struct Vertex {
+	glm::vec4 position;
+};
+
+struct Primitive {
+	VkBuffer descHandle = VK_NULL_HANDLE;
+	VmaAllocation descAllocation = VK_NULL_HANDLE;
+
+	VkBuffer vertexIndiciesHandle = VK_NULL_HANDLE;
+	VmaAllocation vertexIndiciesAllocation = VK_NULL_HANDLE;
+
+	VkBuffer triangleIndicesHandle = VK_NULL_HANDLE;
+	VmaAllocation triangleIndicesAllocation = VK_NULL_HANDLE;
+
+	VkBuffer verticesHandle = VK_NULL_HANDLE;
+	VmaAllocation verticesAllocation = VK_NULL_HANDLE;
+
+	std::size_t meshlet_count;
+
+	VkDescriptorSet descriptor = VK_NULL_HANDLE;
+};
+
+struct Mesh {
+	std::vector<Primitive> primitives;
+};
+
 struct Viewer {
     enki::TaskScheduler taskScheduler;
 
@@ -73,14 +116,18 @@ struct Viewer {
 	float deltaTime = 0.0f;
 	CameraMovement movement;
 
-	VkDescriptorPool descriptorPool;
-	VkDescriptorSetLayout cameraSetLayout;
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+	VkDescriptorSetLayout cameraSetLayout = VK_NULL_HANDLE;
 
     VkPipelineLayout meshPipelineLayout = VK_NULL_HANDLE;
     VkPipeline meshPipeline = VK_NULL_HANDLE;
 
     fastgltf::Asset asset {};
     std::vector<std::shared_ptr<FileLoadTask>> fileLoadTasks;
+
+	// The mesh data required for rendering the meshlets
+	VkDescriptorSetLayout meshletSetLayout = VK_NULL_HANDLE;
+	std::vector<Mesh> meshes;
 
     // This is the same paradigm as used by vkguide.dev. This makes sure every object
     // is properly destroyed in reverse-order to creation.
@@ -109,6 +156,13 @@ struct Viewer {
         vkDeviceWaitIdle(device);
         deletionQueue.flush();
     }
+
+	void loadGltf(std::string_view file);
+	void uploadMeshlets(Primitive& primitive, std::vector<meshopt_Meshlet>& meshlets,
+						std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
+						std::vector<Vertex>& vertices);
+	/** Takes glTF meshes and uploads them to the GPU */
+	void loadGltfMeshes();
 
     void setupVulkanInstance();
     void setupVulkanDevice();

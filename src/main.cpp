@@ -22,6 +22,10 @@
 #include <fastgltf/base64.hpp>
 #include <fastgltf/types.hpp>
 #include <fastgltf/parser.hpp>
+#include <fastgltf/glm_element_traits.hpp>
+#include <fastgltf/tools.hpp>
+
+#include <meshoptimizer.h>
 
 #include <vk_gltf_viewer/viewer.hpp>
 
@@ -148,6 +152,7 @@ void Viewer::setupVulkanInstance() {
 void Viewer::setupVulkanDevice() {
     VkPhysicalDeviceVulkan12Features vulkan12Features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		.storageBuffer8BitAccess = VK_TRUE,
         .bufferDeviceAddress = VK_TRUE,
     };
 
@@ -249,21 +254,22 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 }
 
 void Viewer::createDescriptorPool() {
-	// TODO: Update this according to the actual data passed to the shader. Currently this is
-	//       1 uniform and 1 storage buffer, but that might change.
+	auto& limits = device.physical_device.properties.limits;
+
+	// TODO: Do we want to always just use the *mega* descriptor pool?
 	std::array<VkDescriptorPoolSize, 2> sizes = {{
 		{
 			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
+			.descriptorCount = min(1048576U, limits.maxDescriptorSetUniformBuffers),
 		},
 		{
 			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.descriptorCount = 1,
+			.descriptorCount = min(1048576U, limits.maxDescriptorSetStorageBuffers),
 		}
 	}};
 	const VkDescriptorPoolCreateInfo poolCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-		.maxSets = frameOverlap,
+		.maxSets = 50, // TODO ?
 		.poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
 		.pPoolSizes = sizes.data(),
 	};
@@ -314,13 +320,14 @@ void Viewer::buildCameraDescriptor() {
 	vk::checkResult(result, "Failed to allocate camera descriptor set: {}");
 
 	// Generate descriptor writes to update the descriptor
-	std::vector<VkWriteDescriptorSet> descriptorWrites;
-	descriptorWrites.reserve(frameOverlap);
+	std::array<VkDescriptorBufferInfo, frameOverlap> bufferInfos {};
+	std::array<VkWriteDescriptorSet, frameOverlap> descriptorWrites {};
 	cameraBuffers.resize(frameOverlap);
+
+	std::size_t i = 0;
 	for (auto& cameraBuffer : cameraBuffers) {
 		// Copy the created camera sets into the every cameraBuffer structs.
-		// Small hack to use descriptorWrites.size() here but it represents the same index.
-		cameraBuffer.cameraSet = sets[descriptorWrites.size()];
+		cameraBuffer.cameraSet = sets[i];
 
 		// Create the camera buffers
 		const VmaAllocationCreateInfo allocationCreateInfo {
@@ -347,6 +354,8 @@ void Viewer::buildCameraDescriptor() {
 			.offset = 0,
 			.range = VK_WHOLE_SIZE,
 		};
+		bufferInfos[i] = bufferInfo;
+
 		const VkWriteDescriptorSet descriptorWrite = {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.dstSet = cameraBuffer.cameraSet,
@@ -354,9 +363,10 @@ void Viewer::buildCameraDescriptor() {
 			.dstArrayElement = 0,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.pBufferInfo = &bufferInfo,
+			.pBufferInfo = &bufferInfos[i],
 		};
-		descriptorWrites.emplace_back(descriptorWrite);
+		descriptorWrites[i] = descriptorWrite;
+		++i;
 	}
 
 	// Update the descriptors
@@ -366,7 +376,7 @@ void Viewer::buildCameraDescriptor() {
 
 void Viewer::buildMeshPipeline() {
     // Build the mesh pipeline layout
-    std::array<VkDescriptorSetLayout, 1> layouts = {{ cameraSetLayout }};
+    std::array<VkDescriptorSetLayout, 2> layouts = {{ cameraSetLayout, meshletSetLayout }};
     const VkPipelineLayoutCreateInfo layoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
@@ -529,7 +539,7 @@ void multithreadedBase64Decoding(std::string_view encodedData, uint8_t* outputDa
 }
 
 
-void loadGltf(Viewer& viewer, std::string_view file) {
+void Viewer::loadGltf(std::string_view file) {
     const std::filesystem::path filePath(file);
 
     fastgltf::GltfDataBuffer fileBuffer;
@@ -538,22 +548,279 @@ void loadGltf(Viewer& viewer, std::string_view file) {
     }
 
     fastgltf::Parser parser(fastgltf::Extensions::KHR_mesh_quantization);
-    parser.setUserPointer(&viewer);
+    parser.setUserPointer(this);
     parser.setBase64DecodeCallback(multithreadedBase64Decoding);
 
-    auto asset = parser.loadGltf(&fileBuffer, filePath.parent_path());
-    if (asset.error() != fastgltf::Error::None) {
-        auto message = fastgltf::getErrorMessage(asset.error());
+	// TODO: Extract buffer/image loading into async functions in the future
+	static constexpr auto gltfOptions = fastgltf::Options::LoadGLBBuffers | fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
+
+    auto expected = parser.loadGltf(&fileBuffer, filePath.parent_path(), gltfOptions);
+    if (expected.error() != fastgltf::Error::None) {
+        auto message = fastgltf::getErrorMessage(expected.error());
         throw std::runtime_error(std::string("Failed to load glTF") + std::string(message));
     }
 
-    viewer.asset = std::move(asset.get());
+    asset = std::move(expected.get());
 
     // We'll always do additional validation
-    if (auto validation = fastgltf::validate(viewer.asset); validation != fastgltf::Error::None) {
-        auto message = fastgltf::getErrorMessage(asset.error());
+    if (auto validation = fastgltf::validate(asset); validation != fastgltf::Error::None) {
+        auto message = fastgltf::getErrorMessage(validation);
         throw std::runtime_error(std::string("Asset failed validation") + std::string(message));
     }
+}
+
+void Viewer::loadGltfMeshes() {
+	// The meshlet descriptor layout
+	std::array<VkDescriptorSetLayoutBinding, 4> layoutBindings = {{
+		// Meshlet descriptions
+		{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		},
+		// Vertex indices
+		{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		},
+		// Primitive indices
+		{
+			.binding = 2,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		},
+		// Vertices
+		{
+			.binding = 3,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		}
+	}};
+	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = static_cast<std::uint32_t>(layoutBindings.size()),
+		.pBindings = layoutBindings.data(),
+	};
+	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
+											  VK_NULL_HANDLE, &meshletSetLayout);
+	vk::checkResult(result, "Failed to create meshlet descriptor set layout: {}");
+
+	deletionQueue.push([&]() {
+		vkDestroyDescriptorSetLayout(device, cameraSetLayout, nullptr);
+	});
+
+	// Generate the meshes
+	for (auto& gltfMesh : asset.meshes) {
+		auto& mesh = meshes.emplace_back();
+
+		for (auto& gltfPrimitive : gltfMesh.primitives) {
+			if (!gltfPrimitive.indicesAccessor.has_value()) {
+				throw std::runtime_error("Every primitive should have a value.");
+			}
+
+			auto* positionIt = gltfPrimitive.findAttribute("POSITION");
+			if (positionIt == gltfPrimitive.attributes.end()) {
+				throw std::runtime_error("Every primitve has a POSITION attribute.");
+			}
+
+			auto& primitive = mesh.primitives.emplace_back();
+
+			// Copy the positions and indices
+			auto& posAccessor = asset.accessors[positionIt->second];
+			std::vector<Vertex> vertices; vertices.reserve(posAccessor.count);
+			fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, posAccessor, [&](glm::vec3 val, std::size_t idx) {
+				vertices.emplace_back(glm::vec4(val, 1.0f));
+			});
+
+			auto& indicesAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
+			std::vector<std::uint32_t> indices(indicesAccessor.count);
+			fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data());
+
+			// These are the optimal values for NVIDIA. What about the others?
+			const std::size_t maxVertices = 64;
+			const std::size_t maxTriangles = 124; // NVIDIA wants 126 but meshopt only allows 124 for alignment reasons.
+			const float coneWeight = 0.0f; // We leave this as 0 because we're not using cluster cone culling.
+
+			std::size_t maxMeshlets = meshopt_buildMeshletsBound(indicesAccessor.count, maxVertices, maxTriangles);
+			std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
+			std::vector<unsigned int> meshlet_vertices(maxMeshlets * maxVertices);
+			std::vector<unsigned char> meshlet_triangles(maxMeshlets * maxTriangles * 3);
+
+			// Generate the meshlets for this primitive
+			primitive.meshlet_count = meshopt_buildMeshlets(
+				meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(),
+				indices.data(), indices.size(),
+				&vertices[0].position.x, vertices.size(), sizeof(decltype(vertices)::value_type),
+				maxVertices, maxTriangles, coneWeight);
+
+			uploadMeshlets(primitive, meshlets, meshlet_vertices, meshlet_triangles, vertices);
+		}
+	}
+}
+
+void Viewer::uploadMeshlets(Primitive &primitive, std::vector<meshopt_Meshlet>& meshlets,
+							std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
+							std::vector<Vertex>& vertices) {
+	{
+		// Create the meshlet description buffer
+		const VmaAllocationCreateInfo allocationCreateInfo {
+			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+			// We want to be able to map the memory for the memcpy
+			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		};
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = meshlets.size() * sizeof(meshopt_Meshlet),
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		};
+		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+									  &primitive.descHandle, &primitive.descAllocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate meshlet description buffer: {}");
+
+		vk::ScopedMap<meshopt_Meshlet> map(allocator, primitive.descAllocation);
+		auto* descriptions = map.get();
+		std::memcpy(descriptions, meshlets.data(), meshlets.size() * sizeof(meshopt_Meshlet));
+	}
+	{
+		// Create the vertex index buffer
+		const VmaAllocationCreateInfo allocationCreateInfo {
+			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+			// We want to be able to map the memory for the memcpy
+			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		};
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = meshletVertices.size() * sizeof(unsigned int),
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		};
+		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+									  &primitive.vertexIndiciesHandle, &primitive.vertexIndiciesAllocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate vertex index buffer: {}");
+
+		vk::ScopedMap<unsigned int> map(allocator, primitive.vertexIndiciesAllocation);
+		auto* vertexIndices = map.get();
+		std::memcpy(vertexIndices, meshletVertices.data(), meshletVertices.size() * sizeof(unsigned int));
+	}
+	{
+		// Create the meshlet description buffer
+		const VmaAllocationCreateInfo allocationCreateInfo {
+			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+			// We want to be able to map the memory for the memcpy
+			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		};
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = meshletTriangles.size() * sizeof(unsigned char),
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		};
+		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+									  &primitive.triangleIndicesHandle, &primitive.triangleIndicesAllocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
+
+		vk::ScopedMap<unsigned char> map(allocator, primitive.triangleIndicesAllocation);
+		auto* triangleIndices = map.get();
+		std::memcpy(triangleIndices, meshletTriangles.data(), meshletTriangles.size() * sizeof(unsigned char));
+	}
+	{
+		// Create the vertex buffer
+		const VmaAllocationCreateInfo allocationCreateInfo {
+			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+			// We want to be able to map the memory for the memcpy
+			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		};
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = vertices.size() * sizeof(Vertex),
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		};
+		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+									  &primitive.verticesHandle, &primitive.verticesAllocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
+
+		vk::ScopedMap<Vertex> map(allocator, primitive.verticesAllocation);
+		auto* vertexBuffer = map.get();
+		std::memcpy(vertexBuffer, vertices.data(), vertices.size() * sizeof(Vertex));
+	}
+
+	// Allocate the primitive descriptor set
+	const VkDescriptorSetAllocateInfo allocateInfo {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = descriptorPool,
+		.descriptorSetCount = 1U,
+		.pSetLayouts = &meshletSetLayout,
+	};
+
+	// Allocate the sets. We copy each member of the sets vector in the loop below.
+	auto result = vkAllocateDescriptorSets(device, &allocateInfo, &primitive.descriptor);
+	vk::checkResult(result, "Failed to allocate primitive descriptor set: {}");
+
+	// Update the descriptor with the buffer handles
+	std::array<VkDescriptorBufferInfo, 4> descriptorBufferInfos {{
+		{
+			.buffer = primitive.descHandle,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE,
+		},
+		{
+			.buffer = primitive.vertexIndiciesHandle,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE,
+		},
+		{
+			.buffer = primitive.triangleIndicesHandle,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE,
+		},
+		{
+			.buffer = primitive.verticesHandle,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE,
+		},
+	}};
+	std::array<VkWriteDescriptorSet, 4> descriptorWrites {{
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = primitive.descriptor,
+			.dstBinding = 0,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo = &descriptorBufferInfos[0],
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = primitive.descriptor,
+			.dstBinding = 1,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo = &descriptorBufferInfos[1],
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = primitive.descriptor,
+			.dstBinding = 2,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo = &descriptorBufferInfos[2],
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = primitive.descriptor,
+			.dstBinding = 3,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo = &descriptorBufferInfos[3],
+		}
+	}};
+	vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }
 
 int main(int argc, char* argv[]) {
@@ -569,13 +836,13 @@ int main(int argc, char* argv[]) {
     glfwSetErrorCallback(glfwErrorCallback);
 
     try {
-        // Initialize GLFW
+		// Load the glTF asset
+		viewer.loadGltf(gltfFile);
+
+		// Initialize GLFW
         if (glfwInit() != GLFW_TRUE) {
             throw std::runtime_error("Failed to initialize glfw");
         }
-
-        // Load the glTF asset
-        loadGltf(viewer, gltfFile);
 
         // Setup the Vulkan instance
         viewer.setupVulkanInstance();
@@ -615,11 +882,19 @@ int main(int argc, char* argv[]) {
         // Create the Vulkan device
         viewer.setupVulkanDevice();
 
+		// Create the MEGA descriptor pool
+		viewer.createDescriptorPool();
+
+		// Build the camera descriptors and buffers
+		viewer.buildCameraDescriptor();
+
+		// This also creates the descriptor layout required for the pipeline creation later.
+		viewer.loadGltfMeshes();
+
         // Create the swapchain
         viewer.rebuildSwapchain(videoMode->width, videoMode->height);
 
-		viewer.createDescriptorPool();
-		viewer.buildCameraDescriptor();
+		// Build the mesh pipeline
         viewer.buildMeshPipeline();
 
         // Creates the required fences and semaphores for frame sync
@@ -764,7 +1039,15 @@ int main(int argc, char* argv[]) {
 				const VkRect2D scissor = renderingInfo.renderArea;
 				vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-				vkCmdDrawMeshTasksEXT(cmd, 1, 1, 1);
+				for (auto& mesh : viewer.meshes) {
+					for (auto& primitive: mesh.primitives) {
+						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipelineLayout,
+												1, 1, &primitive.descriptor,
+												0, nullptr);
+
+						vkCmdDrawMeshTasksEXT(cmd, primitive.meshlet_count, 1, 1);
+					}
+				}
 
 				vkCmdEndRendering(cmd);
             }

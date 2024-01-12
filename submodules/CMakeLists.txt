@@ -92,3 +92,7 @@ if (EXISTS "${VKV_DEPS_DIR}/tracy")
     target_include_directories(tracy_client SYSTEM PUBLIC "${VKV_DEPS_DIR}/tracy/public")
     target_link_libraries(tracy_client PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 endif()
+
+if (EXISTS "${VKV_DEPS_DIR}/meshoptimizer")
+    add_subdirectory("${VKV_DEPS_DIR}/meshoptimizer")
+endif()
