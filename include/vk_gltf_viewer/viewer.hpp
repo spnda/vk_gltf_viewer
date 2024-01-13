@@ -7,23 +7,6 @@
 
 #include <glm/mat4x4.hpp>
 
-template <typename T>
-requires requires (T t) {
-	{ t > t } -> std::same_as<bool>;
-}
-[[nodiscard]] constexpr T max(T a, T b) noexcept {
-	return (a > b) ? a : b;
-}
-
-template <typename T>
-requires requires (T t) {
-	{ t < t } -> std::same_as<bool>;
-}
-[[nodiscard]] constexpr T min(T a, T b) noexcept {
-	return (a < b) ? a : b;
-}
-
-
 struct FrameSyncData {
     VkSemaphore imageAvailable;
     VkSemaphore renderingFinished;
@@ -175,6 +158,8 @@ struct Viewer {
     }
 
 	void loadGltf(std::string_view file);
+
+	/** This function uploads a buffer to DEVICE_LOCAL memory on the GPU using a staging buffer. */
 	void uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 						std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 						std::vector<Vertex>& vertices);

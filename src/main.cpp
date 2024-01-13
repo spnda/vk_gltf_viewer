@@ -28,7 +28,9 @@
 
 #include <meshoptimizer.h>
 
+#include <vk_gltf_viewer/util.hpp>
 #include <vk_gltf_viewer/viewer.hpp>
+#include <vk_gltf_viewer/buffer_uploader.hpp>
 
 struct Viewer;
 
@@ -224,13 +226,18 @@ void Viewer::setupVulkanDevice() {
 	});
 
 	// Get the queues
-    auto graphicsQueue = device.get_queue(vkb::QueueType::graphics);
-    checkResult(graphicsQueue);
-    this->graphicsQueue = graphicsQueue.value();
+    auto graphicsQueueRes = device.get_queue(vkb::QueueType::graphics);
+    checkResult(graphicsQueueRes);
+    graphicsQueue = graphicsQueueRes.value();
 
-    auto transferQueue = device.get_dedicated_queue(vkb::QueueType::transfer);
-    checkResult(transferQueue);
-    this->transferQueue = transferQueue.value();
+	auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
+	checkResult(transferQueueIndexRes);
+	vkGetDeviceQueue(device, transferQueueIndexRes.value(), 0, &transferQueue);
+
+	BufferUploader::getInstance().init(device, allocator, transferQueue, transferQueueIndexRes.value());
+	deletionQueue.push([&]() {
+		BufferUploader::getInstance().destroy();
+	});
 }
 
 void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
@@ -264,7 +271,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 	const VkImageCreateInfo imageInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_D16_UNORM,
+		.format = VK_FORMAT_D32_SFLOAT,
 		.extent = {
 			.width = width,
 			.height = height,
@@ -447,7 +454,7 @@ void Viewer::buildMeshPipeline() {
 
     // Build the mesh pipeline
     const auto colorAttachmentFormat = swapchain.image_format;
-	const auto depthAttachmentFormat = VK_FORMAT_D16_UNORM;
+	const auto depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     const VkPipelineRenderingCreateInfo renderingCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .colorAttachmentCount = 1,
@@ -743,86 +750,74 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 	{
 		// Create the meshlet description buffer
 		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			// We want to be able to map the memory for the memcpy
-			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = meshlets.size() * sizeof(meshopt_Meshlet),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 									  &globalMeshBuffers.descHandle, &globalMeshBuffers.descAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate meshlet description buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, "Meshlet descriptions");
 
-		vk::ScopedMap<meshopt_Meshlet> map(allocator, globalMeshBuffers.descAllocation);
-		auto* descriptions = map.get();
-		std::memcpy(descriptions, meshlets.data(), meshlets.size() * sizeof(meshopt_Meshlet));
+		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{meshlets.begin(), meshlets.end()}),
+					   globalMeshBuffers.descHandle, globalMeshBuffers.descAllocation);
 	}
 	{
 		// Create the vertex index buffer
 		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			// We want to be able to map the memory for the memcpy
-			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = meshletVertices.size() * sizeof(unsigned int),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 									  &globalMeshBuffers.vertexIndiciesHandle, &globalMeshBuffers.vertexIndiciesAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate vertex index buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.vertexIndiciesHandle, "Meshlet vertex indices");
 
-		vk::ScopedMap<unsigned int> map(allocator, globalMeshBuffers.vertexIndiciesAllocation);
-		auto* vertexIndices = map.get();
-		std::memcpy(vertexIndices, meshletVertices.data(), meshletVertices.size() * sizeof(unsigned int));
+		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{meshletVertices.begin(), meshletVertices.end()}),
+					   globalMeshBuffers.vertexIndiciesHandle, globalMeshBuffers.vertexIndiciesAllocation);
 	}
 	{
 		// Create the meshlet description buffer
 		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			// We want to be able to map the memory for the memcpy
-			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = meshletTriangles.size() * sizeof(unsigned char),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 									  &globalMeshBuffers.triangleIndicesHandle, &globalMeshBuffers.triangleIndicesAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.triangleIndicesHandle, "Meshlet triangle indices");
 
-		vk::ScopedMap<unsigned char> map(allocator, globalMeshBuffers.triangleIndicesAllocation);
-		auto* triangleIndices = map.get();
-		std::memcpy(triangleIndices, meshletTriangles.data(), meshletTriangles.size() * sizeof(unsigned char));
+		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{meshletTriangles.begin(), meshletTriangles.end()}),
+					   globalMeshBuffers.triangleIndicesHandle, globalMeshBuffers.triangleIndicesAllocation);
 	}
 	{
 		// Create the vertex buffer
 		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			// We want to be able to map the memory for the memcpy
-			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = vertices.size() * sizeof(Vertex),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		};
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 									  &globalMeshBuffers.verticesHandle, &globalMeshBuffers.verticesAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate vertex buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.verticesHandle, "Meshlet vertices");
 
-		vk::ScopedMap<Vertex> map(allocator, globalMeshBuffers.verticesAllocation);
-		auto* vertexBuffer = map.get();
-		std::memcpy(vertexBuffer, vertices.data(), vertices.size() * sizeof(Vertex));
+		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{vertices.begin(), vertices.end()}),
+					   globalMeshBuffers.verticesHandle, globalMeshBuffers.verticesAllocation);
 	}
 
 	deletionQueue.push([&]() {
@@ -990,7 +985,7 @@ int main(int argc, char* argv[]) {
         viewer.window = glfwCreateWindow(
                 static_cast<int>(static_cast<float>(videoMode->width) * 0.9f),
                 static_cast<int>(static_cast<float>(videoMode->height) * 0.9f),
-                "vk_viewer", mainMonitor, nullptr);
+                "vk_viewer", nullptr, nullptr);
 
         if (viewer.window == nullptr) {
             throw std::runtime_error("Failed to create window");
@@ -1228,7 +1223,7 @@ int main(int argc, char* argv[]) {
 
             // Submit the command buffer
             const VkPipelineStageFlags submitWaitStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-            VkSubmitInfo submitInfo {
+			const VkSubmitInfo submitInfo {
 				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 				.waitSemaphoreCount = 1,
 				.pWaitSemaphores = &frameSyncData.imageAvailable,
@@ -1244,7 +1239,7 @@ int main(int argc, char* argv[]) {
             }
 
             // Present the rendered image
-            VkPresentInfoKHR presentInfo {
+			const VkPresentInfoKHR presentInfo {
 				.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 				.waitSemaphoreCount = 1,
 				.pWaitSemaphores = &frameSyncData.renderingFinished,
