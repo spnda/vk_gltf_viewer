@@ -18,3 +18,8 @@ requires requires (T t) {
 [[nodiscard]] constexpr T min(T a, T b) noexcept {
 	return (a < b) ? a : b;
 }
+
+template <typename T>
+[[nodiscard]] constexpr T alignDown(T base, T alignment) {
+	return base - (base % alignment);
+}

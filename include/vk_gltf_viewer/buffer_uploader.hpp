@@ -1,30 +1,57 @@
 #pragma once
 
+#include <mutex>
 #include <span>
 
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
 
+#include <TaskScheduler.h>
+
+class BufferUploadTask : public enki::ITaskSet {
+	std::span<const std::byte> data;
+	VkBuffer destinationBuffer;
+
+public:
+	explicit BufferUploadTask(std::span<const std::byte> data, VkBuffer destinationBuffer);
+
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override;
+};
+
 /** Simple class that contains functions to copy any buffer into DEVICE_LOCAL memory through staging buffers */
 class BufferUploader {
-	VkDevice device;
-	VmaAllocator allocator;
+	friend class BufferUploadTask;
 
-	std::uint32_t transferQueueIndex;
-	VkQueue transferQueue;
+	VkDevice device = VK_NULL_HANDLE;
+	VmaAllocator allocator = VK_NULL_HANDLE;
 
-	VkCommandPool commandPool;
-	VkCommandBuffer commandBuffer;
-	VkFence fence;
+	struct TransferQueue {
+		VkQueue handle;
+		std::unique_ptr<std::mutex> lock; // Can't hold the object in a vector otherwise.
+	};
 
-	VkBuffer stagingBuffer;
-	VmaAllocation stagingAllocation;
+	std::uint32_t transferQueueIndex = VK_QUEUE_FAMILY_IGNORED;
+	std::vector<TransferQueue> transferQueues;
+
+	VkCommandPool commandPool = VK_NULL_HANDLE;
+	std::vector<VkCommandBuffer> commandBuffers;
+	std::vector<VkFence> fences;
+
+	struct StagingBuffer {
+		VkBuffer handle;
+		VmaAllocation allocation;
+	};
+
+	std::vector<StagingBuffer> stagingBuffers;
 
 	BufferUploader() = default;
 
-	// Any better value than this? I don't want to flood the DEVICE_LOCAL and HOST_COHERENT memory as there's other uses for it.
-	// But I also don't want tiny staging buffers, so 16MB (2^24) it is for now?
-	static constexpr std::size_t maxStagingBufferSize = 16777216;
+	std::size_t stagingBufferSize = 0;
+
+	TransferQueue& getNextQueueHandle() {
+		static std::size_t idx = 0;
+		return transferQueues[idx++ % transferQueues.size()];
+	}
 
 public:
 	static BufferUploader& getInstance() {
@@ -32,8 +59,12 @@ public:
 		return uploader;
 	}
 
-	bool init(VkDevice device, VmaAllocator allocator, VkQueue transferQueue, std::uint32_t transferQueueIndex);
+	[[nodiscard]] std::size_t getStagingBufferSize() const {
+		return stagingBufferSize;
+	}
+
+	bool init(VkDevice device, VmaAllocator allocator, std::uint32_t transferQueueIndex);
 	void destroy();
 
-	bool uploadToBuffer(std::span<const std::byte> data, VkBuffer buffer, VmaAllocation allocation);
+	[[nodiscard]] std::unique_ptr<BufferUploadTask> uploadToBuffer(std::span<const std::byte> data, VkBuffer buffer, enki::TaskScheduler& taskScheduler);
 };

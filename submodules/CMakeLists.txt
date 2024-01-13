@@ -91,6 +91,11 @@ if (EXISTS "${VKV_DEPS_DIR}/tracy")
     target_compile_features(tracy_client PUBLIC cxx_std_11)
     target_include_directories(tracy_client SYSTEM PUBLIC "${VKV_DEPS_DIR}/tracy/public")
     target_link_libraries(tracy_client PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+
+    # Tracy only cares if the macro is defined, not its value. Use PUBLIC to propagate the value.
+    if (TRACY_ENABLE)
+        target_compile_definitions(tracy_client PUBLIC "TRACY_ENABLE=1")
+    endif()
 endif()
 
 if (EXISTS "${VKV_DEPS_DIR}/meshoptimizer")

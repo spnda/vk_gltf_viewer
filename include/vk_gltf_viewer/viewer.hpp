@@ -90,11 +90,7 @@ struct Viewer {
     vkb::Device device;
 	VmaAllocator allocator = VK_NULL_HANDLE;
 
-    //using queue_type = std::pair<std::uint32_t, VkQueue>;
-    //queue_type graphicsQueue;
-    //queue_type transferQueue;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
-    VkQueue transferQueue = VK_NULL_HANDLE;
 
     GLFWwindow* window = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;

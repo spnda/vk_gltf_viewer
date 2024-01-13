@@ -7,6 +7,8 @@
 
 #include "stb_image.h"
 
+#include <tracy/Tracy.hpp>
+
 #include <vulkan/vk.hpp>
 #include <VkBootstrap.h>
 #include <vulkan/vma.hpp>
@@ -118,6 +120,7 @@ void checkResult(vkb::Result<T> result) noexcept(false) {
 }
 
 void Viewer::setupVulkanInstance() {
+	ZoneScoped;
     if (auto result = volkInitialize(); result != VK_SUCCESS) {
         throw vulkan_error("No compatible Vulkan loader or driver found.", result);
     }
@@ -153,6 +156,7 @@ void Viewer::setupVulkanInstance() {
 }
 
 void Viewer::setupVulkanDevice() {
+	ZoneScoped;
     VkPhysicalDeviceVulkan12Features vulkan12Features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.storageBuffer8BitAccess = VK_TRUE,
@@ -232,15 +236,15 @@ void Viewer::setupVulkanDevice() {
 
 	auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
 	checkResult(transferQueueIndexRes);
-	vkGetDeviceQueue(device, transferQueueIndexRes.value(), 0, &transferQueue);
 
-	BufferUploader::getInstance().init(device, allocator, transferQueue, transferQueueIndexRes.value());
+	BufferUploader::getInstance().init(device, allocator, transferQueueIndexRes.value());
 	deletionQueue.push([&]() {
 		BufferUploader::getInstance().destroy();
 	});
 }
 
 void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
+	ZoneScoped;
     vkb::SwapchainBuilder swapchainBuilder(device);
     auto swapchainResult = swapchainBuilder
             .set_old_swapchain(swapchain)
@@ -306,6 +310,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 }
 
 void Viewer::createDescriptorPool() {
+	ZoneScoped;
 	auto& limits = device.physical_device.properties.limits;
 
 	// TODO: Do we want to always just use the *mega* descriptor pool?
@@ -334,6 +339,7 @@ void Viewer::createDescriptorPool() {
 }
 
 void Viewer::buildCameraDescriptor() {
+	ZoneScoped;
 	// The camera descriptor layout
 	std::array<VkDescriptorSetLayoutBinding, 1> layoutBindings = {{
 		{
@@ -427,6 +433,7 @@ void Viewer::buildCameraDescriptor() {
 }
 
 void Viewer::buildMeshPipeline() {
+	ZoneScoped;
     // Build the mesh pipeline layout
     std::array<VkDescriptorSetLayout, 2> layouts = {{ cameraSetLayout, meshletSetLayout }};
 	const VkPushConstantRange pushConstantRange {
@@ -499,6 +506,7 @@ void Viewer::buildMeshPipeline() {
 }
 
 void Viewer::createFrameData() {
+	ZoneScoped;
     frameSyncData.resize(frameOverlap);
     for (auto& frame : frameSyncData) {
         VkSemaphoreCreateInfo semaphoreCreateInfo = {};
@@ -577,6 +585,7 @@ public:
 // input buffer into smaller chunks that can be worked on by multiple threads.
 void multithreadedBase64Decoding(std::string_view encodedData, uint8_t* outputData,
                                  std::size_t padding, std::size_t outputSize, void* userPointer) {
+	ZoneScoped;
     assert(fastgltf::base64::getOutputSize(encodedData.size(), padding) <= outputSize);
     assert(userPointer != nullptr);
     assert(encodedData.size() % 4 == 0);
@@ -599,6 +608,7 @@ void multithreadedBase64Decoding(std::string_view encodedData, uint8_t* outputDa
 }
 
 void Viewer::loadGltf(std::string_view file) {
+	ZoneScoped;
     const std::filesystem::path filePath(file);
 
     fastgltf::GltfDataBuffer fileBuffer;
@@ -629,6 +639,7 @@ void Viewer::loadGltf(std::string_view file) {
 }
 
 void Viewer::loadGltfMeshes() {
+	ZoneScoped;
 	// The meshlet descriptor layout
 	std::array<VkDescriptorSetLayoutBinding, 4> layoutBindings = {{
 		// Meshlet descriptions
@@ -747,6 +758,8 @@ void Viewer::loadGltfMeshes() {
 void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 							std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 							std::vector<Vertex>& vertices) {
+	ZoneScoped;
+	std::vector<std::unique_ptr<BufferUploadTask>> uploadTasks;
 	{
 		// Create the meshlet description buffer
 		const VmaAllocationCreateInfo allocationCreateInfo {
@@ -762,8 +775,10 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 		vk::checkResult(result, "Failed to allocate meshlet description buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, "Meshlet descriptions");
 
-		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{meshlets.begin(), meshlets.end()}),
-					   globalMeshBuffers.descHandle, globalMeshBuffers.descAllocation);
+		auto task = BufferUploader::getInstance().uploadToBuffer(
+			std::as_bytes(std::span{meshlets.begin(), meshlets.end()}),
+			globalMeshBuffers.descHandle, taskScheduler);
+		uploadTasks.emplace_back(std::move(task));
 	}
 	{
 		// Create the vertex index buffer
@@ -780,8 +795,10 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 		vk::checkResult(result, "Failed to allocate vertex index buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.vertexIndiciesHandle, "Meshlet vertex indices");
 
-		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{meshletVertices.begin(), meshletVertices.end()}),
-					   globalMeshBuffers.vertexIndiciesHandle, globalMeshBuffers.vertexIndiciesAllocation);
+		auto task = BufferUploader::getInstance().uploadToBuffer(
+			std::as_bytes(std::span{meshletVertices.begin(), meshletVertices.end()}),
+			globalMeshBuffers.vertexIndiciesHandle, taskScheduler);
+		uploadTasks.emplace_back(std::move(task));
 	}
 	{
 		// Create the meshlet description buffer
@@ -798,8 +815,10 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.triangleIndicesHandle, "Meshlet triangle indices");
 
-		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{meshletTriangles.begin(), meshletTriangles.end()}),
-					   globalMeshBuffers.triangleIndicesHandle, globalMeshBuffers.triangleIndicesAllocation);
+		auto task = BufferUploader::getInstance().uploadToBuffer(
+			std::as_bytes(std::span{meshletTriangles.begin(), meshletTriangles.end()}),
+			globalMeshBuffers.triangleIndicesHandle, taskScheduler);
+		uploadTasks.emplace_back(std::move(task));
 	}
 	{
 		// Create the vertex buffer
@@ -816,8 +835,10 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 		vk::checkResult(result, "Failed to allocate vertex buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.verticesHandle, "Meshlet vertices");
 
-		BufferUploader::getInstance().uploadToBuffer(std::as_bytes(std::span{vertices.begin(), vertices.end()}),
-					   globalMeshBuffers.verticesHandle, globalMeshBuffers.verticesAllocation);
+		auto task = BufferUploader::getInstance().uploadToBuffer(
+			std::as_bytes(std::span{vertices.begin(), vertices.end()}),
+			globalMeshBuffers.verticesHandle, taskScheduler);
+		uploadTasks.emplace_back(std::move(task));
 	}
 
 	deletionQueue.push([&]() {
@@ -901,6 +922,10 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 		}
 	}};
 	vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+
+	for (auto& task : uploadTasks) {
+		taskScheduler.WaitforTask(task.get());
+	}
 }
 
 #include <glm/gtc/type_ptr.hpp>
@@ -1041,6 +1066,8 @@ int main(int argc, char* argv[]) {
                 glfwWaitEvents();
                 continue;
             }
+
+			FrameMarkStart("frame");
 
 			auto currentTime = static_cast<float>(glfwGetTime());
 			viewer.deltaTime = currentTime - viewer.lastFrame;
@@ -1255,6 +1282,8 @@ int main(int argc, char* argv[]) {
             if (presentResult != VK_SUCCESS) {
                 throw vulkan_error("Failed to present to queue", presentResult);
             }
+
+			FrameMarkEnd("frame");
         }
     } catch (const vulkan_error& error) {
         std::cerr << error.what() << ": " << error.what_result() << '\n';
