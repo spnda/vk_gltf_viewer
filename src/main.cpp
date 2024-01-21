@@ -157,9 +157,19 @@ void Viewer::setupVulkanInstance() {
 
 void Viewer::setupVulkanDevice() {
 	ZoneScoped;
-    VkPhysicalDeviceVulkan12Features vulkan12Features = {
+	VkPhysicalDeviceFeatures vulkan10features {
+		.multiDrawIndirect = VK_TRUE,
+	};
+
+	VkPhysicalDeviceVulkan11Features vulkan11Features {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		.shaderDrawParameters = VK_TRUE,
+	};
+
+    VkPhysicalDeviceVulkan12Features vulkan12Features {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.storageBuffer8BitAccess = VK_TRUE,
+		.scalarBlockLayout = VK_TRUE,
         .bufferDeviceAddress = VK_TRUE,
     };
 
@@ -181,6 +191,8 @@ void Viewer::setupVulkanDevice() {
     auto selectionResult = selector
             .set_surface(surface)
             .set_minimum_version(1, 3) // We want Vulkan 1.3.
+			.set_required_features(vulkan10features)
+			.set_required_features_11(vulkan11Features)
             .set_required_features_12(vulkan12Features)
             .set_required_features_13(vulkan13Features)
             .add_required_extension(VK_EXT_MESH_SHADER_EXTENSION_NAME)
@@ -357,6 +369,7 @@ void Viewer::buildCameraDescriptor() {
 	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
 											  VK_NULL_HANDLE, &cameraSetLayout);
 	vk::checkResult(result, "Failed to create camera descriptor set layout: {}");
+	vk::setDebugUtilsName(device, cameraSetLayout, "Camera descriptor layout");
 
 	deletionQueue.push([&]() {
 		vkDestroyDescriptorSetLayout(device, cameraSetLayout, nullptr);
@@ -382,8 +395,7 @@ void Viewer::buildCameraDescriptor() {
 	std::array<VkWriteDescriptorSet, frameOverlap> descriptorWrites {};
 	cameraBuffers.resize(frameOverlap);
 
-	std::size_t i = 0;
-	for (auto& cameraBuffer : cameraBuffers) {
+	for (std::size_t i = 0; auto& cameraBuffer : cameraBuffers) {
 		// Copy the created camera sets into the every cameraBuffer structs.
 		cameraBuffer.cameraSet = sets[i];
 
@@ -436,18 +448,11 @@ void Viewer::buildMeshPipeline() {
 	ZoneScoped;
     // Build the mesh pipeline layout
     std::array<VkDescriptorSetLayout, 2> layouts = {{ cameraSetLayout, meshletSetLayout }};
-	const VkPushConstantRange pushConstantRange {
-		.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
-		.offset = 0,
-		.size = sizeof(MeshPushConstants) + sizeof(VkDeviceSize) * 4,
-	};
-
     const VkPipelineLayoutCreateInfo layoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
         .pSetLayouts = layouts.data(),
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &pushConstantRange,
+        .pushConstantRangeCount = 0,
     };
     auto result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &meshPipelineLayout);
     if (result != VK_SUCCESS) {
@@ -483,7 +488,7 @@ void Viewer::buildMeshPipeline() {
         .setBlendAttachment(0, &blendAttachment)
         .setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
         .setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
-        .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
+        .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
         .setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
         .setScissorCount(0, 1U)
         .setViewportCount(0, 1U)
@@ -512,21 +517,19 @@ void Viewer::createFrameData() {
         VkSemaphoreCreateInfo semaphoreCreateInfo = {};
         semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         auto semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.imageAvailable);
-        if (semaphoreResult != VK_SUCCESS) {
-            throw vulkan_error("Failed to create image semaphore", semaphoreResult);
-        }
+		vk::checkResult(semaphoreResult, "Failed to create image semaphore");
+		vk::setDebugUtilsName(device, frame.imageAvailable, "Image acquire semaphore");
+
         semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.renderingFinished);
-        if (semaphoreResult != VK_SUCCESS) {
-            throw vulkan_error("Failed to create rendering semaphore", semaphoreResult);
-        }
+		vk::checkResult(semaphoreResult, "Failed to create rendering semaphore");
+		vk::setDebugUtilsName(device, frame.renderingFinished, "Rendering finished semaphore");
 
         VkFenceCreateInfo fenceCreateInfo = {};
         fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         auto fenceResult = vkCreateFence(device, &fenceCreateInfo, nullptr, &frame.presentFinished);
-        if (fenceResult != VK_SUCCESS) {
-            throw vulkan_error("Failed to create present fence", fenceResult);
-        }
+		vk::checkResult(fenceResult, "Failed to create present fence");
+		vk::setDebugUtilsName(device, frame.presentFinished, "Present fence");
 
         deletionQueue.push([&]() {
             vkDestroyFence(device, frame.presentFinished, nullptr);
@@ -542,9 +545,7 @@ void Viewer::createFrameData() {
         // commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         commandPoolInfo.queueFamilyIndex = 0;
         auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &frame.pool);
-        if (createResult != VK_SUCCESS) {
-            throw vulkan_error("Failed to create command pool", createResult);
-        }
+		vk::checkResult(createResult, "Failed to create frame command pool");
 
         VkCommandBufferAllocateInfo allocateInfo = {};
         allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -553,9 +554,7 @@ void Viewer::createFrameData() {
         allocateInfo.commandBufferCount = 1;
         frame.commandBuffers.resize(1);
         auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, frame.commandBuffers.data());
-        if (allocateResult != VK_SUCCESS) {
-            throw vulkan_error("Failed to allocate command buffers", allocateResult);
-        }
+		vk::checkResult(allocateResult, "Failed to allocate frame command buffers");
         deletionQueue.push([&]() {
             vkDestroyCommandPool(device, frame.pool, nullptr);
         });
@@ -641,7 +640,7 @@ void Viewer::loadGltf(std::string_view file) {
 void Viewer::loadGltfMeshes() {
 	ZoneScoped;
 	// The meshlet descriptor layout
-	std::array<VkDescriptorSetLayoutBinding, 4> layoutBindings = {{
+	std::array<VkDescriptorSetLayoutBinding, 5> layoutBindings = {{
 		// Meshlet descriptions
 		{
 			.binding = 0,
@@ -669,6 +668,13 @@ void Viewer::loadGltfMeshes() {
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
 			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		},
+		// The (indirect) draw commands
+		{
+			.binding = 4,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
 		}
 	}};
 	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo = {
@@ -679,6 +685,7 @@ void Viewer::loadGltfMeshes() {
 	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
 											  VK_NULL_HANDLE, &meshletSetLayout);
 	vk::checkResult(result, "Failed to create meshlet descriptor set layout: {}");
+	vk::setDebugUtilsName(device, cameraSetLayout, "Mesh shader pipeline descriptor layout");
 
 	deletionQueue.push([&]() {
 		vkDestroyDescriptorSetLayout(device, meshletSetLayout, nullptr);
@@ -693,6 +700,8 @@ void Viewer::loadGltfMeshes() {
 	for (auto& gltfMesh : asset.meshes) {
 		auto& mesh = meshes.emplace_back();
 
+		// We need this as we require pointer-stability for the generate task.
+		mesh.primitives.reserve(gltfMesh.primitives.size());
 		for (auto& gltfPrimitive : gltfMesh.primitives) {
 			if (!gltfPrimitive.indicesAccessor.has_value()) {
 				throw std::runtime_error("Every primitive should have a value.");
@@ -700,7 +709,7 @@ void Viewer::loadGltfMeshes() {
 
 			auto* positionIt = gltfPrimitive.findAttribute("POSITION");
 			if (positionIt == gltfPrimitive.attributes.end()) {
-				throw std::runtime_error("Every primitve has a POSITION attribute.");
+				throw std::runtime_error("Every primitive has a POSITION attribute.");
 			}
 
 			auto& primitive = mesh.primitives.emplace_back();
@@ -755,6 +764,19 @@ void Viewer::loadGltfMeshes() {
 	uploadMeshlets(globalMeshlets, globalMeshletVertices, globalMeshletTriangles, globalVertices);
 }
 
+VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer, VmaAllocation *allocation) noexcept {
+	const VmaAllocationCreateInfo allocationCreateInfo {
+		.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+	};
+	const VkBufferCreateInfo bufferCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = byteSize,
+		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	};
+	return vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+						   buffer, allocation, VK_NULL_HANDLE);
+}
+
 void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 							std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 							std::vector<Vertex>& vertices) {
@@ -762,16 +784,8 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 	std::vector<std::unique_ptr<BufferUploadTask>> uploadTasks;
 	{
 		// Create the meshlet description buffer
-		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
-		};
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = meshlets.size() * sizeof(meshopt_Meshlet),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		};
-		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &globalMeshBuffers.descHandle, &globalMeshBuffers.descAllocation, VK_NULL_HANDLE);
+		auto result = createGpuTransferBuffer(meshlets.size() * sizeof(std::remove_reference_t<decltype(meshlets)>::value_type),
+											  &globalMeshBuffers.descHandle, &globalMeshBuffers.descAllocation);
 		vk::checkResult(result, "Failed to allocate meshlet description buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, "Meshlet descriptions");
 
@@ -782,16 +796,8 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 	}
 	{
 		// Create the vertex index buffer
-		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
-		};
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = meshletVertices.size() * sizeof(unsigned int),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		};
-		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &globalMeshBuffers.vertexIndiciesHandle, &globalMeshBuffers.vertexIndiciesAllocation, VK_NULL_HANDLE);
+		auto result = createGpuTransferBuffer(meshletVertices.size() * sizeof(std::remove_reference_t<decltype(meshletVertices)>::value_type),
+											  &globalMeshBuffers.vertexIndiciesHandle, &globalMeshBuffers.vertexIndiciesAllocation);
 		vk::checkResult(result, "Failed to allocate vertex index buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.vertexIndiciesHandle, "Meshlet vertex indices");
 
@@ -802,16 +808,8 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 	}
 	{
 		// Create the meshlet description buffer
-		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
-		};
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = meshletTriangles.size() * sizeof(unsigned char),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		};
-		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &globalMeshBuffers.triangleIndicesHandle, &globalMeshBuffers.triangleIndicesAllocation, VK_NULL_HANDLE);
+		auto result = createGpuTransferBuffer(meshletTriangles.size() * sizeof(std::remove_reference_t<decltype(meshletTriangles)>::value_type),
+											  &globalMeshBuffers.triangleIndicesHandle, &globalMeshBuffers.triangleIndicesAllocation);
 		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.triangleIndicesHandle, "Meshlet triangle indices");
 
@@ -822,16 +820,8 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 	}
 	{
 		// Create the vertex buffer
-		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
-		};
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = vertices.size() * sizeof(Vertex),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		};
-		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-									  &globalMeshBuffers.verticesHandle, &globalMeshBuffers.verticesAllocation, VK_NULL_HANDLE);
+		auto result = createGpuTransferBuffer(vertices.size() * sizeof(std::remove_reference_t<decltype(vertices)>::value_type),
+											  &globalMeshBuffers.verticesHandle, &globalMeshBuffers.verticesAllocation);
 		vk::checkResult(result, "Failed to allocate vertex buffer: {}");
 		vk::setDebugUtilsName(device, globalMeshBuffers.verticesHandle, "Meshlet vertices");
 
@@ -849,79 +839,85 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 	});
 
 	// Allocate the primitive descriptor set
+	std::array<VkDescriptorSetLayout, frameOverlap> setLayouts {};
+	std::fill(setLayouts.begin(), setLayouts.end(), meshletSetLayout);
 	const VkDescriptorSetAllocateInfo allocateInfo {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.descriptorPool = descriptorPool,
-		.descriptorSetCount = 1U,
-		.pSetLayouts = &meshletSetLayout,
+		.descriptorSetCount = static_cast<std::uint32_t>(setLayouts.size()),
+		.pSetLayouts = setLayouts.data(),
 	};
 
 	// Allocate the sets. We copy each member of the sets vector in the loop below.
-	auto result = vkAllocateDescriptorSets(device, &allocateInfo, &globalMeshBuffers.descriptor);
+	globalMeshBuffers.descriptors.resize(allocateInfo.descriptorSetCount);
+	auto result = vkAllocateDescriptorSets(device, &allocateInfo, globalMeshBuffers.descriptors.data());
 	vk::checkResult(result, "Failed to allocate mesh buffers descriptor set: {}");
 
-	// Update the descriptor with the buffer handles
-	std::array<VkDescriptorBufferInfo, 4> descriptorBufferInfos {{
-		{
-			.buffer = globalMeshBuffers.descHandle,
-			.offset = 0,
-			.range = VK_WHOLE_SIZE,
-		},
-		{
-			.buffer = globalMeshBuffers.vertexIndiciesHandle,
-			.offset = 0,
-			.range = VK_WHOLE_SIZE,
-		},
-		{
-			.buffer = globalMeshBuffers.triangleIndicesHandle,
-			.offset = 0,
-			.range = VK_WHOLE_SIZE,
-		},
-		{
-			.buffer = globalMeshBuffers.verticesHandle,
-			.offset = 0,
-			.range = VK_WHOLE_SIZE,
-		},
-	}};
-	std::array<VkWriteDescriptorSet, 4> descriptorWrites {{
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = globalMeshBuffers.descriptor,
-			.dstBinding = 0,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.pBufferInfo = &descriptorBufferInfos[0],
-		},
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = globalMeshBuffers.descriptor,
-			.dstBinding = 1,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.pBufferInfo = &descriptorBufferInfos[1],
-		},
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = globalMeshBuffers.descriptor,
-			.dstBinding = 2,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.pBufferInfo = &descriptorBufferInfos[2],
-		},
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = globalMeshBuffers.descriptor,
-			.dstBinding = 3,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.pBufferInfo = &descriptorBufferInfos[3],
-		}
-	}};
-	vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+	for (auto& descriptor : globalMeshBuffers.descriptors) {
+		// Update the descriptors with the buffer handles
+		std::array<VkDescriptorBufferInfo, 4> descriptorBufferInfos{{
+			{
+				.buffer = globalMeshBuffers.descHandle,
+				.offset = 0,
+				.range = VK_WHOLE_SIZE,
+			},
+			{
+				.buffer = globalMeshBuffers.vertexIndiciesHandle,
+				.offset = 0,
+				.range = VK_WHOLE_SIZE,
+			},
+			{
+				.buffer = globalMeshBuffers.triangleIndicesHandle,
+				.offset = 0,
+				.range = VK_WHOLE_SIZE,
+			},
+			{
+				.buffer = globalMeshBuffers.verticesHandle,
+				.offset = 0,
+				.range = VK_WHOLE_SIZE,
+			},
+		}};
+		std::array<VkWriteDescriptorSet, 4> descriptorWrites{{
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = descriptor,
+				.dstBinding = 0,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &descriptorBufferInfos[0],
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = descriptor,
+				.dstBinding = 1,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &descriptorBufferInfos[1],
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = descriptor,
+				.dstBinding = 2,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &descriptorBufferInfos[2],
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = descriptor,
+				.dstBinding = 3,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &descriptorBufferInfos[3],
+			}
+		}};
+		vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0,
+							   nullptr);
+	}
 
 	for (auto& task : uploadTasks) {
 		taskScheduler.WaitforTask(task.get());
@@ -948,7 +944,10 @@ glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
 	return base;
 }
 
-void Viewer::drawNode(VkCommandBuffer cmd, std::size_t nodeIndex, glm::mat4 matrix) {
+void Viewer::drawNode(std::vector<PrimitiveDraw>& cmd, std::size_t nodeIndex, glm::mat4 matrix) {
+	assert(asset.nodes.size() > nodeIndex);
+	ZoneScoped;
+
 	auto& node = asset.nodes[nodeIndex];
 	matrix = getTransformMatrix(node, matrix);
 
@@ -961,19 +960,116 @@ void Viewer::drawNode(VkCommandBuffer cmd, std::size_t nodeIndex, glm::mat4 matr
 	}
 }
 
-void Viewer::drawMesh(VkCommandBuffer cmd, std::size_t meshIndex, glm::mat4 matrix) {
+void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, glm::mat4 matrix) {
+	assert(meshes.size() > meshIndex);
+	ZoneScoped;
+
 	auto& mesh = meshes[meshIndex];
 
 	for (auto& primitive : mesh.primitives) {
-		vkCmdPushConstants(cmd, meshPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT,
-						   0, sizeof(MeshPushConstants), &matrix);
+		auto& draw = cmd.emplace_back();
 
-		// TODO: This abuses that the first four fields of Primitive are what we want to copy.
-		vkCmdPushConstants(cmd, meshPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT,
-						   sizeof(MeshPushConstants), sizeof(VkDeviceSize) * 4, &primitive);
-
-		vkCmdDrawMeshTasksEXT(cmd, primitive.meshlet_count, 1, 1);
+		const VkDrawMeshTasksIndirectCommandEXT indirectCommand {
+			.groupCountX = static_cast<std::uint32_t>(primitive.meshlet_count),
+			.groupCountY = 1,
+			.groupCountZ = 1,
+		};
+		draw.command = indirectCommand;
+		draw.modelMatrix = matrix;
+		draw.descOffset = primitive.descOffset;
+		draw.vertexIndicesOffset = primitive.vertexIndicesOffset;
+		draw.triangleIndicesOffset = primitive.triangleIndicesOffset;
+		draw.verticesOffset = primitive.verticesOffset;
 	}
+}
+
+void Viewer::updateDrawBuffer(std::size_t currentFrame) {
+	assert(drawBuffers.size() > currentFrame);
+	ZoneScoped;
+
+	auto& currentDrawBuffer = drawBuffers[currentFrame];
+
+	std::vector<PrimitiveDraw> draws;
+
+	std::size_t sceneIdx = asset.defaultScene.value_or(0);
+	auto& scene = asset.scenes[sceneIdx];
+	for (auto& nodeIdx : scene.nodeIndices) {
+		drawNode(draws, nodeIdx, glm::mat4(1.0f));
+	}
+
+	// TODO: This limits our primitive count to 4.2 billion. Can we set this limit somewhere else,
+	//		 or could we dispatch multiple indirect draws to remove the uint32_t limit?
+	currentDrawBuffer.drawCount = static_cast<std::uint32_t>(draws.size());
+
+	auto byteSize = currentDrawBuffer.drawCount * sizeof(decltype(draws)::value_type);
+	if (currentDrawBuffer.primitiveDrawBufferSize < byteSize) {
+		if (currentDrawBuffer.primitiveDrawHandle != VK_NULL_HANDLE) {
+			vmaDestroyBuffer(allocator, currentDrawBuffer.primitiveDrawHandle,
+							 currentDrawBuffer.primitiveDrawAllocation);
+		}
+
+		const VmaAllocationCreateInfo allocationCreateInfo {
+			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		};
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = byteSize,
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+		};
+		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+							   &currentDrawBuffer.primitiveDrawHandle, &currentDrawBuffer.primitiveDrawAllocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate indirect draw buffer: {}");
+		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, fmt::format("Indirect draw buffer {}", currentFrame));
+		currentDrawBuffer.primitiveDrawBufferSize = byteSize;
+
+		// Update the descriptor
+		const VkDescriptorBufferInfo bufferInfo {
+			.buffer = currentDrawBuffer.primitiveDrawHandle,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE,
+		};
+		const VkWriteDescriptorSet writeDescriptor {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = globalMeshBuffers.descriptors[currentFrame],
+			.dstBinding = 4,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo = &bufferInfo,
+		};
+		vkUpdateDescriptorSets(device, 1, &writeDescriptor, 0, nullptr);
+	}
+
+	vk::ScopedMap<PrimitiveDraw> map(allocator, currentDrawBuffer.primitiveDrawAllocation);
+	auto* data = map.get();
+	std::copy(draws.begin(), draws.end(), data);
+}
+
+void Viewer::updateCameraBuffer(std::size_t currentFrame) {
+	assert(cameraBuffers.size() > currentFrame);
+	ZoneScoped;
+
+	// Calculate new camera matrices, upload to GPU
+	auto& cameraBuffer = cameraBuffers[currentFrame];
+	vk::ScopedMap<Camera> map(allocator, cameraBuffer.allocation);
+	auto& camera = *map.get();
+
+	// Factor the deltaTime into the amount of acceleration
+	movement.velocity += (movement.accelerationVector * 50.0f) * deltaTime;
+	// Lerp the velocity to 0, adding deceleration.
+	movement.velocity = movement.velocity + (2.0f * deltaTime) * (-movement.velocity);
+	// Add the velocity into the position
+	movement.position += movement.velocity * deltaTime;
+	auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
+
+	auto projectionMatrix = glm::perspective(glm::radians(75.0f),
+											 static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height),
+											 0.01f, 1000.0f);
+
+	// Invert the Y-Axis to use the same coordinate system as glTF.
+	projectionMatrix[1][1] *= -1;
+	camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 }
 
 int main(int argc, char* argv[]) {
@@ -1050,6 +1146,9 @@ int main(int argc, char* argv[]) {
 		// Build the mesh pipeline
         viewer.buildMeshPipeline();
 
+		// Resize the drawBuffers vector
+		viewer.drawBuffers.resize(frameOverlap);
+
         // Creates the required fences and semaphores for frame sync
         viewer.createFrameData();
 
@@ -1081,29 +1180,11 @@ int main(int argc, char* argv[]) {
             vkWaitForFences(viewer.device, 1, &frameSyncData.presentFinished, VK_TRUE, UINT64_MAX);
             vkResetFences(viewer.device, 1, &frameSyncData.presentFinished);
 
-			// Calculate new camera matrices, upload to GPU
-			{
-				auto& cameraBuffer = viewer.cameraBuffers[currentFrame];
-				vk::ScopedMap<Camera> map(viewer.allocator, cameraBuffer.allocation);
-				auto& camera = *map.get();
+			// Update the camera matrices
+			viewer.updateCameraBuffer(currentFrame);
 
-				auto& movement = viewer.movement;
-				// Factor the deltaTime into the amount of acceleration
-				movement.velocity += (movement.accelerationVector * 50.0f) * viewer.deltaTime;
-				// Lerp the velocity to 0, adding deceleration.
-				movement.velocity = movement.velocity + (2.0f * viewer.deltaTime) * (glm::vec3(0.0f) - movement.velocity);
-				// Add the velocity into the position
-				movement.position += movement.velocity * viewer.deltaTime;
-				auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
-
-				auto projectionMatrix = glm::perspective(glm::radians(75.0f),
-														 static_cast<float>(viewer.swapchain.extent.width) / static_cast<float>(viewer.swapchain.extent.height),
-														 0.01f, 1000.0f);
-
-				// Invert the Y-Axis to use the same coordinate system as glTF.
-				projectionMatrix[1][1] *= -1;
-				camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
-			}
+			// Update the draw-list
+			viewer.updateDrawBuffer(currentFrame);
 
             // Reset the command pool
             auto& commandPool = viewer.frameCommandPools[currentFrame];
@@ -1195,7 +1276,7 @@ int main(int argc, char* argv[]) {
 
 				// Bind the global mesh buffers
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipelineLayout,
-										1, 1, &viewer.globalMeshBuffers.descriptor,
+										1, 1, &viewer.globalMeshBuffers.descriptors[currentFrame],
 										0, nullptr);
 
 				const VkViewport viewport = {
@@ -1211,11 +1292,10 @@ int main(int argc, char* argv[]) {
 				const VkRect2D scissor = renderingInfo.renderArea;
 				vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-				std::size_t sceneIndex = viewer.asset.defaultScene.value_or(0);
-				auto& scene = viewer.asset.scenes[sceneIndex];
-				for (auto& node : scene.nodeIndices) {
-					viewer.drawNode(cmd, node, glm::mat4(1.0f));
-				}
+				vkCmdDrawMeshTasksIndirectEXT(cmd,
+											  viewer.drawBuffers[currentFrame].primitiveDrawHandle, 0,
+											  viewer.drawBuffers[currentFrame].drawCount,
+											  sizeof(PrimitiveDraw));
 
 				vkCmdEndRendering(cmd);
             }
@@ -1294,6 +1374,11 @@ int main(int argc, char* argv[]) {
     vkDeviceWaitIdle(viewer.device); // Make sure everything is done
 
     viewer.taskScheduler.WaitforAll();
+
+	// Destroy the draw buffers
+	for (auto& drawBuffer : viewer.drawBuffers) {
+		vmaDestroyBuffer(viewer.allocator, drawBuffer.primitiveDrawHandle, drawBuffer.primitiveDrawAllocation);
+	}
 
     // Destroys everything. We leave this out of the try-catch block to make sure it gets executed.
     // The swapchain is the only exception, as that gets recreated within the render loop. Managing it

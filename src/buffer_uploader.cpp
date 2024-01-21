@@ -12,6 +12,7 @@ BufferUploadTask::BufferUploadTask(std::span<const std::byte> data, VkBuffer des
 }
 
 void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) {
+	assert(!BufferUploader::getInstance().stagingBuffers.empty());
 	ZoneScoped;
 	for (auto i = range.start; i < range.end; ++i) {
 		auto &uploader = BufferUploader::getInstance();
@@ -79,16 +80,16 @@ bool BufferUploader::init(VkDevice nDevice, VmaAllocator nAllocator, std::uint32
 	transferQueueIndex = nTransferQueueIndex;
 
 	transferQueues.resize(1);// TODO: Get queue count
-	for (std::size_t i = 0; i < transferQueues.size(); ++i) {
-		transferQueues[i].lock = std::make_unique<std::mutex>();
-		vkGetDeviceQueue(device, transferQueueIndex, i, &transferQueues[i].handle);
+	for (std::size_t i = 0; auto& transferQueue : transferQueues) {
+		transferQueue.lock = std::make_unique<std::mutex>();
+		vkGetDeviceQueue(device, transferQueueIndex, i++, &transferQueue.handle);
 	}
 
 	auto threadCount = std::thread::hardware_concurrency();
 
 	// Set the staging buffer size. We only want to use 80% of the DEVICE_LOCAL | HOST_VISIBLE memory.
 	// TODO: Use actual Vulkan heap size.
-	std::size_t totalSize = alignDown(static_cast<std::size_t>(224395264U * 0.9), static_cast<std::size_t>(threadCount));
+	std::size_t totalSize = alignDown(static_cast<std::size_t>(224395264U * 0.5), static_cast<std::size_t>(threadCount));
 	stagingBufferSize = totalSize / threadCount;
 
 	// Create the command pool

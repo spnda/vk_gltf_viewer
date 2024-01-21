@@ -2,3 +2,8 @@
 .vscode/*
 .vs/*
 build/
+
+# NSight stuff
+*.ngfx-proj
+*.ngfx-gputrace
+*.ngfx-gputrace.layout

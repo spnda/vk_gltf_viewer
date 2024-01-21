@@ -1,3 +1,6 @@
+#include <ranges>
+#include <vector>
+
 #include <vulkan/vk.hpp>
 #include <VkBootstrap.h>
 
@@ -54,7 +57,6 @@ struct Vertex {
 };
 
 struct Primitive {
-	// TODO: Switch these to VkDeviceSize/uint64_t
 	std::uint32_t descOffset;
 	std::uint32_t vertexIndicesOffset;
 	std::uint32_t triangleIndicesOffset;
@@ -80,7 +82,30 @@ struct MeshBuffers {
 	VkBuffer verticesHandle = VK_NULL_HANDLE;
 	VmaAllocation verticesAllocation = VK_NULL_HANDLE;
 
-	VkDescriptorSet descriptor = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> descriptors;
+};
+
+struct PrimitiveDraw {
+	VkDrawMeshTasksIndirectCommandEXT command;
+	std::uint32_t padding;
+
+	// The matrix from the glTF is technically per-mesh, but we define it for each primitive.
+	// We could optimise this slightly, but there's many models where each mesh has only one primitive.
+	glm::mat4x4 modelMatrix;
+
+	// TODO: Switch these to VkDeviceSize/uint64_t
+	std::uint32_t descOffset;
+	std::uint32_t vertexIndicesOffset;
+	std::uint32_t triangleIndicesOffset;
+	std::uint32_t verticesOffset;
+};
+
+struct FrameDrawCommandBuffers {
+	VkBuffer primitiveDrawHandle;
+	VmaAllocation primitiveDrawAllocation;
+	VkDeviceSize primitiveDrawBufferSize;
+
+	std::uint32_t drawCount;
 };
 
 struct Viewer {
@@ -121,6 +146,7 @@ struct Viewer {
     std::vector<std::shared_ptr<FileLoadTask>> fileLoadTasks;
 
 	// The mesh data required for rendering the meshlets
+	std::vector<FrameDrawCommandBuffers> drawBuffers;
 	VkDescriptorSetLayout meshletSetLayout = VK_NULL_HANDLE;
 	std::vector<Mesh> meshes;
 	MeshBuffers globalMeshBuffers;
@@ -137,9 +163,9 @@ struct Viewer {
         }
 
         void flush() {
-            for (auto it = deletors.rbegin(); it != deletors.rend(); ++it) {
-                (*it)();
-            }
+			for (auto& func : deletors | std::views::reverse) {
+				func();
+			}
             deletors.clear();
         }
     };
@@ -156,6 +182,7 @@ struct Viewer {
 	void loadGltf(std::string_view file);
 
 	/** This function uploads a buffer to DEVICE_LOCAL memory on the GPU using a staging buffer. */
+	VkResult createGpuTransferBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) noexcept;
 	void uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 						std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 						std::vector<Vertex>& vertices);
@@ -176,6 +203,10 @@ struct Viewer {
 
     void createFrameData();
 
-	void drawNode(VkCommandBuffer cmd, std::size_t nodeIndex, glm::mat4 matrix);
-	void drawMesh(VkCommandBuffer cmd, std::size_t meshIndex, glm::mat4 matrix);
+	/** Functions dedicated to updating GPU buffers at the start of every frame*/
+	void updateCameraBuffer(std::size_t currentFrame);
+	void updateDrawBuffer(std::size_t currentFrame);
+
+	void drawNode(std::vector<PrimitiveDraw>& cmd, std::size_t nodeIndex, glm::mat4 matrix);
+	void drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, glm::mat4 matrix);
 };

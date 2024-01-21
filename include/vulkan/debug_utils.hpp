@@ -6,7 +6,7 @@
 
 namespace vk {
 	template <typename T>
-	[[gnu::always_inline]] inline void setDebugUtilsName(VkDevice device, T handle, const char* string) {
+	[[gnu::always_inline]] inline void setDebugUtilsName(VkDevice device, T handle, std::string string) {
 		ZoneScoped;
 		if (vkSetDebugUtilsObjectNameEXT == nullptr || handle == nullptr) {
 			return;
@@ -30,7 +30,7 @@ namespace vk {
 			.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
 			.objectType = objectType,
 			.objectHandle = reinterpret_cast<std::uint64_t>(handle),
-			.pObjectName = string,
+			.pObjectName = string.c_str(),
 		};
 		vkSetDebugUtilsObjectNameEXT(device, &info);
 	}
