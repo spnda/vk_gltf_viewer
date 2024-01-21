@@ -12,6 +12,7 @@
 #include <vulkan/vk.hpp>
 #include <VkBootstrap.h>
 #include <vulkan/vma.hpp>
+#include <tracy/TracyVulkan.hpp>
 
 #include <vulkan/pipeline_builder.hpp>
 #include <vulkan/debug_utils.hpp>
@@ -170,6 +171,7 @@ void Viewer::setupVulkanDevice() {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.storageBuffer8BitAccess = VK_TRUE,
 		.scalarBlockLayout = VK_TRUE,
+		.hostQueryReset = VK_TRUE,
         .bufferDeviceAddress = VK_TRUE,
     };
 
@@ -196,6 +198,9 @@ void Viewer::setupVulkanDevice() {
             .set_required_features_12(vulkan12Features)
             .set_required_features_13(vulkan13Features)
             .add_required_extension(VK_EXT_MESH_SHADER_EXTENSION_NAME)
+#if TRACY_ENABLE
+			.add_required_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
+#endif
             .add_required_extension_features(meshShaderFeatures)
             .require_present()
             .require_dedicated_transfer_queue()
@@ -219,6 +224,9 @@ void Viewer::setupVulkanDevice() {
     });
 
     volkLoadDevice(device);
+
+	// Initialize the tracy context
+	tracyCtx = TracyVkContextHostCalibrated(device.physical_device, device, vkResetQueryPool, vkGetPhysicalDeviceCalibrateableTimeDomainsEXT, vkGetCalibratedTimestampsEXT);
 
 	// Create the VMA allocator
 	// Create the VMA allocator object
@@ -1210,6 +1218,8 @@ int main(int argc, char* argv[]) {
             vkBeginCommandBuffer(cmd, &beginInfo);
 
             {
+				TracyVkZone(viewer.tracyCtx, cmd, "Mesh shading");
+
 				// Transition the swapchain image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL for rendering
 				const VkImageMemoryBarrier2 swapchainAttachmentImageBarrier {
 					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1323,6 +1333,9 @@ int main(int argc, char* argv[]) {
 				.pImageMemoryBarriers = &swapchainImageBarrier,
 			};
             vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+			// Always collect at the end of the main command buffer.
+			TracyVkCollect(viewer.tracyCtx, cmd);
 
             vkEndCommandBuffer(cmd);
 

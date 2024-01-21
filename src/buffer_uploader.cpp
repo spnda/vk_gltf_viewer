@@ -36,13 +36,13 @@ void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threa
 		vkResetFences(uploader.device, 1, &fence);
 		vkResetCommandBuffer(cmd, 0);
 
-		const VkCommandBufferBeginInfo beginInfo{
+		const VkCommandBufferBeginInfo beginInfo {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 		};
 		vkBeginCommandBuffer(cmd, &beginInfo);
 
-		const VkBufferCopy region{
+		const VkBufferCopy region {
 			.srcOffset = 0,
 			.dstOffset = i * stagingBufferSize,
 			.size = sub.size_bytes(),

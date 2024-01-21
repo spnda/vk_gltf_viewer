@@ -113,6 +113,7 @@ struct Viewer {
     vkb::Instance instance;
     vkb::Device device;
 	VmaAllocator allocator = VK_NULL_HANDLE;
+	TracyVkCtx tracyCtx = nullptr;
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
 
