@@ -455,9 +455,8 @@ void Viewer::buildMeshPipeline() {
         .pushConstantRangeCount = 0,
     };
     auto result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &meshPipelineLayout);
-    if (result != VK_SUCCESS) {
-        throw vulkan_error("Failed to create mesh pipeline layout", result);
-    }
+	vk::checkResult(result, "Failed to create mesh pipeline layout");
+	vk::setDebugUtilsName(device, meshPipelineLayout, "Mesh shading pipeline layout");
 
     // Load the mesh pipeline shaders
     VkShaderModule fragModule, meshModule;
@@ -1055,8 +1054,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	vk::ScopedMap<Camera> map(allocator, cameraBuffer.allocation);
 	auto& camera = *map.get();
 
-	// Factor the deltaTime into the amount of acceleration
-	movement.velocity += (movement.accelerationVector * 50.0f) * deltaTime;
+	movement.velocity += (movement.accelerationVector * 2.0f);
 	// Lerp the velocity to 0, adding deceleration.
 	movement.velocity = movement.velocity + (2.0f * deltaTime) * (-movement.velocity);
 	// Add the velocity into the position

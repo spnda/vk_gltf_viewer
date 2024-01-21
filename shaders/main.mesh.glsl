@@ -38,7 +38,6 @@ struct VkDrawMeshTasksIndirectCommandEXT {
 struct Primitive {
     // TODO: Get rid of this here?
     VkDrawMeshTasksIndirectCommandEXT command;
-    uint padding;
 
     mat4x4 modelMatrix;
 

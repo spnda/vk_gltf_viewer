@@ -87,7 +87,6 @@ struct MeshBuffers {
 
 struct PrimitiveDraw {
 	VkDrawMeshTasksIndirectCommandEXT command;
-	std::uint32_t padding;
 
 	// The matrix from the glTF is technically per-mesh, but we define it for each primitive.
 	// We could optimise this slightly, but there's many models where each mesh has only one primitive.
