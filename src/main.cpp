@@ -22,6 +22,8 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include <fastgltf/base64.hpp>
 #include <fastgltf/types.hpp>
@@ -158,31 +160,34 @@ void Viewer::setupVulkanInstance() {
 
 void Viewer::setupVulkanDevice() {
 	ZoneScoped;
-	VkPhysicalDeviceFeatures vulkan10features {
+	const VkPhysicalDeviceFeatures vulkan10features {
 		.multiDrawIndirect = VK_TRUE,
 	};
 
-	VkPhysicalDeviceVulkan11Features vulkan11Features {
+	const VkPhysicalDeviceVulkan11Features vulkan11Features {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
 		.shaderDrawParameters = VK_TRUE,
 	};
 
-    VkPhysicalDeviceVulkan12Features vulkan12Features {
+	const VkPhysicalDeviceVulkan12Features vulkan12Features {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.storageBuffer8BitAccess = VK_TRUE,
+		.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+		.descriptorBindingPartiallyBound = VK_TRUE,
+		.runtimeDescriptorArray = VK_TRUE,
 		.scalarBlockLayout = VK_TRUE,
 		.hostQueryReset = VK_TRUE,
         .bufferDeviceAddress = VK_TRUE,
     };
 
-    VkPhysicalDeviceVulkan13Features vulkan13Features {
+	const VkPhysicalDeviceVulkan13Features vulkan13Features {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
 		.maintenance4 = VK_TRUE,
     };
 
-    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures {
+    const VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
         .meshShader = VK_TRUE,
     };
@@ -334,7 +339,7 @@ void Viewer::createDescriptorPool() {
 	auto& limits = device.physical_device.properties.limits;
 
 	// TODO: Do we want to always just use the *mega* descriptor pool?
-	std::array<VkDescriptorPoolSize, 2> sizes = {{
+	std::array<VkDescriptorPoolSize, 3> sizes = {{
 		{
 			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			.descriptorCount = min(1048576U, limits.maxDescriptorSetUniformBuffers),
@@ -342,6 +347,10 @@ void Viewer::createDescriptorPool() {
 		{
 			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = min(1048576U, limits.maxDescriptorSetStorageBuffers),
+		},
+		{
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = min(16536U, limits.maxDescriptorSetSampledImages),
 		}
 	}};
 	const VkDescriptorPoolCreateInfo poolCreateInfo = {
@@ -369,7 +378,7 @@ void Viewer::buildCameraDescriptor() {
 			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
 		},
 	}};
-	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo = {
+	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.bindingCount = static_cast<std::uint32_t>(layoutBindings.size()),
 		.pBindings = layoutBindings.data(),
@@ -396,7 +405,7 @@ void Viewer::buildCameraDescriptor() {
 	// Allocate the sets. We copy each member of the sets vector in the loop below.
 	std::vector<VkDescriptorSet> sets(frameOverlap);
 	result = vkAllocateDescriptorSets(device, &allocateInfo, sets.data());
-	vk::checkResult(result, "Failed to allocate camera descriptor set: {}");
+	vk::checkResult(result, "Failed to allocate camera descriptor sets: {}");
 
 	// Generate descriptor writes to update the descriptor
 	std::array<VkDescriptorBufferInfo, frameOverlap> bufferInfos {};
@@ -455,7 +464,7 @@ void Viewer::buildCameraDescriptor() {
 void Viewer::buildMeshPipeline() {
 	ZoneScoped;
     // Build the mesh pipeline layout
-    std::array<VkDescriptorSetLayout, 2> layouts = {{ cameraSetLayout, meshletSetLayout }};
+    std::array<VkDescriptorSetLayout, 3> layouts = {{ cameraSetLayout, meshletSetLayout, materialSetLayout }};
     const VkPipelineLayoutCreateInfo layoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
@@ -627,7 +636,7 @@ void Viewer::loadGltf(std::string_view file) {
     parser.setBase64DecodeCallback(multithreadedBase64Decoding);
 
 	// TODO: Extract buffer/image loading into async functions in the future
-	static constexpr auto gltfOptions = fastgltf::Options::LoadGLBBuffers | fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
+	static constexpr auto gltfOptions = fastgltf::Options::LoadGLBBuffers | fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages | fastgltf::Options::GenerateMeshIndices;
 
     auto expected = parser.loadGltf(&fileBuffer, filePath.parent_path(), gltfOptions);
     if (expected.error() != fastgltf::Error::None) {
@@ -720,17 +729,45 @@ void Viewer::loadGltfMeshes() {
 			}
 
 			auto& primitive = mesh.primitives.emplace_back();
+			if (gltfPrimitive.materialIndex.has_value()) {
+				primitive.materialIndex = gltfPrimitive.materialIndex.value();
+			} else {
+				primitive.materialIndex = 0;
+			}
 
 			// Copy the positions and indices
 			auto& posAccessor = asset.accessors[positionIt->second];
 			std::vector<Vertex> vertices; vertices.reserve(posAccessor.count);
-			fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, posAccessor, [&](glm::vec3 val, std::size_t idx) {
-				vertices.emplace_back(glm::vec4(val, 1.0f));
+			fastgltf::iterateAccessor<glm::vec3>(asset, posAccessor, [&](glm::vec3 val) {
+				auto& vertex = vertices.emplace_back();
+				vertex.position = glm::vec4(val, 1.0f);
+				vertex.color = glm::vec4(1.0f);
+				vertex.uv = glm::vec2(0.0f);
 			});
 
 			auto& indicesAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
 			std::vector<std::uint32_t> indices(indicesAccessor.count);
 			fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data());
+
+			if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
+				// The glTF spec allows VEC3 and VEC4 for COLOR_n, with VEC3 data having to be extended with 1.0f for the fourth component.
+				auto& colorAccessor = asset.accessors[colorAttribute->second];
+				if (colorAccessor.type == fastgltf::AccessorType::Vec4) {
+					fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, asset.accessors[colorAttribute->second], [&](glm::vec4 val, std::size_t idx) {
+						vertices[idx].color = val;
+					});
+				} else if (colorAccessor.type == fastgltf::AccessorType::Vec3) {
+					fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[colorAttribute->second], [&](glm::vec3 val, std::size_t idx) {
+						vertices[idx].color = glm::vec4(val, 1.0f);
+					});
+				}
+			}
+
+			if (auto* uvAttribute = gltfPrimitive.findAttribute("TEXCOORD_0"); uvAttribute != gltfPrimitive.attributes.end()) {
+				fastgltf::iterateAccessorWithIndex<glm::vec2>(asset, asset.accessors[uvAttribute->second], [&](glm::vec2 val, std::size_t idx) {
+					vertices[idx].uv = val;
+				});
+			}
 
 			// These are the optimal values for NVIDIA. What about the others?
 			const std::size_t maxVertices = 64;
@@ -931,8 +968,261 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 	}
 }
 
-#include <glm/gtc/type_ptr.hpp>
-#include <glm/gtx/quaternion.hpp>
+#include <stb_image.h>
+
+class ImageLoadTask : public enki::ITaskSet {
+	Viewer* viewer;
+
+public:
+	explicit ImageLoadTask(Viewer* viewer) noexcept : viewer(viewer) {
+		m_SetSize = viewer->asset.images.size();
+	}
+
+	// We'll use the range to operate over multiple images
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override {
+		ZoneScoped;
+		for (auto i = range.start; i < range.end; ++i) {
+			auto& image = viewer->asset.images[i];
+
+			uint8_t* imageData = nullptr;
+			VkExtent3D imageExtent;
+			imageExtent.depth = 1;
+			static constexpr auto channels = 4;
+
+			// Load and decode the image data using stbi from the various sources.
+			std::visit(fastgltf::visitor {
+				[](auto arg) { },
+				[&](fastgltf::sources::Vector& vector) {
+					int width = 0, height = 0, nrChannels = 0;
+					imageData = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, channels);
+					imageExtent.width = width;
+					imageExtent.height = height;
+				},
+				[&](fastgltf::sources::BufferView& view) {
+					auto& bufferView = viewer->asset.bufferViews[view.bufferViewIndex];
+					auto& buffer = viewer->asset.buffers[bufferView.bufferIndex];
+					// Yes, we've already loaded every buffer into some GL buffer. However, with GL it's simpler
+					// to just copy the buffer data again for the texture. Besides, this is just an example.
+					std::visit(fastgltf::visitor {
+						// We only care about VectorWithMime here, because we specify LoadExternalBuffers, meaning
+						// all buffers are already loaded into a vector.
+						[](auto& arg) {},
+						[&](fastgltf::sources::Vector& vector) {
+							int width = 0, height = 0, nrChannels = 0;
+							imageData = stbi_load_from_memory(vector.bytes.data() + bufferView.byteOffset, static_cast<int>(bufferView.byteLength), &width, &height, &nrChannels, channels);
+							imageExtent.width = width;
+							imageExtent.height = height;
+						}
+					}, buffer.data);
+				},
+			}, image.data);
+
+			SampledImage& sampledImage = viewer->images[i];
+
+			const VkImageCreateInfo imageInfo {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+				.imageType = VK_IMAGE_TYPE_2D,
+				.format = VK_FORMAT_R8G8B8A8_UNORM,
+				.extent = imageExtent,
+				.mipLevels = 1,
+				.arrayLayers = 1,
+				.samples = VK_SAMPLE_COUNT_1_BIT,
+				.tiling = VK_IMAGE_TILING_OPTIMAL,
+				.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+				.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			};
+			const VmaAllocationCreateInfo allocationInfo {
+				.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+				.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			};
+			vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
+						   &sampledImage.image, &sampledImage.allocation, nullptr);
+
+			// TODO: This is kinda hacky and weird, and I think this should instead be solved using task dependencies.
+			//       This also relies on the current implementation of ExecuteRange not caring about the passed range.
+			std::span<std::byte> data { reinterpret_cast<std::byte*>(imageData), imageExtent.width * imageExtent.height * sizeof(std::byte) * channels };
+			ImageUploadTask uploadTask(data, sampledImage.image, imageExtent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			uploadTask.ExecuteRange({0,1}, threadnum);
+
+			const VkImageViewCreateInfo imageViewInfo {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				.image = sampledImage.image,
+				.viewType = VK_IMAGE_VIEW_TYPE_2D,
+				.format = imageInfo.format,
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.levelCount = 1,
+					.layerCount = 1,
+				},
+			};
+			vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
+
+			stbi_image_free(imageData);
+		}
+	}
+};
+
+void Viewer::loadGltfImages() {
+	ZoneScoped;
+	// Schedule image loading first
+	images.resize(asset.images.size());
+	ImageLoadTask task(this);
+	taskScheduler.AddTaskSetToPipe(&task);
+
+	// Create the material descriptor layout
+	// TODO: We currently use a fixed size for the descriptorCount of the image samplers.
+	//       Using VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT we could change the descriptor size.
+	// TODO: We currently dont use UPDATE_AFTER_BIND, making us use either frameOverlap count of sets, or restricting
+	//       us to a fixed set of textures for rendering.
+	std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings = {{
+		{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		},
+		{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = static_cast<std::uint32_t>(asset.images.size()),
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		}
+	}};
+	std::array<VkDescriptorBindingFlags, layoutBindings.max_size()> layoutBindingFlags = {{
+		0,
+		0, // VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
+	}};
+	const VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+		.bindingCount = static_cast<std::uint32_t>(layoutBindingFlags.size()),
+		.pBindingFlags = layoutBindingFlags.data(),
+	};
+	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.pNext = &bindingFlagsInfo,
+		.bindingCount = static_cast<std::uint32_t>(layoutBindings.size()),
+		.pBindings = layoutBindings.data(),
+	};
+	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
+											  VK_NULL_HANDLE, &materialSetLayout);
+	vk::checkResult(result, "Failed to create material descriptor set layout: {}");
+	vk::setDebugUtilsName(device, materialSetLayout, "Material descriptor layout");
+	deletionQueue.push([&]() {
+		vkDestroyDescriptorSetLayout(device, materialSetLayout, nullptr);
+	});
+
+	// Allocate the material descriptor
+	const VkDescriptorSetAllocateInfo allocateInfo {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = descriptorPool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &materialSetLayout,
+	};
+	result = vkAllocateDescriptorSets(device, &allocateInfo, &materialSet);
+	vk::checkResult(result, "Failed to allocate material descriptor set: {}");
+
+	// While we're here, also load the materials
+	loadGltfMaterials();
+
+	// Create the default sampler
+	const VkSamplerCreateInfo samplerInfo {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_NEAREST,
+		.minFilter = VK_FILTER_NEAREST,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+		.maxLod = VK_LOD_CLAMP_NONE,
+	};
+	result = vkCreateSampler(device, &samplerInfo, nullptr, &defaultSampler);
+	deletionQueue.push([&]() {
+		vkDestroySampler(device, defaultSampler, nullptr);
+	});
+
+	// Finish all texture decode and upload tasks
+	taskScheduler.WaitforTask(&task);
+
+	// Update the texture descriptor
+	std::vector<VkWriteDescriptorSet> writes; writes.reserve(asset.images.size());
+	std::vector<VkDescriptorImageInfo> infos; infos.reserve(asset.images.size());
+	for (std::size_t i = 0; i < asset.images.size(); ++i) {
+		infos.emplace_back(VkDescriptorImageInfo {
+			.sampler = defaultSampler,
+			.imageView = images[i].imageView,
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		});
+
+		writes.emplace_back(VkWriteDescriptorSet {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = materialSet,
+			.dstBinding = 1,
+			.dstArrayElement = static_cast<std::uint32_t>(i),
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.pImageInfo = &infos.back(),
+		});
+	}
+	vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
+}
+
+void Viewer::loadGltfMaterials() {
+	ZoneScoped;
+	// Create the material buffer data
+	std::vector<Material> materials; materials.reserve(asset.materials.size());
+	for (auto& gltfMaterial : asset.materials) {
+		auto& mat = materials.emplace_back();
+		mat.albedoFactor = glm::make_vec4(gltfMaterial.pbrData.baseColorFactor.data());
+		if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
+			mat.albedoIndex = gltfMaterial.pbrData.baseColorTexture.value().textureIndex;
+		} else {
+			mat.albedoIndex = 0;
+		}
+		mat.alphaCutoff = gltfMaterial.alphaCutoff;
+	}
+
+	// Create the material buffer
+	const VmaAllocationCreateInfo allocationCreateInfo {
+		.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+		.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+	};
+	const VkBufferCreateInfo bufferCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = materials.size() * sizeof(decltype(materials)::value_type),
+		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	};
+	auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+								  &materialBuffer, &materialAllocation, VK_NULL_HANDLE);
+	vk::checkResult(result, "Failed to allocate material buffer");
+	vk::setDebugUtilsName(device, materialBuffer, "Material buffer");
+
+	deletionQueue.push([&]() {
+		vmaDestroyBuffer(allocator, materialBuffer, materialAllocation);
+	});
+
+	// Copy the material data to the buffer
+	{
+		vk::ScopedMap<Material> map(allocator, materialAllocation);
+		std::memcpy(map.get(), materials.data(), bufferCreateInfo.size);
+	}
+
+	// Update the material descriptor
+	const VkDescriptorBufferInfo bufferInfo {
+		.buffer = materialBuffer,
+		.offset = 0,
+		.range = VK_WHOLE_SIZE,
+	};
+	const VkWriteDescriptorSet write {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = materialSet,
+		.dstBinding = 0,
+		.dstArrayElement = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		.pBufferInfo = &bufferInfo,
+	};
+	vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+}
 
 glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
 	/** Both a matrix and TRS values are not allowed
@@ -987,6 +1277,7 @@ void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, gl
 		draw.vertexIndicesOffset = primitive.vertexIndicesOffset;
 		draw.triangleIndicesOffset = primitive.triangleIndicesOffset;
 		draw.verticesOffset = primitive.verticesOffset;
+		draw.materialIndex = primitive.materialIndex;
 	}
 }
 
@@ -1146,6 +1437,8 @@ int main(int argc, char* argv[]) {
 		// This also creates the descriptor layout required for the pipeline creation later.
 		viewer.loadGltfMeshes();
 
+		viewer.loadGltfImages();
+
         // Create the swapchain
         viewer.rebuildSwapchain(videoMode->width, videoMode->height);
 
@@ -1277,14 +1570,14 @@ int main(int argc, char* argv[]) {
 
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipeline);
 
+				std::array<VkDescriptorSet, 3> descriptorBinds {{
+					viewer.cameraBuffers[currentFrame].cameraSet, // Set 0
+					viewer.globalMeshBuffers.descriptors[currentFrame], // Set 1
+ 					viewer.materialSet, // Set 2
+				}};
 				// Bind the camera descriptor set
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipelineLayout,
-										0, 1, &viewer.cameraBuffers[currentFrame].cameraSet,
-										0, nullptr);
-
-				// Bind the global mesh buffers
-				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.meshPipelineLayout,
-										1, 1, &viewer.globalMeshBuffers.descriptors[currentFrame],
+										0, static_cast<std::uint32_t>(descriptorBinds.size()), descriptorBinds.data(),
 										0, nullptr);
 
 				const VkViewport viewport = {
@@ -1385,6 +1678,12 @@ int main(int argc, char* argv[]) {
     vkDeviceWaitIdle(viewer.device); // Make sure everything is done
 
     viewer.taskScheduler.WaitforAll();
+
+	// Destroy the images
+	for (auto& image : viewer.images) {
+		vkDestroyImageView(viewer.device, image.imageView, VK_NULL_HANDLE);
+		vmaDestroyImage(viewer.allocator, image.image, image.allocation);
+	}
 
 	// Destroy the draw buffers
 	for (auto& drawBuffer : viewer.drawBuffers) {

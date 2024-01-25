@@ -27,6 +27,8 @@ struct Meshlet {
 
 struct Vertex {
     vec4 position;
+    vec4 color;
+    vec2 uv;
 };
 
 struct VkDrawMeshTasksIndirectCommandEXT {
@@ -45,6 +47,8 @@ struct Primitive {
     uint vertexIndicesOffset;
     uint triangleIndicesOffset;
     uint verticesOffset;
+
+    uint materialIndex;
 };
 
 layout(set = 1, binding = 0, scalar) buffer MeshletDescBuffer {
@@ -67,24 +71,9 @@ layout(set = 1, binding = 4, scalar) buffer PrimitiveDrawBuffer {
     Primitive primitives[];
 };
 
-// Fragment input
-layout (location = 0) out Outputs {
-    vec4 color;
-} outp[];
-
-#define MAX_COLORS 10
-vec3 meshletcolors[MAX_COLORS] = {
-    vec3(1,0,0),
-    vec3(0,1,0),
-    vec3(0,0,1),
-    vec3(1,1,0),
-    vec3(1,0,1),
-    vec3(0,1,1),
-    vec3(1,0.5,0),
-    vec3(0.5,1,0),
-    vec3(0,0.5,1),
-    vec3(1,1,1)
-};
+layout(location = 0) out vec4 colors[];
+layout(location = 1) out vec2 uvs[];
+layout(location = 2) flat out uint materialIndex[];
 
 void main() {
     Primitive primitive = primitives[gl_DrawID];
@@ -108,12 +97,13 @@ void main() {
         vidx = min(vidx, meshlet.vertexCount - 1);
 
         uint vertexIndex = vertexIndices[primitive.vertexIndicesOffset + meshlet.vertexOffset + vidx];
-        vec4 vertex = vertices[primitive.verticesOffset + vertexIndex].position;
+        Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
 
-        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * primitive.modelMatrix * vertex;
+        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * primitive.modelMatrix * vertex.position;
 
-        // TODO: Assign actual vertex colors.
-        outp[vidx].color = vec4(meshletcolors[gl_WorkGroupID.x % MAX_COLORS], 1.0f);
+        colors[vidx] = vertex.color;
+        uvs[vidx] = vertex.uv;
+        materialIndex[vidx] = primitive.materialIndex;
     }
 
     const uint primitiveLoops = (meshlet.triangleCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;

@@ -15,12 +15,35 @@ class BufferUploadTask : public enki::ITaskSet {
 public:
 	explicit BufferUploadTask(std::span<const std::byte> data, VkBuffer destinationBuffer);
 
-	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override;
+	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override;
+};
+
+class ImageUploadTask : public enki::ITaskSet {
+	std::span<const std::byte> data;
+	VkImage destinationImage;
+	VkExtent3D imageExtent;
+	VkImageLayout destinationLayout;
+
+	enki::Dependency dependency;
+
+public:
+	explicit ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent, VkImageLayout destinationLayout);
+
+	void SetDependency(enki::ITaskSet* task) {
+		ITaskSet::SetDependency(dependency, task);
+	}
+
+	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override;
+
+	std::span<const std::byte> getData() {
+		return data;
+	}
 };
 
 /** Simple class that contains functions to copy any buffer into DEVICE_LOCAL memory through staging buffers */
 class BufferUploader {
 	friend class BufferUploadTask;
+	friend class ImageUploadTask;
 
 	VkDevice device = VK_NULL_HANDLE;
 	VmaAllocator allocator = VK_NULL_HANDLE;

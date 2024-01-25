@@ -15,15 +15,15 @@ void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threa
 	assert(!BufferUploader::getInstance().stagingBuffers.empty());
 	ZoneScoped;
 	for (auto i = range.start; i < range.end; ++i) {
-		auto &uploader = BufferUploader::getInstance();
+		auto& uploader = BufferUploader::getInstance();
 		auto stagingBufferSize = uploader.getStagingBufferSize();
 
 		// Get the subspan for this execution
 		auto subLength = min(data.size_bytes() - i * stagingBufferSize, stagingBufferSize);
 		auto sub = data.subspan(i * stagingBufferSize, subLength);
 
-		auto &stagingBuffer = uploader.stagingBuffers[threadnum];
 		// Copy the memory chunk into the staging buffer
+		auto& stagingBuffer = uploader.stagingBuffers[threadnum];
 		{
 			vk::ScopedMap map(uploader.allocator, stagingBuffer.allocation);
 			std::memcpy(map.get(), sub.data(), sub.size_bytes());
@@ -51,9 +51,8 @@ void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threa
 
 		vkEndCommandBuffer(cmd);
 
+		auto& queue = uploader.getNextQueueHandle();
 		{
-			auto& queue = uploader.getNextQueueHandle();
-
 			// We need to guard the vkQueueSubmit call
 			std::lock_guard lock(*queue.lock);
 
@@ -69,6 +68,114 @@ void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threa
 			vk::checkResult(submitResult, "Failed to submit buffer copy: {}");
 		}
 
+		// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
+		vkWaitForFences(uploader.device, 1, &fence, VK_TRUE, 9999999999);
+	}
+}
+
+ImageUploadTask::ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent,
+								 VkImageLayout destinationLayout) : data(data), destinationImage(destinationImage), imageExtent(imageExtent), destinationLayout(destinationLayout) {
+	auto& uploader = BufferUploader::getInstance();
+	m_SetSize = 1;
+	//m_SetSize = (data.size_bytes() + uploader.getStagingBufferSize() - 1) / uploader.getStagingBufferSize();;
+}
+
+void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) {
+	assert(!BufferUploader::getInstance().stagingBuffers.empty());
+	ZoneScoped;
+	for (auto i = range.start; i < range.end; ++i) {
+		auto& uploader = BufferUploader::getInstance();
+		auto stagingBufferSize = uploader.getStagingBufferSize();
+
+		auto& stagingBuffer = uploader.stagingBuffers[threadnum];
+		{
+			vk::ScopedMap map(uploader.allocator, stagingBuffer.allocation);
+			std::memcpy(map.get(), data.data(), data.size_bytes());
+		}
+
+		auto cmd = uploader.commandBuffers[threadnum];
+
+		auto fence = uploader.fences[threadnum];
+		vkResetFences(uploader.device, 1, &fence);
+		vkResetCommandBuffer(cmd, 0);
+
+		const VkCommandBufferBeginInfo beginInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		};
+		vkBeginCommandBuffer(cmd, &beginInfo);
+
+		// Transition the image to TRANSFER_DST_OPTIMAL
+		VkImageMemoryBarrier2 imageBarrier{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+			.srcAccessMask = VK_ACCESS_2_NONE,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = destinationImage,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		const VkDependencyInfo dependencyInfo{
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.imageMemoryBarrierCount = 1,
+			.pImageMemoryBarriers = &imageBarrier,
+		};
+		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+		const VkBufferImageCopy copy{
+			.bufferOffset = 0,
+			.bufferRowLength = 0,
+			.bufferImageHeight = 0,
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.imageOffset = {
+				.x = 0,
+				.y = 0,
+				.z = 0,
+			},
+			.imageExtent = imageExtent,
+		};
+		vkCmdCopyBufferToImage(cmd, stagingBuffer.handle, destinationImage, imageBarrier.newLayout, 1, &copy);
+
+		// Transition the image into the destinationLayout
+		imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+		imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+		imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+		imageBarrier.oldLayout = imageBarrier.newLayout;
+		imageBarrier.newLayout = destinationLayout;
+		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+		vkEndCommandBuffer(cmd);
+
+		auto& queue = uploader.getNextQueueHandle();
+		{
+			// We need to guard the vkQueueSubmit call
+			std::lock_guard lock(*queue.lock);
+
+			// Submit the command buffer
+			const VkPipelineStageFlags submitWaitStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+			const VkSubmitInfo submitInfo{
+				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+				.pWaitDstStageMask = &submitWaitStages,
+				.commandBufferCount = 1,
+				.pCommandBuffers = &cmd,
+			};
+			auto submitResult = vkQueueSubmit(queue.handle, 1, &submitInfo, fence);
+			vk::checkResult(submitResult, "Failed to submit image copy: {}");
+		}
+
+		// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
 		vkWaitForFences(uploader.device, 1, &fence, VK_TRUE, 9999999999);
 	}
 }
@@ -123,7 +230,7 @@ bool BufferUploader::init(VkDevice nDevice, VmaAllocator nAllocator, std::uint32
 	}
 
 	stagingBuffers.resize(std::thread::hardware_concurrency());
-	for (auto& stagingBuffer : stagingBuffers) {
+	for (std::size_t i = 0; auto& stagingBuffer : stagingBuffers) {
 		// Create the staging buffer
 		const VmaAllocationCreateInfo allocationInfo{
 			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
@@ -140,7 +247,7 @@ bool BufferUploader::init(VkDevice nDevice, VmaAllocator nAllocator, std::uint32
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationInfo,
 									  &stagingBuffer.handle, &stagingBuffer.allocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate staging buffer: {}");
-		vk::setDebugUtilsName(device, stagingBuffer.handle, "Staging buffer {}");
+		vk::setDebugUtilsName(device, stagingBuffer.handle, fmt::format("Staging buffer {}", i++));
 	}
 	return true;
 }

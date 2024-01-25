@@ -48,12 +48,10 @@ struct CameraMovement {
 	bool firstMouse = false;
 };
 
-struct MeshPushConstants {
-	glm::mat4 modelMatrix;
-};
-
 struct Vertex {
 	glm::vec4 position;
+	glm::vec4 color;
+	glm::vec2 uv;
 };
 
 struct Primitive {
@@ -62,6 +60,7 @@ struct Primitive {
 	std::uint32_t triangleIndicesOffset;
 	std::uint32_t verticesOffset;
 
+	std::uint32_t materialIndex;
 	std::size_t meshlet_count;
 };
 
@@ -97,6 +96,8 @@ struct PrimitiveDraw {
 	std::uint32_t vertexIndicesOffset;
 	std::uint32_t triangleIndicesOffset;
 	std::uint32_t verticesOffset;
+
+	std::uint32_t materialIndex;
 };
 
 struct FrameDrawCommandBuffers {
@@ -105,6 +106,20 @@ struct FrameDrawCommandBuffers {
 	VkDeviceSize primitiveDrawBufferSize;
 
 	std::uint32_t drawCount;
+};
+
+struct Material {
+	glm::vec4 albedoFactor;
+	std::uint32_t albedoIndex;
+	float alphaCutoff;
+
+	glm::vec2 padding;
+};
+
+struct SampledImage {
+	VkImage image = VK_NULL_HANDLE;
+	VmaAllocation allocation = VK_NULL_HANDLE;
+	VkImageView imageView = VK_NULL_HANDLE;
 };
 
 struct Viewer {
@@ -151,6 +166,14 @@ struct Viewer {
 	std::vector<Mesh> meshes;
 	MeshBuffers globalMeshBuffers;
 
+	// Image/material data
+	VkDescriptorSetLayout materialSetLayout = VK_NULL_HANDLE;
+	VkDescriptorSet materialSet = VK_NULL_HANDLE;
+	VkSampler defaultSampler = VK_NULL_HANDLE;
+	std::vector<SampledImage> images;
+	VkBuffer materialBuffer = VK_NULL_HANDLE;
+	VmaAllocation materialAllocation = VK_NULL_HANDLE;
+
     // This is the same paradigm as used by vkguide.dev. This makes sure every object
     // is properly destroyed in reverse-order to creation.
     class DeletionQueue {
@@ -188,6 +211,10 @@ struct Viewer {
 						std::vector<Vertex>& vertices);
 	/** Takes glTF meshes and uploads them to the GPU */
 	void loadGltfMeshes();
+
+	/** Asynchronously loads all gltf images into GPU memory */
+	void loadGltfImages();
+	void loadGltfMaterials();
 
     void setupVulkanInstance();
     void setupVulkanDevice();
