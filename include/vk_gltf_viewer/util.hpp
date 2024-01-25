@@ -23,3 +23,19 @@ template <typename T>
 [[nodiscard]] constexpr T alignDown(T base, T alignment) {
 	return base - (base % alignment);
 }
+
+#include <TaskScheduler.h>
+
+class TaskDeleter final : public enki::ICompletable {
+	enki::Dependency dependency;
+
+public:
+	void use(enki::ICompletable* task) {
+		SetDependency(dependency, task);
+	}
+
+	void OnDependenciesComplete(enki::TaskScheduler* scheduler, std::uint32_t threadnum) override {
+		enki::ICompletable::OnDependenciesComplete(scheduler, threadnum);
+		delete dependency.GetDependencyTask();
+	}
+};

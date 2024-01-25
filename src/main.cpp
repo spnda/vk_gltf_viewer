@@ -970,96 +970,152 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 
 #include <stb_image.h>
 
-class ImageLoadTask : public enki::ITaskSet {
-	Viewer* viewer;
+// TODO: I am 100% sure there's some more elegant way than this weird ICompletable stuff and pointers everywhere.
+//       I should probably have just merged ImageUploadTask and ImageLoadTask from the beginning... but here we are.
+struct ImageLoadCompletionTask : enki::ICompletable {
+	enki::Dependency dependency;
+	ImageUploadTask* uploadTask = nullptr;
+	ImageDataGetter* getter = nullptr;
 
-public:
-	explicit ImageLoadTask(Viewer* viewer) noexcept : viewer(viewer) {
-		m_SetSize = viewer->asset.images.size();
+	void OnDependenciesComplete(enki::TaskScheduler* scheduler, std::uint32_t threadnum) override {
+		// Update the set size of the ImageUploadTask to match input data size.
+		// One set processes one row, and using range each range will usually process multiple rows.
+		auto& uploader = BufferUploader::getInstance();
+		auto extent = getter->getImageExtent();
+		uploadTask->m_SetSize = extent.height;
+		uploadTask->m_MinRange = 1; // extent.width * 4;
+		//uploadTask->m_MinRange = max(uploadTask->m_SetSize / 4, 1U); // I tried coming up with some maths, but this seems good.
+		enki::ICompletable::OnDependenciesComplete(scheduler, threadnum);
+	}
+};
+
+struct STBImageDeleter : enki::ICompletable {
+	enki::Dependency dependency;
+	uint8_t* data;
+
+	void OnDependenciesComplete(enki::TaskScheduler* scheduler, std::uint32_t threadnum) override {
+		stbi_image_free(data);
+		enki::ICompletable::OnDependenciesComplete(scheduler, threadnum);
+	}
+};
+
+struct ImageLoadTask : public enki::ITaskSet, public ImageDataGetter {
+	Viewer* viewer;
+	std::size_t imageIdx;
+
+	std::span<const std::byte> data;
+	VkImage destinationImage = VK_NULL_HANDLE;
+	VkExtent3D imageExtent = {};
+	VkImageLayout destinationLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	ImageLoadCompletionTask completionTask;
+	ImageUploadTask imageUploadTask;
+	STBImageDeleter imageDeleter;
+
+	explicit ImageLoadTask(Viewer* viewer, std::size_t imageIdx) noexcept : viewer(viewer), imageIdx(imageIdx),
+																			imageUploadTask(this) {
+		m_SetSize = 1;
+		completionTask.uploadTask = &imageUploadTask;
+		completionTask.getter = this;
+
+		// As soon as this task fininshes, we execute the completionTask, which updates the upload task accordingly.
+		// Then the upload task for this data is executed, which then triggers the STBImageDeleter completable,
+		// which frees the original stbi allocation.
+		completionTask.SetDependency(completionTask.dependency, this);
+		imageUploadTask.SetDependency(&completionTask);
+		imageDeleter.SetDependency(imageDeleter.dependency, &imageUploadTask);
+	}
+
+	std::span<const std::byte> getData() override {
+		return data;
+	}
+	VkImage getDestinationImage() override {
+		return destinationImage;
+	}
+	VkExtent3D getImageExtent() override {
+		return imageExtent;
+	}
+	VkImageLayout getDestinationLayout() override {
+		return destinationLayout;
 	}
 
 	// We'll use the range to operate over multiple images
 	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override {
 		ZoneScoped;
-		for (auto i = range.start; i < range.end; ++i) {
-			auto& image = viewer->asset.images[i];
+		// m_SetSize = 1, so range will always be 0,1
+		auto& image = viewer->asset.images[imageIdx];
 
-			uint8_t* imageData = nullptr;
-			VkExtent3D imageExtent;
-			imageExtent.depth = 1;
-			static constexpr auto channels = 4;
+		uint8_t* imageData = nullptr;
+		imageExtent.depth = 1;
+		static constexpr auto channels = 4;
 
-			// Load and decode the image data using stbi from the various sources.
-			std::visit(fastgltf::visitor {
-				[](auto arg) { },
-				[&](fastgltf::sources::Vector& vector) {
-					int width = 0, height = 0, nrChannels = 0;
-					imageData = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, channels);
-					imageExtent.width = width;
-					imageExtent.height = height;
-				},
-				[&](fastgltf::sources::BufferView& view) {
-					auto& bufferView = viewer->asset.bufferViews[view.bufferViewIndex];
-					auto& buffer = viewer->asset.buffers[bufferView.bufferIndex];
-					// Yes, we've already loaded every buffer into some GL buffer. However, with GL it's simpler
-					// to just copy the buffer data again for the texture. Besides, this is just an example.
-					std::visit(fastgltf::visitor {
-						// We only care about VectorWithMime here, because we specify LoadExternalBuffers, meaning
-						// all buffers are already loaded into a vector.
-						[](auto& arg) {},
-						[&](fastgltf::sources::Vector& vector) {
-							int width = 0, height = 0, nrChannels = 0;
-							imageData = stbi_load_from_memory(vector.bytes.data() + bufferView.byteOffset, static_cast<int>(bufferView.byteLength), &width, &height, &nrChannels, channels);
-							imageExtent.width = width;
-							imageExtent.height = height;
-						}
-					}, buffer.data);
-				},
-			}, image.data);
+		// Load and decode the image data using stbi from the various sources.
+		std::visit(fastgltf::visitor {
+			[](auto arg) { },
+			[&](fastgltf::sources::Vector& vector) {
+				int width = 0, height = 0, nrChannels = 0;
+				imageData = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, channels);
+				imageExtent.width = width;
+				imageExtent.height = height;
+			},
+			[&](fastgltf::sources::BufferView& view) {
+				auto& bufferView = viewer->asset.bufferViews[view.bufferViewIndex];
+				auto& buffer = viewer->asset.buffers[bufferView.bufferIndex];
+				// Yes, we've already loaded every buffer into some GL buffer. However, with GL it's simpler
+				// to just copy the buffer data again for the texture. Besides, this is just an example.
+				std::visit(fastgltf::visitor {
+					// We only care about VectorWithMime here, because we specify LoadExternalBuffers, meaning
+					// all buffers are already loaded into a vector.
+					[](auto& arg) {},
+					[&](fastgltf::sources::Vector& vector) {
+						int width = 0, height = 0, nrChannels = 0;
+						imageData = stbi_load_from_memory(vector.bytes.data() + bufferView.byteOffset, static_cast<int>(bufferView.byteLength), &width, &height, &nrChannels, channels);
+						imageExtent.width = width;
+						imageExtent.height = height;
+					}
+				}, buffer.data);
+			},
+		}, image.data);
 
-			SampledImage& sampledImage = viewer->images[i];
+		SampledImage& sampledImage = viewer->images[imageIdx];
 
-			const VkImageCreateInfo imageInfo {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-				.imageType = VK_IMAGE_TYPE_2D,
-				.format = VK_FORMAT_R8G8B8A8_UNORM,
-				.extent = imageExtent,
-				.mipLevels = 1,
-				.arrayLayers = 1,
-				.samples = VK_SAMPLE_COUNT_1_BIT,
-				.tiling = VK_IMAGE_TILING_OPTIMAL,
-				.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-				.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			};
-			const VmaAllocationCreateInfo allocationInfo {
-				.usage = VMA_MEMORY_USAGE_GPU_ONLY,
-				.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			};
-			vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
-						   &sampledImage.image, &sampledImage.allocation, nullptr);
+		const VkImageCreateInfo imageInfo {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = VK_FORMAT_R8G8B8A8_UNORM,
+			.extent = imageExtent,
+			.mipLevels = 1,
+			.arrayLayers = 1,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+		const VmaAllocationCreateInfo allocationInfo {
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		};
+		vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
+					   &sampledImage.image, &sampledImage.allocation, nullptr);
+		destinationImage = sampledImage.image;
 
-			// TODO: This is kinda hacky and weird, and I think this should instead be solved using task dependencies.
-			//       This also relies on the current implementation of ExecuteRange not caring about the passed range.
-			std::span<std::byte> data { reinterpret_cast<std::byte*>(imageData), imageExtent.width * imageExtent.height * sizeof(std::byte) * channels };
-			ImageUploadTask uploadTask(data, sampledImage.image, imageExtent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			uploadTask.ExecuteRange({0,1}, threadnum);
+		const VkImageViewCreateInfo imageViewInfo {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = sampledImage.image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = imageInfo.format,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
 
-			const VkImageViewCreateInfo imageViewInfo {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-				.image = sampledImage.image,
-				.viewType = VK_IMAGE_VIEW_TYPE_2D,
-				.format = imageInfo.format,
-				.subresourceRange = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.levelCount = 1,
-					.layerCount = 1,
-				},
-			};
-			vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
-
-			stbi_image_free(imageData);
-		}
+		data = std::span<const std::byte> { reinterpret_cast<std::byte*>(imageData),
+			imageExtent.width * imageExtent.height * sizeof(std::byte) * channels };
+		imageDeleter.data = imageData;
 	}
 };
 
@@ -1067,8 +1123,15 @@ void Viewer::loadGltfImages() {
 	ZoneScoped;
 	// Schedule image loading first
 	images.resize(asset.images.size());
-	ImageLoadTask task(this);
-	taskScheduler.AddTaskSetToPipe(&task);
+	std::vector<std::unique_ptr<ImageLoadTask>> loadTasks; loadTasks.reserve(asset.images.size());
+	for (auto i = 0; i < asset.images.size(); ++i) {
+		auto task = std::make_unique<ImageLoadTask>(this, i);
+		loadTasks.emplace_back(std::move(task));
+	}
+
+	for (auto& loadTask : loadTasks) {
+		taskScheduler.AddTaskSetToPipe(loadTask.get());
+	}
 
 	// Create the material descriptor layout
 	// TODO: We currently use a fixed size for the descriptorCount of the image samplers.
@@ -1141,7 +1204,9 @@ void Viewer::loadGltfImages() {
 	});
 
 	// Finish all texture decode and upload tasks
-	taskScheduler.WaitforTask(&task);
+	for (auto& task : loadTasks) {
+		taskScheduler.WaitforTask(&task->imageDeleter);
+	}
 
 	// Update the texture descriptor
 	std::vector<VkWriteDescriptorSet> writes; writes.reserve(asset.images.size());
@@ -1173,8 +1238,9 @@ void Viewer::loadGltfMaterials() {
 	for (auto& gltfMaterial : asset.materials) {
 		auto& mat = materials.emplace_back();
 		mat.albedoFactor = glm::make_vec4(gltfMaterial.pbrData.baseColorFactor.data());
+		// TODO: Add a default image for index 0
 		if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
-			mat.albedoIndex = gltfMaterial.pbrData.baseColorTexture.value().textureIndex;
+			mat.albedoIndex = asset.textures[gltfMaterial.pbrData.baseColorTexture.value().textureIndex].imageIndex.value_or(0);
 		} else {
 			mat.albedoIndex = 0;
 		}

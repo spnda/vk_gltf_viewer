@@ -24,7 +24,7 @@ layout (set = 2, binding = 1) uniform sampler2D textures[];
 
 void main() {
     Material material = materials[materialIndex];
-    vec4 outColor = color /** material.albedoFactor*/ * texture(textures[nonuniformEXT(material.albedoIdx)], uv);
+    vec4 outColor = color * material.albedoFactor * texture(textures[nonuniformEXT(material.albedoIdx)], uv);
 
     if (outColor.a < material.alphaCutoff)
         discard;
