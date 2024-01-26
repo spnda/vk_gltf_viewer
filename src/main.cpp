@@ -748,7 +748,7 @@ void Viewer::loadGltfMeshes() {
 
 			auto& primitive = mesh.primitives.emplace_back();
 			if (gltfPrimitive.materialIndex.has_value()) {
-				primitive.materialIndex = gltfPrimitive.materialIndex.value();
+				primitive.materialIndex = gltfPrimitive.materialIndex.value() + numDefaultMaterials;
 			} else {
 				primitive.materialIndex = 0;
 			}
@@ -1001,7 +1001,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override {
 		ZoneScoped;
 		// m_SetSize = 1, so range will always be 0,1
-		auto& image = viewer->asset.images[imageIdx];
+		auto& image = viewer->asset.images[imageIdx - Viewer::numDefaultTextures];
 
 		uint8_t* imageData = nullptr;
 		VkExtent3D imageExtent;
@@ -1083,19 +1083,69 @@ struct ImageLoadTask : public enki::ITaskSet {
 	}
 };
 
+void Viewer::createDefaultImages() {
+	ZoneScoped;
+	// Create a default 1x1 white image used as a fallback
+	const VkImageCreateInfo imageInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_R8G8B8A8_UNORM,
+		.extent = {
+			.width = 1,
+			.height = 1,
+			.depth = 1,
+		},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	const VmaAllocationCreateInfo allocationInfo {
+		.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+	};
+	auto& defaultTexture = images[0];
+	auto result = vmaCreateImage(allocator, &imageInfo, &allocationInfo,
+				   &defaultTexture.image, &defaultTexture.allocation, nullptr);
+	vk::checkResult(result, "Failed to create default image: {}");
+
+	// We use R8G8B8A8_UNORM, so we need to use 8-bit integers for the colors here.
+	std::array<std::uint8_t, 4> white {{ 255, 255, 255, 255 }};
+	auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(white.data()), sizeof(white) };
+	ImageUploadTask uploadTask(data, defaultTexture.image, imageInfo.extent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	taskScheduler.AddTaskSetToPipe(&uploadTask);
+
+	const VkImageViewCreateInfo imageViewInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = defaultTexture.image,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = imageInfo.format,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.levelCount = 1,
+			.layerCount = 1,
+		},
+	};
+	vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &defaultTexture.imageView);
+	vk::checkResult(result, "Failed to create default image view: {}");
+
+	taskScheduler.WaitforTask(&uploadTask);
+}
+
 void Viewer::loadGltfImages() {
 	ZoneScoped;
 	// Schedule image loading first
-	images.resize(asset.images.size());
+	images.resize(numDefaultTextures + asset.images.size());
 	std::vector<std::unique_ptr<ImageLoadTask>> loadTasks; loadTasks.reserve(asset.images.size());
-	for (auto i = 0; i < asset.images.size(); ++i) {
+	for (auto i = numDefaultTextures; i < asset.images.size() + numDefaultTextures; ++i) {
 		auto task = std::make_unique<ImageLoadTask>(this, i);
+		taskScheduler.AddTaskSetToPipe(task.get());
 		loadTasks.emplace_back(std::move(task));
 	}
 
-	for (auto& loadTask : loadTasks) {
-		taskScheduler.AddTaskSetToPipe(loadTask.get());
-	}
+	createDefaultImages();
 
 	// Create the material descriptor layout
 	// TODO: We currently use a fixed size for the descriptorCount of the image samplers.
@@ -1112,7 +1162,7 @@ void Viewer::loadGltfImages() {
 		{
 			.binding = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = static_cast<std::uint32_t>(asset.images.size()),
+			.descriptorCount = static_cast<std::uint32_t>(images.size()),
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 		}
 	}};
@@ -1173,9 +1223,9 @@ void Viewer::loadGltfImages() {
 	}
 
 	// Update the texture descriptor
-	std::vector<VkWriteDescriptorSet> writes; writes.reserve(asset.images.size());
-	std::vector<VkDescriptorImageInfo> infos; infos.reserve(asset.images.size());
-	for (std::size_t i = 0; i < asset.images.size(); ++i) {
+	std::vector<VkWriteDescriptorSet> writes; writes.reserve(images.size());
+	std::vector<VkDescriptorImageInfo> infos; infos.reserve(images.size());
+	for (std::size_t i = 0; i < images.size(); ++i) {
 		infos.emplace_back(VkDescriptorImageInfo {
 			.sampler = defaultSampler,
 			.imageView = images[i].imageView,
@@ -1199,12 +1249,24 @@ void Viewer::loadGltfMaterials() {
 	ZoneScoped;
 	// Create the material buffer data
 	std::vector<Material> materials; materials.reserve(asset.materials.size());
+
+	// Add the default material
+	materials.emplace_back(Material {
+		.albedoFactor = glm::vec4(1.0f),
+		.albedoIndex = 0,
+		.alphaCutoff = 0.5,
+	});
+
 	for (auto& gltfMaterial : asset.materials) {
 		auto& mat = materials.emplace_back();
 		mat.albedoFactor = glm::make_vec4(gltfMaterial.pbrData.baseColorFactor.data());
-		// TODO: Add a default image for index 0
 		if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
-			mat.albedoIndex = asset.textures[gltfMaterial.pbrData.baseColorTexture.value().textureIndex].imageIndex.value_or(0);
+			auto& imageIndex = asset.textures[gltfMaterial.pbrData.baseColorTexture.value().textureIndex].imageIndex;
+			if (imageIndex.has_value()) {
+				mat.albedoIndex = imageIndex.value() + numDefaultTextures;
+			} else {
+				mat.albedoIndex = 0;
+			}
 		} else {
 			mat.albedoIndex = 0;
 		}
@@ -1338,7 +1400,7 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 
 		const VmaAllocationCreateInfo allocationCreateInfo {
 			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

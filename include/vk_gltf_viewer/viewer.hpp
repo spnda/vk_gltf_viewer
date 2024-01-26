@@ -164,6 +164,9 @@ struct Viewer {
 	std::vector<Mesh> meshes;
 	MeshBuffers globalMeshBuffers;
 
+	static constexpr std::size_t numDefaultTextures = 1;
+	static constexpr std::size_t numDefaultMaterials = 1;
+
 	// Image/material data
 	VkDescriptorSetLayout materialSetLayout = VK_NULL_HANDLE;
 	VkDescriptorSet materialSet = VK_NULL_HANDLE;
@@ -212,6 +215,7 @@ struct Viewer {
 
 	/** Asynchronously loads all gltf images into GPU memory */
 	void loadGltfImages();
+	void createDefaultImages();
 	void loadGltfMaterials();
 
     void setupVulkanInstance();
