@@ -1134,6 +1134,45 @@ void Viewer::createDefaultImages() {
 	taskScheduler.WaitforTask(&uploadTask);
 }
 
+VkFilter getVulkanFilter(fastgltf::Filter filter) {
+	switch (filter) {
+		case fastgltf::Filter::Nearest:
+		case fastgltf::Filter::NearestMipMapNearest:
+		case fastgltf::Filter::NearestMipMapLinear:
+		default:
+			return VK_FILTER_NEAREST;
+		case fastgltf::Filter::Linear:
+		case fastgltf::Filter::LinearMipMapNearest:
+		case fastgltf::Filter::LinearMipMapLinear:
+			return VK_FILTER_LINEAR;
+	}
+}
+
+VkSamplerMipmapMode getVulkanMipmapMode(fastgltf::Filter filter) {
+	switch (filter) {
+		case fastgltf::Filter::NearestMipMapNearest:
+		case fastgltf::Filter::LinearMipMapNearest:
+			return VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+		case fastgltf::Filter::NearestMipMapLinear:
+		case fastgltf::Filter::LinearMipMapLinear:
+		default:
+			return VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	}
+}
+
+VkSamplerAddressMode getVulkanAddressMode(fastgltf::Wrap wrap) {
+	switch (wrap) {
+		case fastgltf::Wrap::ClampToEdge:
+			return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		case fastgltf::Wrap::MirroredRepeat:
+			return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+		case fastgltf::Wrap::Repeat:
+		default:
+			return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	}
+}
+
 void Viewer::loadGltfImages() {
 	ZoneScoped;
 	// Schedule image loading first
@@ -1162,7 +1201,7 @@ void Viewer::loadGltfImages() {
 		{
 			.binding = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = static_cast<std::uint32_t>(images.size()),
+			.descriptorCount = static_cast<std::uint32_t>(asset.textures.size() + numDefaultTextures),
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 		}
 	}};
@@ -1202,20 +1241,32 @@ void Viewer::loadGltfImages() {
 	// While we're here, also load the materials
 	loadGltfMaterials();
 
+	samplers.resize(asset.samplers.size() + numDefaultSamplers);
 	// Create the default sampler
-	const VkSamplerCreateInfo samplerInfo {
+	VkSamplerCreateInfo samplerInfo {
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 		.magFilter = VK_FILTER_NEAREST,
 		.minFilter = VK_FILTER_NEAREST,
+		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
 		.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 		.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 		.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 		.maxLod = VK_LOD_CLAMP_NONE,
 	};
-	result = vkCreateSampler(device, &samplerInfo, nullptr, &defaultSampler);
-	deletionQueue.push([&]() {
-		vkDestroySampler(device, defaultSampler, nullptr);
-	});
+	result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[0]);
+
+	// Create the glTF samplers
+	for (auto i = 0; i < asset.samplers.size(); ++i) {
+		auto& sampler = asset.samplers[i];
+		samplerInfo.magFilter = getVulkanFilter(sampler.magFilter.value_or(fastgltf::Filter::Nearest));
+		samplerInfo.minFilter = getVulkanFilter(sampler.minFilter.value_or(fastgltf::Filter::Nearest));
+		samplerInfo.mipmapMode = getVulkanMipmapMode(sampler.minFilter.value_or(fastgltf::Filter::Nearest));
+		samplerInfo.addressModeU = getVulkanAddressMode(sampler.wrapS);
+		samplerInfo.addressModeV = getVulkanAddressMode(sampler.wrapT);
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+		result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[numDefaultSamplers + i]);
+	}
 
 	// Finish all texture decode and upload tasks
 	for (auto& task : loadTasks) {
@@ -1223,12 +1274,33 @@ void Viewer::loadGltfImages() {
 	}
 
 	// Update the texture descriptor
-	std::vector<VkWriteDescriptorSet> writes; writes.reserve(images.size());
-	std::vector<VkDescriptorImageInfo> infos; infos.reserve(images.size());
-	for (std::size_t i = 0; i < images.size(); ++i) {
+	std::vector<VkWriteDescriptorSet> writes; writes.reserve(asset.textures.size() + numDefaultTextures);
+	std::vector<VkDescriptorImageInfo> infos; infos.reserve(writes.capacity());
+
+	// Write the default texture
+	infos.emplace_back(VkDescriptorImageInfo {
+		.sampler = samplers[0],
+		.imageView = images[0].imageView,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	});
+	writes.emplace_back(VkWriteDescriptorSet {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = materialSet,
+		.dstBinding = 1,
+		.dstArrayElement = 0U,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &infos.back(),
+	});
+
+	// Write the glTF textures
+	for (std::size_t i = 0; i < asset.textures.size(); ++i) {
+		auto& texture = asset.textures[i];
+
+		// Well map a glTF texture to a single combined image sampler
 		infos.emplace_back(VkDescriptorImageInfo {
-			.sampler = defaultSampler,
-			.imageView = images[i].imageView,
+			.sampler = samplers[texture.samplerIndex.has_value() ? *texture.samplerIndex + numDefaultSamplers : 0],
+			.imageView = images[texture.imageIndex.has_value() ? *texture.imageIndex + numDefaultTextures : 0].imageView,
 			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		});
 
@@ -1261,12 +1333,7 @@ void Viewer::loadGltfMaterials() {
 		auto& mat = materials.emplace_back();
 		mat.albedoFactor = glm::make_vec4(gltfMaterial.pbrData.baseColorFactor.data());
 		if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
-			auto& imageIndex = asset.textures[gltfMaterial.pbrData.baseColorTexture.value().textureIndex].imageIndex;
-			if (imageIndex.has_value()) {
-				mat.albedoIndex = imageIndex.value() + numDefaultTextures;
-			} else {
-				mat.albedoIndex = 0;
-			}
+			mat.albedoIndex = gltfMaterial.pbrData.baseColorTexture->textureIndex;
 		} else {
 			mat.albedoIndex = 0;
 		}
@@ -1467,6 +1534,10 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     auto gltfFile = std::string_view { argv[1] };
+
+	if (!std::filesystem::is_regular_file(gltfFile)) {
+		return -1;
+	}
 
 	taskScheduler.Initialize();
 
@@ -1771,6 +1842,11 @@ int main(int argc, char* argv[]) {
     vkDeviceWaitIdle(viewer.device); // Make sure everything is done
 
     taskScheduler.WaitforAll();
+
+	// Destroy the samplers
+	for (auto& sampler : viewer.samplers) {
+		vkDestroySampler(viewer.device, sampler, VK_NULL_HANDLE);
+	}
 
 	// Destroy the images
 	for (auto& image : viewer.images) {

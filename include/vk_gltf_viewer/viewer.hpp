@@ -164,13 +164,15 @@ struct Viewer {
 	std::vector<Mesh> meshes;
 	MeshBuffers globalMeshBuffers;
 
+	// TODO: Differentiate between numDefaultTextures and numDefaultImages?
 	static constexpr std::size_t numDefaultTextures = 1;
 	static constexpr std::size_t numDefaultMaterials = 1;
+	static constexpr std::size_t numDefaultSamplers = 1;
 
 	// Image/material data
 	VkDescriptorSetLayout materialSetLayout = VK_NULL_HANDLE;
 	VkDescriptorSet materialSet = VK_NULL_HANDLE;
-	VkSampler defaultSampler = VK_NULL_HANDLE;
+	std::vector<VkSampler> samplers;
 	std::vector<SampledImage> images;
 	VkBuffer materialBuffer = VK_NULL_HANDLE;
 	VmaAllocation materialAllocation = VK_NULL_HANDLE;
