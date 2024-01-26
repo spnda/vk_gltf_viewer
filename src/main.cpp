@@ -36,6 +36,9 @@
 #include <vk_gltf_viewer/util.hpp>
 #include <vk_gltf_viewer/viewer.hpp>
 #include <vk_gltf_viewer/buffer_uploader.hpp>
+#include <vk_gltf_viewer/scheduler.hpp>
+
+enki::TaskScheduler taskScheduler;
 
 struct Viewer;
 
@@ -218,8 +221,22 @@ void Viewer::setupVulkanDevice() {
 		allocatorFlags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 	}
 
+	// Generate the queue descriptions for vkb. Use one queue for everything except
+	// for dedicated transfer queues.
+	std::vector<vkb::CustomQueueDescription> queues;
+	auto queueFamilies = physicalDevice.get_queue_families();
+	for (uint32_t i = 0; i < queueFamilies.size(); i++) {
+		std::size_t queueCount = 1;
+		// Dedicated transfer queue; does not support graphics or present
+		if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && (queueFamilies[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0)
+			queueCount = queueFamilies[i].queueCount;
+		std::vector<float> priorities(queueCount, 1.0f);
+		queues.emplace_back(i, std::move(priorities));
+	}
+
 	vkb::DeviceBuilder deviceBuilder(selectionResult.value());
     auto creationResult = deviceBuilder
+			.custom_queue_setup(queues)
             .build();
     checkResult(creationResult);
 
@@ -262,7 +279,8 @@ void Viewer::setupVulkanDevice() {
 	auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
 	checkResult(transferQueueIndexRes);
 
-	BufferUploader::getInstance().init(device, allocator, transferQueueIndexRes.value());
+	BufferUploader::getInstance().init(device, allocator, transferQueueIndexRes.value(),
+									   queueFamilies[transferQueueIndexRes.value()].queueCount);
 	deletionQueue.push([&]() {
 		BufferUploader::getInstance().destroy();
 	});
@@ -616,10 +634,10 @@ void multithreadedBase64Decoding(std::string_view encodedData, uint8_t* outputDa
     // We divide by 4 to essentially create as many sets as there are decodable base64 blocks.
     Base64DecodeTask task(encodedData.size() / 4, encodedData, outputData);
     auto* editor = static_cast<Viewer*>(userPointer);
-    editor->taskScheduler.AddTaskSetToPipe(&task);
+    taskScheduler.AddTaskSetToPipe(&task);
 
     // Finally, wait for all other tasks to finish. enkiTS will use this thread as well to process the tasks.
-    editor->taskScheduler.WaitforTask(&task);
+    taskScheduler.WaitforTask(&task);
 }
 
 void Viewer::loadGltf(std::string_view file) {
@@ -774,6 +792,7 @@ void Viewer::loadGltfMeshes() {
 			const std::size_t maxTriangles = 124; // NVIDIA wants 126 but meshopt only allows 124 for alignment reasons.
 			const float coneWeight = 0.0f; // We leave this as 0 because we're not using cluster cone culling.
 
+			// TODO: Meshlet generation and data resizing should probably be threaded, too.
 			std::size_t maxMeshlets = meshopt_buildMeshletsBound(indicesAccessor.count, maxVertices, maxTriangles);
 			std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
 			std::vector<unsigned int> meshlet_vertices(maxMeshlets * maxVertices);
@@ -835,7 +854,7 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 
 		auto task = BufferUploader::getInstance().uploadToBuffer(
 			std::as_bytes(std::span{meshlets.begin(), meshlets.end()}),
-			globalMeshBuffers.descHandle, taskScheduler);
+			globalMeshBuffers.descHandle);
 		uploadTasks.emplace_back(std::move(task));
 	}
 	{
@@ -847,7 +866,7 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 
 		auto task = BufferUploader::getInstance().uploadToBuffer(
 			std::as_bytes(std::span{meshletVertices.begin(), meshletVertices.end()}),
-			globalMeshBuffers.vertexIndiciesHandle, taskScheduler);
+			globalMeshBuffers.vertexIndiciesHandle);
 		uploadTasks.emplace_back(std::move(task));
 	}
 	{
@@ -859,7 +878,7 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 
 		auto task = BufferUploader::getInstance().uploadToBuffer(
 			std::as_bytes(std::span{meshletTriangles.begin(), meshletTriangles.end()}),
-			globalMeshBuffers.triangleIndicesHandle, taskScheduler);
+			globalMeshBuffers.triangleIndicesHandle);
 		uploadTasks.emplace_back(std::move(task));
 	}
 	{
@@ -871,7 +890,7 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 
 		auto task = BufferUploader::getInstance().uploadToBuffer(
 			std::as_bytes(std::span{vertices.begin(), vertices.end()}),
-			globalMeshBuffers.verticesHandle, taskScheduler);
+			globalMeshBuffers.verticesHandle);
 		uploadTasks.emplace_back(std::move(task));
 	}
 
@@ -970,73 +989,12 @@ void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
 
 #include <stb_image.h>
 
-// TODO: I am 100% sure there's some more elegant way than this weird ICompletable stuff and pointers everywhere.
-//       I should probably have just merged ImageUploadTask and ImageLoadTask from the beginning... but here we are.
-struct ImageLoadCompletionTask : enki::ICompletable {
-	enki::Dependency dependency;
-	ImageUploadTask* uploadTask = nullptr;
-	ImageDataGetter* getter = nullptr;
-
-	void OnDependenciesComplete(enki::TaskScheduler* scheduler, std::uint32_t threadnum) override {
-		// Update the set size of the ImageUploadTask to match input data size.
-		// One set processes one row, and using range each range will usually process multiple rows.
-		auto& uploader = BufferUploader::getInstance();
-		auto extent = getter->getImageExtent();
-		uploadTask->m_SetSize = extent.height;
-		uploadTask->m_MinRange = 1; // extent.width * 4;
-		//uploadTask->m_MinRange = max(uploadTask->m_SetSize / 4, 1U); // I tried coming up with some maths, but this seems good.
-		enki::ICompletable::OnDependenciesComplete(scheduler, threadnum);
-	}
-};
-
-struct STBImageDeleter : enki::ICompletable {
-	enki::Dependency dependency;
-	uint8_t* data;
-
-	void OnDependenciesComplete(enki::TaskScheduler* scheduler, std::uint32_t threadnum) override {
-		stbi_image_free(data);
-		enki::ICompletable::OnDependenciesComplete(scheduler, threadnum);
-	}
-};
-
-struct ImageLoadTask : public enki::ITaskSet, public ImageDataGetter {
+struct ImageLoadTask : public enki::ITaskSet {
 	Viewer* viewer;
 	std::size_t imageIdx;
 
-	std::span<const std::byte> data;
-	VkImage destinationImage = VK_NULL_HANDLE;
-	VkExtent3D imageExtent = {};
-	VkImageLayout destinationLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-	ImageLoadCompletionTask completionTask;
-	ImageUploadTask imageUploadTask;
-	STBImageDeleter imageDeleter;
-
-	explicit ImageLoadTask(Viewer* viewer, std::size_t imageIdx) noexcept : viewer(viewer), imageIdx(imageIdx),
-																			imageUploadTask(this) {
+	explicit ImageLoadTask(Viewer* viewer, std::size_t imageIdx) noexcept : viewer(viewer), imageIdx(imageIdx) {
 		m_SetSize = 1;
-		completionTask.uploadTask = &imageUploadTask;
-		completionTask.getter = this;
-
-		// As soon as this task fininshes, we execute the completionTask, which updates the upload task accordingly.
-		// Then the upload task for this data is executed, which then triggers the STBImageDeleter completable,
-		// which frees the original stbi allocation.
-		completionTask.SetDependency(completionTask.dependency, this);
-		imageUploadTask.SetDependency(&completionTask);
-		imageDeleter.SetDependency(imageDeleter.dependency, &imageUploadTask);
-	}
-
-	std::span<const std::byte> getData() override {
-		return data;
-	}
-	VkImage getDestinationImage() override {
-		return destinationImage;
-	}
-	VkExtent3D getImageExtent() override {
-		return imageExtent;
-	}
-	VkImageLayout getDestinationLayout() override {
-		return destinationLayout;
 	}
 
 	// We'll use the range to operate over multiple images
@@ -1046,6 +1004,7 @@ struct ImageLoadTask : public enki::ITaskSet, public ImageDataGetter {
 		auto& image = viewer->asset.images[imageIdx];
 
 		uint8_t* imageData = nullptr;
+		VkExtent3D imageExtent;
 		imageExtent.depth = 1;
 		static constexpr auto channels = 4;
 
@@ -1098,7 +1057,12 @@ struct ImageLoadTask : public enki::ITaskSet, public ImageDataGetter {
 		};
 		vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
 					   &sampledImage.image, &sampledImage.allocation, nullptr);
-		destinationImage = sampledImage.image;
+
+		// Create and schedule the ImageUploadTask.
+		auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(imageData),
+			imageExtent.width * imageExtent.height * sizeof(std::byte) * channels };
+		ImageUploadTask uploadTask(data, sampledImage.image, imageExtent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		taskScheduler.AddTaskSetToPipe(&uploadTask);
 
 		const VkImageViewCreateInfo imageViewInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1113,9 +1077,9 @@ struct ImageLoadTask : public enki::ITaskSet, public ImageDataGetter {
 		};
 		vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
 
-		data = std::span<const std::byte> { reinterpret_cast<std::byte*>(imageData),
-			imageExtent.width * imageExtent.height * sizeof(std::byte) * channels };
-		imageDeleter.data = imageData;
+		taskScheduler.WaitforTask(&uploadTask);
+
+		stbi_image_free(imageData);
 	}
 };
 
@@ -1205,7 +1169,7 @@ void Viewer::loadGltfImages() {
 
 	// Finish all texture decode and upload tasks
 	for (auto& task : loadTasks) {
-		taskScheduler.WaitforTask(&task->imageDeleter);
+		taskScheduler.WaitforTask(task.get());
 	}
 
 	// Update the texture descriptor
@@ -1442,8 +1406,9 @@ int main(int argc, char* argv[]) {
     }
     auto gltfFile = std::string_view { argv[1] };
 
+	taskScheduler.Initialize();
+
     Viewer viewer {};
-    viewer.taskScheduler.Initialize();
 
     glfwSetErrorCallback(glfwErrorCallback);
 
@@ -1743,7 +1708,7 @@ int main(int argc, char* argv[]) {
 
     vkDeviceWaitIdle(viewer.device); // Make sure everything is done
 
-    viewer.taskScheduler.WaitforAll();
+    taskScheduler.WaitforAll();
 
 	// Destroy the images
 	for (auto& image : viewer.images) {
@@ -1768,7 +1733,7 @@ int main(int argc, char* argv[]) {
     glfwDestroyWindow(viewer.window);
     glfwTerminate();
 
-    viewer.taskScheduler.WaitforAllAndShutdown();
+    taskScheduler.WaitforAllAndShutdown();
 
     return 0;
 }

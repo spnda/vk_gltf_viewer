@@ -18,25 +18,16 @@ public:
 	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override;
 };
 
-// This is a stupid thing that has to exist so that we can delay when a ImageUploadTask gets its information.
-// From within the ImageLoadTask I cannot schedule new tasks, so I am forced to generate the task graph in loadGltfImages().
-// However, I want to make use of the dependency system from enkiTS. Therefore, I pass a pointer to the class that inherits
-// from this to the ImageUploadTask, which will then query the functions when it starts executing. The ImageLoadTask implements
-// this interface and can then provide the information.
-// TODO: Remove.
-struct ImageDataGetter {
-	virtual std::span<const std::byte> getData() = 0;
-	virtual VkImage getDestinationImage() = 0;
-	virtual VkExtent3D getImageExtent() = 0;
-	virtual VkImageLayout getDestinationLayout() = 0;
-};
-
 class ImageUploadTask : public enki::ITaskSet {
-	ImageDataGetter* getter;
 	enki::Dependency dependency;
 
+	std::span<const std::byte> data;
+	VkImage destinationImage;
+	VkExtent3D imageExtent;
+	VkImageLayout destinationLayout;
+
 public:
-	explicit ImageUploadTask(ImageDataGetter* getter);
+	explicit ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent, VkImageLayout destinationLayout);
 
 	void SetDependency(enki::ICompletable* task) {
 		ITaskSet::SetDependency(dependency, task);
@@ -83,7 +74,9 @@ class BufferUploader {
 	std::size_t stagingBufferSize = 0;
 
 	TransferQueue& getNextQueueHandle() {
-		static std::size_t idx = 0;
+		// Generally it shouldn't matter if we don't guard the idx variable, as then we might just use the same queue twice in succession.
+		// However, just to be completely correct we'll use this.
+		static std::atomic<std::size_t> idx = 0;
 		return transferQueues[idx++ % transferQueues.size()];
 	}
 
@@ -97,8 +90,8 @@ public:
 		return stagingBufferSize;
 	}
 
-	bool init(VkDevice device, VmaAllocator allocator, std::uint32_t transferQueueIndex);
+	bool init(VkDevice device, VmaAllocator allocator, std::uint32_t transferQueueIndex, std::size_t transferQueueCount);
 	void destroy();
 
-	[[nodiscard]] std::unique_ptr<BufferUploadTask> uploadToBuffer(std::span<const std::byte> data, VkBuffer buffer, enki::TaskScheduler& taskScheduler);
+	[[nodiscard]] std::unique_ptr<BufferUploadTask> uploadToBuffer(std::span<const std::byte> data, VkBuffer buffer);
 };

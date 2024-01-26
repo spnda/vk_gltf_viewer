@@ -123,8 +123,6 @@ struct SampledImage {
 };
 
 struct Viewer {
-    enki::TaskScheduler taskScheduler;
-
     vkb::Instance instance;
     vkb::Device device;
 	VmaAllocator allocator = VK_NULL_HANDLE;

@@ -4,6 +4,7 @@
 
 #include <vk_gltf_viewer/util.hpp>
 #include <vk_gltf_viewer/buffer_uploader.hpp>
+#include <vk_gltf_viewer/scheduler.hpp>
 
 BufferUploadTask::BufferUploadTask(std::span<const std::byte> data, VkBuffer destinationBuffer) : data(data), destinationBuffer(destinationBuffer) {
 	// This is required so that every task's range has this size to fit with the staging buffers.
@@ -73,7 +74,11 @@ void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threa
 	}
 }
 
-ImageUploadTask::ImageUploadTask(ImageDataGetter* getter) : getter(getter) {}
+ImageUploadTask::ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent, VkImageLayout destinationLayout)
+		: data(data), destinationImage(destinationImage), imageExtent(imageExtent), destinationLayout(destinationLayout) {
+	m_SetSize = imageExtent.height;
+	m_MinRange = min(150U, imageExtent.height); // TODO. This *only* works when 150 rows is not larger than a staging buffer.
+}
 
 void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) {
 	assert(!BufferUploader::getInstance().stagingBuffers.empty());
@@ -81,14 +86,11 @@ void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t t
 	auto& uploader = BufferUploader::getInstance();
 	auto stagingBufferSize = uploader.getStagingBufferSize();
 
-	auto data = getter->getData();
-
 	// The range (as defined by ImageLoadCompletionCallback::OnDependenciesComplete) is the row range
 	// of the image to copy. This will guarantee continuous data from the span. We currently always
 	// load 4 components.
-	auto extent = getter->getImageExtent();
-	auto subLength = (range.end - range.start) * extent.width * 4;
-	auto sub = data.subspan(range.start * extent.width * 4, subLength);
+	auto subLength = (range.end - range.start) * imageExtent.width * 4;
+	auto sub = data.subspan(range.start * imageExtent.width * 4, subLength);
 
 	auto& stagingBuffer = uploader.stagingBuffers[threadnum];
 	{
@@ -119,7 +121,7 @@ void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t t
 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = getter->getDestinationImage(),
+		.image = destinationImage,
 		.subresourceRange = {
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.levelCount = 1,
@@ -147,12 +149,12 @@ void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t t
 			.z = 0,
 		},
 		.imageExtent = {
-			.width = extent.width,
+			.width = imageExtent.width,
 			.height = range.end - range.start,
 			.depth = 1,
 		},
 	};
-	vkCmdCopyBufferToImage(cmd, stagingBuffer.handle, getter->getDestinationImage(), imageBarrier.newLayout, 1, &copy);
+	vkCmdCopyBufferToImage(cmd, stagingBuffer.handle, destinationImage, imageBarrier.newLayout, 1, &copy);
 
 	// Transition the image into the destinationLayout
 	imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -160,7 +162,7 @@ void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t t
 	imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
 	imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
 	imageBarrier.oldLayout = imageBarrier.newLayout;
-	imageBarrier.newLayout = getter->getDestinationLayout();
+	imageBarrier.newLayout = destinationLayout;
 	vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 
 	vkEndCommandBuffer(cmd);
@@ -186,13 +188,13 @@ void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t t
 	vkWaitForFences(uploader.device, 1, &fence, VK_TRUE, 9999999999);
 }
 
-bool BufferUploader::init(VkDevice nDevice, VmaAllocator nAllocator, std::uint32_t nTransferQueueIndex) {
+bool BufferUploader::init(VkDevice nDevice, VmaAllocator nAllocator, std::uint32_t nTransferQueueIndex, std::size_t transferQueueCount) {
 	ZoneScoped;
 	device = nDevice;
 	allocator = nAllocator;
 	transferQueueIndex = nTransferQueueIndex;
 
-	transferQueues.resize(1);// TODO: Get queue count
+	transferQueues.resize(transferQueueCount);
 	for (std::size_t i = 0; auto& transferQueue : transferQueues) {
 		transferQueue.lock = std::make_unique<std::mutex>();
 		vkGetDeviceQueue(device, transferQueueIndex, i++, &transferQueue.handle);
@@ -272,7 +274,7 @@ void BufferUploader::destroy() {
 	}
 }
 
-std::unique_ptr<BufferUploadTask> BufferUploader::uploadToBuffer(std::span<const std::byte> data, VkBuffer buffer, enki::TaskScheduler& taskScheduler) {
+std::unique_ptr<BufferUploadTask> BufferUploader::uploadToBuffer(std::span<const std::byte> data, VkBuffer buffer) {
 	auto task = std::make_unique<BufferUploadTask>(data, buffer);
 	taskScheduler.AddTaskSetToPipe(task.get());
 	return task;
