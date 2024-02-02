@@ -27,7 +27,7 @@
 
 #include <fastgltf/base64.hpp>
 #include <fastgltf/types.hpp>
-#include <fastgltf/parser.hpp>
+#include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
 
@@ -1011,7 +1011,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 		// Load and decode the image data using stbi from the various sources.
 		std::visit(fastgltf::visitor {
 			[](auto arg) { },
-			[&](fastgltf::sources::Vector& vector) {
+			[&](fastgltf::sources::Array& vector) {
 				int width = 0, height = 0, nrChannels = 0;
 				imageData = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, channels);
 				imageExtent.width = width;
@@ -1026,7 +1026,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 					// We only care about VectorWithMime here, because we specify LoadExternalBuffers, meaning
 					// all buffers are already loaded into a vector.
 					[](auto& arg) {},
-					[&](fastgltf::sources::Vector& vector) {
+					[&](fastgltf::sources::Array& vector) {
 						int width = 0, height = 0, nrChannels = 0;
 						imageData = stbi_load_from_memory(vector.bytes.data() + bufferView.byteOffset, static_cast<int>(bufferView.byteLength), &width, &height, &nrChannels, channels);
 						imageExtent.width = width;
