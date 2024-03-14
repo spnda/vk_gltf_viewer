@@ -175,6 +175,7 @@ void Viewer::setupVulkanDevice() {
 	const VkPhysicalDeviceVulkan12Features vulkan12Features {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.storageBuffer8BitAccess = VK_TRUE,
+		.shaderInt8 = VK_TRUE,
 		.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
 		.descriptorBindingPartiallyBound = VK_TRUE,
 		.runtimeDescriptorArray = VK_TRUE,
@@ -192,6 +193,7 @@ void Viewer::setupVulkanDevice() {
 
     const VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+		.taskShader = VK_TRUE,
         .meshShader = VK_TRUE,
     };
 
@@ -494,9 +496,10 @@ void Viewer::buildMeshPipeline() {
 	vk::setDebugUtilsName(device, meshPipelineLayout, "Mesh shading pipeline layout");
 
     // Load the mesh pipeline shaders
-    VkShaderModule fragModule, meshModule;
+    VkShaderModule fragModule, meshModule, taskModule;
     vk::loadShaderModule("main.frag.glsl.spv", device, &fragModule);
     vk::loadShaderModule("main.mesh.glsl.spv", device, &meshModule);
+	vk::loadShaderModule("main.task.glsl.spv", device, &taskModule);
 
     // Build the mesh pipeline
     const auto colorAttachmentFormat = swapchain.image_format;
@@ -527,7 +530,8 @@ void Viewer::buildMeshPipeline() {
         .setScissorCount(0, 1U)
         .setViewportCount(0, 1U)
         .addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, "main")
-        .addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule, "main");
+        .addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule, "main")
+		.addShaderStage(0, VK_SHADER_STAGE_TASK_BIT_EXT, taskModule, "main");
 
     result = builder.build(&meshPipeline);
     if (result != VK_SUCCESS) {
@@ -537,6 +541,7 @@ void Viewer::buildMeshPipeline() {
     // We don't need the shader modules after creating the pipeline anymore.
     vkDestroyShaderModule(device, fragModule, VK_NULL_HANDLE);
     vkDestroyShaderModule(device, meshModule, VK_NULL_HANDLE);
+	vkDestroyShaderModule(device, taskModule, VK_NULL_HANDLE);
 
     deletionQueue.push([&]() {
         vkDestroyPipeline(device, meshPipeline, VK_NULL_HANDLE);
@@ -659,7 +664,7 @@ void Viewer::loadGltf(std::string_view file) {
     auto expected = parser.loadGltf(&fileBuffer, filePath.parent_path(), gltfOptions);
     if (expected.error() != fastgltf::Error::None) {
         auto message = fastgltf::getErrorMessage(expected.error());
-        throw std::runtime_error(std::string("Failed to load glTF") + std::string(message));
+        throw std::runtime_error(std::string("Failed to load glTF: ") + std::string(message));
     }
 
     asset = std::move(expected.get());
@@ -708,7 +713,7 @@ void Viewer::loadGltfMeshes() {
 			.binding = 4,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
 		}
 	}};
 	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo = {
@@ -1425,8 +1430,9 @@ void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, gl
 	for (auto& primitive : mesh.primitives) {
 		auto& draw = cmd.emplace_back();
 
+		// Dispatch so many groups that we only have to use up to 128 16-bit indices in the shared payload.
 		const VkDrawMeshTasksIndirectCommandEXT indirectCommand {
-			.groupCountX = static_cast<std::uint32_t>(primitive.meshlet_count),
+			.groupCountX = static_cast<std::uint32_t>((primitive.meshlet_count + 128 - 1) / 128),
 			.groupCountY = 1,
 			.groupCountZ = 1,
 		};
@@ -1436,6 +1442,7 @@ void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, gl
 		draw.vertexIndicesOffset = primitive.vertexIndicesOffset;
 		draw.triangleIndicesOffset = primitive.triangleIndicesOffset;
 		draw.verticesOffset = primitive.verticesOffset;
+		draw.meshletCount = static_cast<std::uint32_t>(primitive.meshlet_count);
 		draw.materialIndex = primitive.materialIndex;
 	}
 }

@@ -1,15 +1,17 @@
 #version 460
 #extension GL_EXT_mesh_shader : require
 #extension GL_EXT_scalar_block_layout : require
-#extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
-#extension GL_EXT_control_flow_attributes: require
+#extension GL_EXT_control_flow_attributes : require
 
 const uint maxVertices = 64;
 const uint maxPrimitives = 126;
+const uint maxMeshlets = 128;
 
-layout(local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = maxVertices, max_primitives = maxPrimitives) out;
 
 layout(set = 0, binding = 0) uniform Camera {
@@ -48,6 +50,7 @@ struct Primitive {
     uint triangleIndicesOffset;
     uint verticesOffset;
 
+    uint meshletCount;
     uint materialIndex;
 };
 
@@ -71,13 +74,21 @@ layout(set = 1, binding = 4, scalar) buffer PrimitiveDrawBuffer {
     Primitive primitives[];
 };
 
+struct Task {
+    uint baseID;
+    uint8_t deltaIDs[128];
+};
+
+taskPayloadSharedEXT Task taskPayload;
+
 layout(location = 0) out vec4 colors[];
 layout(location = 1) out vec2 uvs[];
 layout(location = 2) flat out uint materialIndex[];
 
 void main() {
     Primitive primitive = primitives[gl_DrawID];
-    Meshlet meshlet = meshlets[primitive.descOffset + gl_WorkGroupID.x];
+    uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
+    Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
 
     // This defines the array size of gl_MeshVerticesEXT
     if (gl_LocalInvocationID.x == 0) {

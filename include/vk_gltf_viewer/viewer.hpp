@@ -97,6 +97,7 @@ struct PrimitiveDraw {
 	std::uint32_t triangleIndicesOffset;
 	std::uint32_t verticesOffset;
 
+	std::uint32_t meshletCount;
 	std::uint32_t materialIndex;
 };
 
