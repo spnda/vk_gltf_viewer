@@ -332,7 +332,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.initialLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
 	auto result = vmaCreateImage(allocator, &imageInfo, &allocationInfo, &depthImage, &depthImageAllocation, VK_NULL_HANDLE);
 	vk::checkResult(result, "Failed to create depth image: {}");
@@ -1046,7 +1046,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 		const VkImageCreateInfo imageInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.imageType = VK_IMAGE_TYPE_2D,
-			.format = VK_FORMAT_R8G8B8A8_UNORM,
+			.format = VK_FORMAT_R8G8B8A8_SRGB,
 			.extent = imageExtent,
 			.mipLevels = 1,
 			.arrayLayers = 1,
@@ -1685,27 +1685,47 @@ int main(int argc, char* argv[]) {
 				TracyVkZone(viewer.tracyCtx, cmd, "Mesh shading");
 
 				// Transition the swapchain image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL for rendering
-				const VkImageMemoryBarrier2 swapchainAttachmentImageBarrier {
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-					.srcAccessMask = VK_ACCESS_2_NONE,
-					.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-					.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = viewer.swapchainImages[swapchainImageIndex],
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.levelCount = 1,
-						.layerCount = 1,
+				// Transition the depth image from UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL
+				std::array<VkImageMemoryBarrier2, 2> imageBarriers = {{
+					{
+						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+						.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+						.srcAccessMask = VK_ACCESS_2_NONE,
+						.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+						.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+						.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+						.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+						.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+						.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+						.image = viewer.swapchainImages[swapchainImageIndex],
+						.subresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.levelCount = 1,
+							.layerCount = 1,
+						},
 					},
-                };
+					{
+						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+						.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+						.srcAccessMask = VK_ACCESS_2_NONE,
+						.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+						.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+						.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+						.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+						.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+						.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+						.image = viewer.depthImage,
+						.subresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+							.levelCount = 1,
+							.layerCount = 1,
+						},
+					}
+				}};
 				const VkDependencyInfo dependencyInfo {
 					.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-					.imageMemoryBarrierCount = 1,
-					.pImageMemoryBarriers = &swapchainAttachmentImageBarrier,
+					.imageMemoryBarrierCount = static_cast<std::uint32_t>(imageBarriers.size()),
+					.pImageMemoryBarriers = imageBarriers.data(),
 				};
 				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 
