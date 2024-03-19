@@ -103,14 +103,16 @@ vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::addDynamicState(std::u
 }
 
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::addShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module,
-                                                                         std::string_view name) {
+                                                                         std::string_view name, const VkSpecializationInfo* specInfo) {
     ZoneScoped;
     assert(idx < pipelineBuildInfos.size());
     pipelineBuildInfos[idx].stages.emplace_back(VkPipelineShaderStageCreateInfo {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.flags = 0,
             .stage = stage,
             .module = module,
             .pName = name.data(),
+			.pSpecializationInfo = specInfo,
     });
     return *this;
 }
@@ -261,7 +263,6 @@ vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setPipelineFlags(std::
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setRasterState(std::uint32_t idx, VkPolygonMode polygonMode,
                                                                          VkCullModeFlags cullMode, VkFrontFace frontFace,
                                                                          float lineWidth) {
-    ZoneScoped;
     assert(idx < pipelineBuildInfos.size());
     pipelineBuildInfos[idx].rasterState = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,

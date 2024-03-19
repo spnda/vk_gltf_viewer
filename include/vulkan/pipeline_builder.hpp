@@ -85,7 +85,7 @@ namespace vk {
         explicit GraphicsPipelineBuilder(VkDevice device, VkPhysicalDevice physicalDevice);
 
         GraphicsPipelineBuilder& addDynamicState(std::uint32_t idx, VkDynamicState state);
-        GraphicsPipelineBuilder& addShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name);
+        GraphicsPipelineBuilder& addShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name, const VkSpecializationInfo* specInfo = nullptr);
         VkResult build(VkPipeline* pipeline) noexcept override;
         /**
          * This updates the pNext member of the VkGraphicsPipelineCreateInfo to point to the given

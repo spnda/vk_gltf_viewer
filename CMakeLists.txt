@@ -35,6 +35,8 @@ foreach(SHADER_FILE ${SHADER_FILES})
     set(SHADER_TARGET_NAME "build_shader_${PATH_HASH}")
     set(SHADER_TIMESTAMP_NAME "${PATH_HASH}.timestamp")
 
+    # TODO: Should we parse the shader files, and look for includes that we should add to the DEPENDS?
+    #       Should be pretty trivial, tbh...
     cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
     add_custom_command(
         OUTPUT ${SHADER_TIMESTAMP_NAME}

@@ -395,7 +395,7 @@ void Viewer::buildCameraDescriptor() {
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
 		},
 	}};
 	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo {
@@ -484,8 +484,8 @@ void Viewer::buildCameraDescriptor() {
 void Viewer::buildMeshPipeline() {
 	ZoneScoped;
     // Build the mesh pipeline layout
-    std::array<VkDescriptorSetLayout, 3> layouts = {{ cameraSetLayout, meshletSetLayout, materialSetLayout }};
-    const VkPipelineLayoutCreateInfo layoutCreateInfo = {
+    std::array<VkDescriptorSetLayout, 3> layouts {{ cameraSetLayout, meshletSetLayout, materialSetLayout }};
+    const VkPipelineLayoutCreateInfo layoutCreateInfo {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
         .pSetLayouts = layouts.data(),
@@ -496,28 +496,59 @@ void Viewer::buildMeshPipeline() {
 	vk::setDebugUtilsName(device, meshPipelineLayout, "Mesh shading pipeline layout");
 
     // Load the mesh pipeline shaders
+	// TODO: Check return value of loadShaderModule
     VkShaderModule fragModule, meshModule, taskModule;
     vk::loadShaderModule("main.frag.glsl.spv", device, &fragModule);
     vk::loadShaderModule("main.mesh.glsl.spv", device, &meshModule);
 	vk::loadShaderModule("main.task.glsl.spv", device, &taskModule);
 
-    // Build the mesh pipeline
+	// Load AABB visualizer shaders
+	VkShaderModule aabbFragModule, aabbVertModule;
+	vk::loadShaderModule("aabb_visualizer.frag.glsl.spv", device, &aabbFragModule);
+	vk::loadShaderModule("aabb_visualizer.vert.glsl.spv", device, &aabbVertModule);
+
+	// Build the mesh pipeline
     const auto colorAttachmentFormat = swapchain.image_format;
 	const auto depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-    const VkPipelineRenderingCreateInfo renderingCreateInfo = {
+    const VkPipelineRenderingCreateInfo renderingCreateInfo {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .colorAttachmentCount = 1,
             .pColorAttachmentFormats = &colorAttachmentFormat,
 			.depthAttachmentFormat = depthAttachmentFormat,
     };
 
-    const VkPipelineColorBlendAttachmentState blendAttachment = {
+    const VkPipelineColorBlendAttachmentState blendAttachment {
         .blendEnable = VK_FALSE,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
 
+	// We specialize the task shader to have a local workgroup size which is exactly the subgroup size,
+	// to efficiently use subgroup intrinsics for counting the total number of passed meshlets.
+	VkPhysicalDeviceVulkan11Properties vulkan11Properties {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
+	};
+	VkPhysicalDeviceProperties2 properties {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+		.pNext = &vulkan11Properties,
+	};
+	vkGetPhysicalDeviceProperties2(device.physical_device, &properties);
+	const VkSpecializationMapEntry taskSubgroupSizeSpecMapEntry {
+		.constantID = 0,
+		.offset = 0,
+		.size = sizeof(decltype(vulkan11Properties.subgroupSize)),
+	};
+	const VkSpecializationInfo taskSubgroupSizeSpecialization {
+		.mapEntryCount = 1,
+		.pMapEntries = &taskSubgroupSizeSpecMapEntry,
+		.dataSize = taskSubgroupSizeSpecMapEntry.size,
+		.pData = &vulkan11Properties.subgroupSize,
+	};
+
     auto builder = vk::GraphicsPipelineBuilder(device, nullptr)
-        .setPipelineCount(1)
+        .setPipelineCount(2);
+
+	// Create mesh pipeline
+	builder
         .setPipelineLayout(0, meshPipelineLayout)
         .pushPNext(0, &renderingCreateInfo)
         .addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
@@ -531,21 +562,59 @@ void Viewer::buildMeshPipeline() {
         .setViewportCount(0, 1U)
         .addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, "main")
         .addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule, "main")
-		.addShaderStage(0, VK_SHADER_STAGE_TASK_BIT_EXT, taskModule, "main");
+		.addShaderStage(0, VK_SHADER_STAGE_TASK_BIT_EXT, taskModule, "main", &taskSubgroupSizeSpecialization);
 
-    result = builder.build(&meshPipeline);
+	const VkPipelineRenderingCreateInfo aabbRenderingCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+		.colorAttachmentCount = 1,
+		.pColorAttachmentFormats = &colorAttachmentFormat,
+		.depthAttachmentFormat = depthAttachmentFormat,
+	};
+
+	// We want the AABBs to appear slightly transparent, which is why we need blending.
+	// This just essentially just multiplies the fragment shader's value with its alpha value.
+	const VkPipelineColorBlendAttachmentState aabbBlendAttachment {
+		.blendEnable = VK_TRUE,
+		.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+	};
+
+	// Create AABB pipeline
+	builder
+		.setPipelineLayout(1, meshPipelineLayout)
+		.pushPNext(1, &aabbRenderingCreateInfo)
+		.addDynamicState(1, VK_DYNAMIC_STATE_SCISSOR)
+		.addDynamicState(1, VK_DYNAMIC_STATE_VIEWPORT)
+		.setBlendAttachment(1, &aabbBlendAttachment)
+		.setTopology(1, VK_PRIMITIVE_TOPOLOGY_LINE_LIST)
+		.setDepthState(1, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
+		.setRasterState(1, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+		.setMultisampleCount(1, VK_SAMPLE_COUNT_1_BIT)
+		.setScissorCount(1, 1U)
+		.setViewportCount(1, 1U)
+		.addShaderStage(1, VK_SHADER_STAGE_FRAGMENT_BIT, aabbFragModule, "main")
+		.addShaderStage(1, VK_SHADER_STAGE_VERTEX_BIT, aabbVertModule, "main");
+
+	std::array<VkPipeline, 2> pipelines {};
+    result = builder.build(pipelines.data());
     if (result != VK_SUCCESS) {
-        throw vulkan_error("Failed to create mesh pipeline", result);
+        throw vulkan_error("Failed to create mesh and aabb visualizing pipeline", result);
     }
 
-    // We don't need the shader modules after creating the pipeline anymore.
+	meshPipeline = pipelines[0];
+	aabbVisualizingPipeline = pipelines[1];
+
+	// We don't need the shader modules after creating the pipeline anymore.
     vkDestroyShaderModule(device, fragModule, VK_NULL_HANDLE);
     vkDestroyShaderModule(device, meshModule, VK_NULL_HANDLE);
 	vkDestroyShaderModule(device, taskModule, VK_NULL_HANDLE);
+	vkDestroyShaderModule(device, aabbFragModule, VK_NULL_HANDLE);
+	vkDestroyShaderModule(device, aabbVertModule, VK_NULL_HANDLE);
 
     deletionQueue.push([&]() {
         vkDestroyPipeline(device, meshPipeline, VK_NULL_HANDLE);
         vkDestroyPipelineLayout(device, meshPipelineLayout, VK_NULL_HANDLE);
+		vkDestroyPipeline(device, aabbVisualizingPipeline, VK_NULL_HANDLE);
     });
 }
 
@@ -654,7 +723,7 @@ void Viewer::loadGltf(std::string_view file) {
         throw std::runtime_error("Failed to load file");
     }
 
-    fastgltf::Parser parser(fastgltf::Extensions::KHR_mesh_quantization);
+    fastgltf::Parser parser(fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_lights_punctual);
     parser.setUserPointer(this);
     parser.setBase64DecodeCallback(multithreadedBase64Decoding);
 
@@ -685,7 +754,7 @@ void Viewer::loadGltfMeshes() {
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
 		},
 		// Vertex indices
 		{
@@ -713,7 +782,7 @@ void Viewer::loadGltfMeshes() {
 			.binding = 4,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
 		}
 	}};
 	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo = {
@@ -731,7 +800,7 @@ void Viewer::loadGltfMeshes() {
 	});
 
 	std::vector<Vertex> globalVertices;
-	std::vector<meshopt_Meshlet> globalMeshlets;
+	std::vector<Meshlet> globalMeshlets;
 	std::vector<unsigned int> globalMeshletVertices;
 	std::vector<unsigned char> globalMeshletTriangles;
 
@@ -821,9 +890,42 @@ void Viewer::loadGltfMeshes() {
 			meshlet_triangles.resize(((lastMeshlet.triangle_count * 3 + 3) & ~3) + lastMeshlet.triangle_offset);
 			meshlets.resize(primitive.meshlet_count);
 
+			std::vector<Meshlet> finalMeshlets; finalMeshlets.reserve(primitive.meshlet_count);
+			for (auto& meshlet : meshlets) {
+				// Compute AABB bounds
+				auto& initialVertex = vertices[meshlet_vertices[meshlet.vertex_offset]];
+				auto min = glm::vec3(initialVertex.position), max = glm::vec3(initialVertex.position);
+
+				for (std::size_t i = 1; i < meshlet.vertex_count * 3; ++i) {
+					std::uint32_t vertexIndex = meshlet_vertices[meshlet.vertex_offset + i];
+					auto& vertex = vertices[vertexIndex];
+
+					if (min.x > vertex.position.x)
+						min.x = vertex.position.x;
+					if (min.y > vertex.position.y)
+						min.y = vertex.position.y;
+					if (min.z > vertex.position.z)
+						min.z = vertex.position.z;
+
+					if (max.x < vertex.position.x)
+						max.x = vertex.position.x;
+					if (max.y < vertex.position.y)
+						max.y = vertex.position.y;
+					if (max.z < vertex.position.z)
+						max.z = vertex.position.z;
+				}
+
+				glm::vec3 center = (min + max) * 0.5f;
+				finalMeshlets.emplace_back(Meshlet {
+					.meshlet = meshlet,
+					.aabbExtents = max - center,
+					.aabbCenter = center,
+				});
+			}
+
 			// Append the data to the end of the global buffers.
 			globalVertices.insert(globalVertices.end(), vertices.begin(), vertices.end());
-			globalMeshlets.insert(globalMeshlets.end(), meshlets.begin(), meshlets.end());
+			globalMeshlets.insert(globalMeshlets.end(), finalMeshlets.begin(), finalMeshlets.end());
 			globalMeshletVertices.insert(globalMeshletVertices.end(), meshlet_vertices.begin(), meshlet_vertices.end());
 			globalMeshletTriangles.insert(globalMeshletTriangles.end(), meshlet_triangles.begin(), meshlet_triangles.end());
 		}
@@ -845,7 +947,7 @@ VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer,
 						   buffer, allocation, VK_NULL_HANDLE);
 }
 
-void Viewer::uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
+void Viewer::uploadMeshlets(std::vector<Meshlet>& meshlets,
 							std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 							std::vector<Vertex>& vertices) {
 	ZoneScoped;
@@ -1405,7 +1507,7 @@ glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
 	return base;
 }
 
-void Viewer::drawNode(std::vector<PrimitiveDraw>& cmd, std::size_t nodeIndex, glm::mat4 matrix) {
+void Viewer::drawNode(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix) {
 	assert(asset.nodes.size() > nodeIndex);
 	ZoneScoped;
 
@@ -1413,15 +1515,15 @@ void Viewer::drawNode(std::vector<PrimitiveDraw>& cmd, std::size_t nodeIndex, gl
 	matrix = getTransformMatrix(node, matrix);
 
 	if (node.meshIndex.has_value()) {
-		drawMesh(cmd, node.meshIndex.value(), matrix);
+		drawMesh(cmd, aabbCmd, node.meshIndex.value(), matrix);
 	}
 
 	for (auto& child : node.children) {
-		drawNode(cmd, child, matrix);
+		drawNode(cmd, aabbCmd, child, matrix);
 	}
 }
 
-void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, glm::mat4 matrix) {
+void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix) {
 	assert(meshes.size() > meshIndex);
 	ZoneScoped;
 
@@ -1444,6 +1546,13 @@ void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, gl
 		draw.verticesOffset = primitive.verticesOffset;
 		draw.meshletCount = static_cast<std::uint32_t>(primitive.meshlet_count);
 		draw.materialIndex = primitive.materialIndex;
+
+		// Create the AABB draw command
+		auto& aabb = aabbCmd.emplace_back();
+		aabb.vertexCount = 12 * 2; // 12 edges with each 2 vertices
+		aabb.instanceCount = draw.meshletCount;
+		aabb.firstVertex = 0;
+		aabb.firstInstance = 0;
 	}
 }
 
@@ -1454,11 +1563,12 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	auto& currentDrawBuffer = drawBuffers[currentFrame];
 
 	std::vector<PrimitiveDraw> draws;
+	std::vector<VkDrawIndirectCommand> aabbDraws;
 
 	std::size_t sceneIdx = asset.defaultScene.value_or(0);
 	auto& scene = asset.scenes[sceneIdx];
 	for (auto& nodeIdx : scene.nodeIndices) {
-		drawNode(draws, nodeIdx, glm::mat4(1.0f));
+		drawNode(draws, aabbDraws, nodeIdx, glm::mat4(1.0f));
 	}
 
 	// TODO: This limits our primitive count to 4.2 billion. Can we set this limit somewhere else,
@@ -1484,7 +1594,7 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 							   &currentDrawBuffer.primitiveDrawHandle, &currentDrawBuffer.primitiveDrawAllocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate indirect draw buffer: {}");
-		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, fmt::format("Indirect draw buffer {}", currentFrame));
+		vk::setDebugUtilsName(device, currentDrawBuffer.primitiveDrawHandle, fmt::format("Indirect draw buffer {}", currentFrame));
 		currentDrawBuffer.primitiveDrawBufferSize = byteSize;
 
 		// Update the descriptor
@@ -1505,9 +1615,40 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 		vkUpdateDescriptorSets(device, 1, &writeDescriptor, 0, nullptr);
 	}
 
-	vk::ScopedMap<PrimitiveDraw> map(allocator, currentDrawBuffer.primitiveDrawAllocation);
-	auto* data = map.get();
-	std::copy(draws.begin(), draws.end(), data);
+	{
+		vk::ScopedMap<PrimitiveDraw> map(allocator, currentDrawBuffer.primitiveDrawAllocation);
+		auto* data = map.get();
+		std::copy(draws.begin(), draws.end(), data);
+	}
+
+	// Resize the AABB visualizing draw buffer
+	auto aabbByteSize = currentDrawBuffer.drawCount * sizeof(decltype(aabbDraws)::value_type);
+	if (currentDrawBuffer.aabbDrawBufferSize < aabbByteSize) {
+		if (currentDrawBuffer.aabbDrawHandle != VK_NULL_HANDLE) {
+			vmaDestroyBuffer(allocator, currentDrawBuffer.aabbDrawHandle, currentDrawBuffer.aabbDrawAllocation);
+		}
+
+		const VmaAllocationCreateInfo allocationCreateInfo {
+			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		};
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = aabbByteSize,
+			.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+		};
+		auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+									  &currentDrawBuffer.aabbDrawHandle, &currentDrawBuffer.aabbDrawAllocation, VK_NULL_HANDLE);
+		vk::checkResult(result, "Failed to allocate indirect AABB draw buffer: {}");
+		vk::setDebugUtilsName(device, currentDrawBuffer.aabbDrawHandle, fmt::format("Indirect AABB draw buffer {}", currentFrame));
+		currentDrawBuffer.aabbDrawBufferSize = aabbByteSize;
+	}
+
+	{
+		vk::ScopedMap<VkDrawIndirectCommand> map(allocator, currentDrawBuffer.aabbDrawAllocation);
+		auto* data = map.get();
+		std::copy(aabbDraws.begin(), aabbDraws.end(), data);
+	}
 }
 
 void Viewer::updateCameraBuffer(std::size_t currentFrame) {
@@ -1521,16 +1662,38 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 
 	movement.velocity += (movement.accelerationVector * 2.0f);
 	// Lerp the velocity to 0, adding deceleration.
-	movement.velocity = movement.velocity + (2.0f * deltaTime) * (-movement.velocity);
+	movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
 	// Add the velocity into the position
 	movement.position += movement.velocity * deltaTime;
 	auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
 
-	auto projectionMatrix = glm::perspective(glm::radians(75.0f),
-											 static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height),
-											 0.01f, 1000.0f);
+	static constexpr auto zNear = 0.01f;
+	static constexpr auto zFar = 1000.0f;
+	static constexpr auto fov = glm::radians(75.0f);
+	const auto aspectRatio = static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height);
+	auto projectionMatrix = glm::perspective(fov, aspectRatio, zNear, zFar);
 
 	// Invert the Y-Axis to use the same coordinate system as glTF.
+	//projectionMatrix[1][1] *= -1;
+	camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+
+	// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
+	auto normalizePlane = [](glm::vec4 plane) { return plane / glm::length(glm::vec3(plane)); };
+	const auto& vp = camera.viewProjectionMatrix;
+	auto& p        = camera.frustum;
+	for (glm::length_t i = 0; i < 4; ++i) { p[0][i] = vp[i][3] + vp[i][0]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[1][i] = vp[i][3] - vp[i][0]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[2][i] = vp[i][3] + vp[i][1]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[3][i] = vp[i][3] - vp[i][1]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[4][i] = vp[i][3] + vp[i][2]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[5][i] = vp[i][3] - vp[i][2]; }
+	for (auto& plane : p) {
+		plane /= glm::length(glm::vec3(plane));
+		plane.w = -plane.w;
+	}
+
+	// Re-create the projection matrix to test if the culling works as expected
+	projectionMatrix = glm::perspective(fov + glm::radians(45.0f), aspectRatio, zNear, zFar);
 	projectionMatrix[1][1] *= -1;
 	camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 }
@@ -1789,6 +1952,15 @@ int main(int argc, char* argv[]) {
 											  viewer.drawBuffers[currentFrame].drawCount,
 											  sizeof(PrimitiveDraw));
 
+				if (viewer.enableAabbVisualization) {
+					// Visualize the AABBs. We don't need to rebind descriptor sets as we use the same pipeline layout as the mesh pipeline
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.aabbVisualizingPipeline);
+
+					vkCmdDrawIndirect(cmd, viewer.drawBuffers[currentFrame].aabbDrawHandle, 0,
+									  viewer.drawBuffers[currentFrame].drawCount,
+									  sizeof(VkDrawIndirectCommand));
+				}
+
 				vkCmdEndRendering(cmd);
             }
 
@@ -1883,6 +2055,7 @@ int main(int argc, char* argv[]) {
 
 	// Destroy the draw buffers
 	for (auto& drawBuffer : viewer.drawBuffers) {
+		vmaDestroyBuffer(viewer.allocator, drawBuffer.aabbDrawHandle, drawBuffer.aabbDrawAllocation);
 		vmaDestroyBuffer(viewer.allocator, drawBuffer.primitiveDrawHandle, drawBuffer.primitiveDrawAllocation);
 	}
 

@@ -34,6 +34,8 @@ struct PerFrameCameraBuffer {
 
 struct Camera {
 	glm::mat4 viewProjectionMatrix;
+
+	std::array<glm::vec4, 6> frustum;
 };
 
 struct CameraMovement {
@@ -54,14 +56,21 @@ struct Vertex {
 	glm::vec2 uv;
 };
 
+struct Meshlet {
+	meshopt_Meshlet meshlet;
+
+	glm::vec3 aabbExtents;
+	glm::vec3 aabbCenter;
+};
+
 struct Primitive {
 	std::uint32_t descOffset;
 	std::uint32_t vertexIndicesOffset;
 	std::uint32_t triangleIndicesOffset;
 	std::uint32_t verticesOffset;
 
-	std::uint32_t materialIndex;
 	std::size_t meshlet_count;
+	std::uint32_t materialIndex;
 };
 
 struct Mesh {
@@ -105,6 +114,10 @@ struct FrameDrawCommandBuffers {
 	VkBuffer primitiveDrawHandle;
 	VmaAllocation primitiveDrawAllocation;
 	VkDeviceSize primitiveDrawBufferSize;
+
+	VkBuffer aabbDrawHandle;
+	VmaAllocation aabbDrawAllocation;
+	VkDeviceSize aabbDrawBufferSize;
 
 	std::uint32_t drawCount;
 };
@@ -155,6 +168,9 @@ struct Viewer {
 
     VkPipelineLayout meshPipelineLayout = VK_NULL_HANDLE;
     VkPipeline meshPipeline = VK_NULL_HANDLE;
+
+	VkPipeline aabbVisualizingPipeline = VK_NULL_HANDLE;
+	bool enableAabbVisualization = true;
 
     fastgltf::Asset asset {};
     std::vector<std::shared_ptr<FileLoadTask>> fileLoadTasks;
@@ -210,7 +226,7 @@ struct Viewer {
 
 	/** This function uploads a buffer to DEVICE_LOCAL memory on the GPU using a staging buffer. */
 	VkResult createGpuTransferBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) noexcept;
-	void uploadMeshlets(std::vector<meshopt_Meshlet>& meshlets,
+	void uploadMeshlets(std::vector<Meshlet>& meshlets,
 						std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 						std::vector<Vertex>& vertices);
 	/** Takes glTF meshes and uploads them to the GPU */
@@ -239,6 +255,6 @@ struct Viewer {
 	void updateCameraBuffer(std::size_t currentFrame);
 	void updateDrawBuffer(std::size_t currentFrame);
 
-	void drawNode(std::vector<PrimitiveDraw>& cmd, std::size_t nodeIndex, glm::mat4 matrix);
-	void drawMesh(std::vector<PrimitiveDraw>& cmd, std::size_t meshIndex, glm::mat4 matrix);
+	void drawNode(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix);
+	void drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix);
 };

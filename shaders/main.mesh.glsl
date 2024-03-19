@@ -1,4 +1,6 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
+
 #extension GL_EXT_mesh_shader : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_buffer_reference : require
@@ -7,70 +9,35 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_control_flow_attributes : require
 
-const uint maxVertices = 64;
-const uint maxPrimitives = 126;
-const uint maxMeshlets = 128;
-
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+#include "mesh_common.glsl.h"
+
 layout(triangles, max_vertices = maxVertices, max_primitives = maxPrimitives) out;
 
 layout(set = 0, binding = 0) uniform Camera {
     mat4 viewProjection;
+
+    vec4 frustum[6];
 } camera;
 
-// This is the definition of meshopt_Meshlet
-struct Meshlet {
-    uint vertexOffset;
-    uint triangleOffset;
-
-    uint vertexCount;
-    uint triangleCount;
-};
-
-struct Vertex {
-    vec4 position;
-    vec4 color;
-    vec2 uv;
-};
-
-struct VkDrawMeshTasksIndirectCommandEXT {
-    uint groupCountX;
-    uint groupCountY;
-    uint groupCountZ;
-};
-
-struct Primitive {
-    // TODO: Get rid of this here?
-    VkDrawMeshTasksIndirectCommandEXT command;
-
-    mat4x4 modelMatrix;
-
-    uint descOffset;
-    uint vertexIndicesOffset;
-    uint triangleIndicesOffset;
-    uint verticesOffset;
-
-    uint meshletCount;
-    uint materialIndex;
-};
-
-layout(set = 1, binding = 0, scalar) buffer MeshletDescBuffer {
+layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
     Meshlet meshlets[];
 };
 
-layout(set = 1, binding = 1, scalar) buffer VertexIndexBuffer {
+layout(set = 1, binding = 1, scalar) readonly buffer VertexIndexBuffer {
     uint vertexIndices[];
 };
 
-layout(set = 1, binding = 2, scalar) buffer PrimitiveIndexBuffer {
+layout(set = 1, binding = 2, scalar) readonly buffer PrimitiveIndexBuffer {
     uint8_t primitiveIndices[];
 };
 
-layout(set = 1, binding = 3, scalar) buffer VertexBuffer {
+layout(set = 1, binding = 3, scalar) readonly buffer VertexBuffer {
     Vertex vertices[];
 };
 
-layout(set = 1, binding = 4, scalar) buffer PrimitiveDrawBuffer {
+layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     Primitive primitives[];
 };
 
@@ -86,9 +53,9 @@ layout(location = 1) out vec2 uvs[];
 layout(location = 2) flat out uint materialIndex[];
 
 void main() {
-    Primitive primitive = primitives[gl_DrawID];
+    const Primitive primitive = primitives[gl_DrawID];
     uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
-    Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
+    const Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
 
     // This defines the array size of gl_MeshVerticesEXT
     if (gl_LocalInvocationID.x == 0) {
