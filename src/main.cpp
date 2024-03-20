@@ -450,6 +450,7 @@ void Viewer::buildCameraDescriptor() {
 		result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 									  &cameraBuffer.handle, &cameraBuffer.allocation, VK_NULL_HANDLE);
 		vk::checkResult(result, "Failed to allocate camera buffer: {}");
+		vk::setDebugUtilsName(device, cameraBuffer.handle, fmt::format("Camera buffer {}", i));
 
 		deletionQueue.push([&]() {
 			vmaDestroyBuffer(allocator, cameraBuffer.handle, cameraBuffer.allocation);
@@ -793,7 +794,7 @@ void Viewer::loadGltfMeshes() {
 	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
 											  VK_NULL_HANDLE, &meshletSetLayout);
 	vk::checkResult(result, "Failed to create meshlet descriptor set layout: {}");
-	vk::setDebugUtilsName(device, cameraSetLayout, "Mesh shader pipeline descriptor layout");
+	vk::setDebugUtilsName(device, meshletSetLayout, "Mesh shader pipeline descriptor layout");
 
 	deletionQueue.push([&]() {
 		vkDestroyDescriptorSetLayout(device, meshletSetLayout, nullptr);
@@ -896,7 +897,7 @@ void Viewer::loadGltfMeshes() {
 				auto& initialVertex = vertices[meshlet_vertices[meshlet.vertex_offset]];
 				auto min = glm::vec3(initialVertex.position), max = glm::vec3(initialVertex.position);
 
-				for (std::size_t i = 1; i < meshlet.vertex_count * 3; ++i) {
+				for (std::size_t i = 1; i < meshlet.vertex_count; ++i) {
 					std::uint32_t vertexIndex = meshlet_vertices[meshlet.vertex_offset + i];
 					auto& vertex = vertices[vertexIndex];
 
@@ -1674,11 +1675,10 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	auto projectionMatrix = glm::perspective(fov, aspectRatio, zNear, zFar);
 
 	// Invert the Y-Axis to use the same coordinate system as glTF.
-	//projectionMatrix[1][1] *= -1;
+	projectionMatrix[1][1] *= -1;
 	camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 
 	// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
-	auto normalizePlane = [](glm::vec4 plane) { return plane / glm::length(glm::vec3(plane)); };
 	const auto& vp = camera.viewProjectionMatrix;
 	auto& p        = camera.frustum;
 	for (glm::length_t i = 0; i < 4; ++i) { p[0][i] = vp[i][3] + vp[i][0]; }
@@ -1693,9 +1693,9 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	}
 
 	// Re-create the projection matrix to test if the culling works as expected
-	projectionMatrix = glm::perspective(fov + glm::radians(45.0f), aspectRatio, zNear, zFar);
-	projectionMatrix[1][1] *= -1;
-	camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+	//projectionMatrix = glm::perspective(fov + glm::radians(45.0f), aspectRatio, zNear, zFar);
+	//projectionMatrix[1][1] *= -1;
+	//camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 }
 
 int main(int argc, char* argv[]) {

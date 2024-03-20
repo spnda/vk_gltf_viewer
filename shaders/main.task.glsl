@@ -78,7 +78,7 @@ void main() {
     [[unroll]] for (uint i = 0; i < meshletLoops; ++i) {
         uint idx = gl_LocalInvocationIndex.x + i * gl_WorkGroupSize.x;
         idx = min(idx, meshletCount - 1);
-        const Meshlet meshlet = meshlets[taskPayload.baseID + idx];
+        const Meshlet meshlet = meshlets[primitive.descOffset + taskPayload.baseID + idx];
 
         // Do some culling
         const vec3 worldAabbCenter = (primitive.modelMatrix * vec4(meshlet.aabbCenter, 1.0f)).xyz;

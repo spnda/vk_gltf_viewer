@@ -170,7 +170,7 @@ struct Viewer {
     VkPipeline meshPipeline = VK_NULL_HANDLE;
 
 	VkPipeline aabbVisualizingPipeline = VK_NULL_HANDLE;
-	bool enableAabbVisualization = true;
+	bool enableAabbVisualization = false;
 
     fastgltf::Asset asset {};
     std::vector<std::shared_ptr<FileLoadTask>> fileLoadTasks;
