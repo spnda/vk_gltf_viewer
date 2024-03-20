@@ -22,12 +22,13 @@ class ImageUploadTask : public enki::ITaskSet {
 	enki::Dependency dependency;
 
 	std::span<const std::byte> data;
+	std::size_t channelCount;
 	VkImage destinationImage;
 	VkExtent3D imageExtent;
 	VkImageLayout destinationLayout;
 
 public:
-	explicit ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent, VkImageLayout destinationLayout);
+	explicit ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent, VkImageLayout destinationLayout, std::size_t channelCount);
 
 	void SetDependency(enki::ICompletable* task) {
 		ITaskSet::SetDependency(dependency, task);

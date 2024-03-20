@@ -214,6 +214,11 @@ vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setMultisampleCount(st
     return *this;
 }
 
+vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setPipelineCache(VkPipelineCache cache) {
+	pipelineCache = cache;
+	return *this;
+}
+
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setPipelineCount(std::uint32_t count) {
     ZoneScoped;
     assert(count != 0);

@@ -37,3 +37,6 @@
 [submodule "submodules/vulkan-utils"]
 	path = submodules/vulkan-utils
 	url = https://github.com/KhronosGroup/Vulkan-Utility-Libraries/
+[submodule "submodules/imgui"]
+	path = submodules/imgui
+	url = https://github.com/ocornut/imgui

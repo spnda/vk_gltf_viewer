@@ -99,6 +99,7 @@ namespace vk {
         GraphicsPipelineBuilder& setDepthState(std::uint32_t idx, VkBool32 depthTestEnable, VkBool32 depthWriteEnable,
                                                VkCompareOp depthCompareOp);
         GraphicsPipelineBuilder& setMultisampleCount(std::uint32_t idx, VkSampleCountFlagBits samples);
+		GraphicsPipelineBuilder& setPipelineCache(VkPipelineCache cache) override;
         /**
          * This creates everything needed to build the pipeline. Note that this is required to be
          * called for every pipeline builder with a count of at least 1.

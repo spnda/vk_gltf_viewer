@@ -20,7 +20,7 @@ void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threa
 		auto stagingBufferSize = uploader.getStagingBufferSize();
 
 		// Get the subspan for this execution
-		auto subLength = min(data.size_bytes() - i * stagingBufferSize, stagingBufferSize);
+		auto subLength = util::min(data.size_bytes() - i * stagingBufferSize, stagingBufferSize);
 		auto sub = data.subspan(i * stagingBufferSize, subLength);
 
 		// Copy the memory chunk into the staging buffer
@@ -74,10 +74,10 @@ void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threa
 	}
 }
 
-ImageUploadTask::ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent, VkImageLayout destinationLayout)
-		: data(data), destinationImage(destinationImage), imageExtent(imageExtent), destinationLayout(destinationLayout) {
+ImageUploadTask::ImageUploadTask(std::span<const std::byte> data, VkImage destinationImage, VkExtent3D imageExtent, VkImageLayout destinationLayout, std::size_t channelCount)
+		: data(data), destinationImage(destinationImage), imageExtent(imageExtent), destinationLayout(destinationLayout), channelCount(channelCount) {
 	m_SetSize = imageExtent.height;
-	m_MinRange = min(150U, imageExtent.height); // TODO. This *only* works when 150 rows is not larger than a staging buffer.
+	m_MinRange = util::min(150U, imageExtent.height); // TODO. This *only* works when 150 rows is not larger than a staging buffer.
 }
 
 void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) {
@@ -87,10 +87,9 @@ void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t t
 	auto stagingBufferSize = uploader.getStagingBufferSize();
 
 	// The range (as defined by ImageLoadCompletionCallback::OnDependenciesComplete) is the row range
-	// of the image to copy. This will guarantee continuous data from the span. We currently always
-	// load 4 components.
-	auto subLength = (range.end - range.start) * imageExtent.width * 4;
-	auto sub = data.subspan(range.start * imageExtent.width * 4, subLength);
+	// of the image to copy. This will guarantee continuous data from the span.
+	auto subLength = (range.end - range.start) * imageExtent.width * channelCount;
+	auto sub = data.subspan(range.start * imageExtent.width * channelCount, subLength);
 
 	auto& stagingBuffer = uploader.stagingBuffers[threadnum];
 	{
@@ -204,7 +203,7 @@ bool BufferUploader::init(VkDevice nDevice, VmaAllocator nAllocator, std::uint32
 
 	// Set the staging buffer size. We only want to use 80% of the DEVICE_LOCAL | HOST_VISIBLE memory.
 	// TODO: Use actual Vulkan heap size.
-	std::size_t totalSize = alignDown(static_cast<std::size_t>(224395264U * 0.5), static_cast<std::size_t>(threadCount));
+	std::size_t totalSize = util::alignDown(static_cast<std::size_t>(224395264U * 0.5), static_cast<std::size_t>(threadCount));
 	stagingBufferSize = totalSize / threadCount;
 
 	// Create the command pool

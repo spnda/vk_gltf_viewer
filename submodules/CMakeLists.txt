@@ -101,3 +101,28 @@ endif()
 if (EXISTS "${VKV_DEPS_DIR}/meshoptimizer")
     add_subdirectory("${VKV_DEPS_DIR}/meshoptimizer")
 endif()
+
+if (EXISTS "${VKV_DEPS_DIR}/imgui")
+    message(STATUS "vk_gltf_viewer: Found imgui")
+
+    set(IMGUI_DIRECTORY "${VKV_DEPS_DIR}/imgui")
+    if(NOT EXISTS "${IMGUI_DIRECTORY}")
+        message(FATAL_ERROR "The imgui submodule does not exist.")
+    endif()
+
+    add_library(imgui)
+    add_library(imgui::imgui ALIAS imgui)
+    add_source_directory(TARGET imgui FOLDER "${IMGUI_DIRECTORY}")
+    add_source_directory(TARGET imgui FOLDER "${IMGUI_DIRECTORY}/misc/cpp/")
+
+    target_include_directories(imgui SYSTEM PUBLIC "${IMGUI_DIRECTORY}")
+    target_include_directories(imgui SYSTEM PUBLIC "${IMGUI_DIRECTORY}/backends")
+    target_include_directories(imgui SYSTEM PUBLIC "${IMGUI_DIRECTORY}/misc/cpp")
+
+    target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS=1)
+
+    # We only need the GLFW implementation
+    target_sources(imgui PUBLIC "${IMGUI_DIRECTORY}/backends/imgui_impl_glfw.h" "${IMGUI_DIRECTORY}/backends/imgui_impl_glfw.cpp")
+
+    target_link_libraries(imgui PUBLIC glfw::glfw)
+endif()

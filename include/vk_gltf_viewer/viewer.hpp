@@ -1,14 +1,28 @@
+#pragma once
+
+#include <deque>
 #include <ranges>
 #include <vector>
 
 #include <vulkan/vk.hpp>
+#include <vulkan/vma.hpp>
 #include <VkBootstrap.h>
 
 #include <TaskScheduler.h>
 
+#include <tracy/TracyVulkan.hpp>
+
+#include <meshoptimizer.h>
+
 #include <glfw/glfw3.h>
 
 #include <glm/mat4x4.hpp>
+
+#include <fastgltf/types.hpp>
+
+#include <vk_gltf_viewer/imgui_renderer.hpp>
+
+extern enki::TaskScheduler taskScheduler;
 
 struct FrameSyncData {
     VkSemaphore imageAvailable;
@@ -194,6 +208,9 @@ struct Viewer {
 	VkBuffer materialBuffer = VK_NULL_HANDLE;
 	VmaAllocation materialAllocation = VK_NULL_HANDLE;
 
+	// ImGUI / UI objects
+	imgui::Renderer imgui;
+
     // This is the same paradigm as used by vkguide.dev. This makes sure every object
     // is properly destroyed in reverse-order to creation.
     class DeletionQueue {
@@ -257,4 +274,7 @@ struct Viewer {
 
 	void drawNode(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix);
 	void drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix);
+
+	/** Create UI using ImGui */
+	void renderUi();
 };

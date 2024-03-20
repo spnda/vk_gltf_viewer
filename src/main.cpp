@@ -1,4 +1,3 @@
-#include <deque>
 #include <functional>
 #include <iostream>
 #include <string_view>
@@ -16,6 +15,9 @@
 
 #include <vulkan/pipeline_builder.hpp>
 #include <vulkan/debug_utils.hpp>
+
+#include <imgui.h>
+#include <vk_gltf_viewer/imgui_renderer.hpp>
 
 #define GLFW_INCLUDE_VULKAN
 #include <glfw/glfw3.h>
@@ -44,13 +46,7 @@ struct Viewer;
 
 void glfwErrorCallback(int errorCode, const char* description) {
     if (errorCode != GLFW_NO_ERROR) {
-        std::cout << "GLFW error: " << errorCode;
-
-        if (description != nullptr) {
-            std::cout << ": " << description;
-        }
-
-        std::cout << '\n';
+		fmt::print(stderr, "GLFW error: {} {}\n", errorCode, description);
     }
 }
 
@@ -64,6 +60,12 @@ void glfwResizeCallback(GLFWwindow* window, int width, int height) {
 void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
 	void* ptr = glfwGetWindowUserPointer(window);
 	auto& movement = static_cast<Viewer*>(ptr)->movement;
+
+	int state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE);
+	if (state != GLFW_PRESS) {
+		movement.lastCursorPosition = { xpos, ypos };
+		return;
+	}
 
 	if (movement.firstMouse) {
 		movement.lastCursorPosition = { xpos, ypos };
@@ -114,7 +116,7 @@ VkBool32 vulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT          mes
                              VkDebugUtilsMessageTypeFlagsEXT                  messageTypes,
                              const VkDebugUtilsMessengerCallbackDataEXT*      pCallbackData,
                              void*                                            pUserData) {
-    std::cout << pCallbackData->pMessage << '\n';
+	fmt::print("{}\n", pCallbackData->pMessage);
     return VK_FALSE; // Beware: VK_TRUE here and the layers will kill the app instantly.
 }
 
@@ -362,15 +364,15 @@ void Viewer::createDescriptorPool() {
 	std::array<VkDescriptorPoolSize, 3> sizes = {{
 		{
 			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = min(1048576U, limits.maxDescriptorSetUniformBuffers),
+			.descriptorCount = util::min(1048576U, limits.maxDescriptorSetUniformBuffers),
 		},
 		{
 			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.descriptorCount = min(1048576U, limits.maxDescriptorSetStorageBuffers),
+			.descriptorCount = util::min(1048576U, limits.maxDescriptorSetStorageBuffers),
 		},
 		{
 			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = min(16536U, limits.maxDescriptorSetSampledImages),
+			.descriptorCount = util::min(16536U, limits.maxDescriptorSetSampledImages),
 		}
 	}};
 	const VkDescriptorPoolCreateInfo poolCreateInfo = {
@@ -1169,7 +1171,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 		// Create and schedule the ImageUploadTask.
 		auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(imageData),
 			imageExtent.width * imageExtent.height * sizeof(std::byte) * channels };
-		ImageUploadTask uploadTask(data, sampledImage.image, imageExtent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		ImageUploadTask uploadTask(data, sampledImage.image, imageExtent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, channels);
 		taskScheduler.AddTaskSetToPipe(&uploadTask);
 
 		const VkImageViewCreateInfo imageViewInfo {
@@ -1222,7 +1224,7 @@ void Viewer::createDefaultImages() {
 	// We use R8G8B8A8_UNORM, so we need to use 8-bit integers for the colors here.
 	std::array<std::uint8_t, 4> white {{ 255, 255, 255, 255 }};
 	auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(white.data()), sizeof(white) };
-	ImageUploadTask uploadTask(data, defaultTexture.image, imageInfo.extent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	ImageUploadTask uploadTask(data, defaultTexture.image, imageInfo.extent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 4);
 	taskScheduler.AddTaskSetToPipe(&uploadTask);
 
 	const VkImageViewCreateInfo imageViewInfo {
@@ -1698,9 +1700,15 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	//camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 }
 
+void Viewer::renderUi() {
+	ImGui::ShowDemoWindow();
+
+	ImGui::Render();
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "No gltf file specified." << '\n';
+		fmt::print("No glTF file specified\n");
         return -1;
     }
     auto gltfFile = std::string_view { argv[1] };
@@ -1748,7 +1756,11 @@ int main(int argc, char* argv[]) {
 
 		glfwSetKeyCallback(viewer.window, keyCallback);
 		glfwSetCursorPosCallback(viewer.window, cursorCallback);
-		glfwSetInputMode(viewer.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+		// glfwSetInputMode(viewer.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+		ImGui::StyleColorsDark();
 
         // Create the Vulkan surface
         auto surfaceResult = glfwCreateWindowSurface(viewer.instance, viewer.window, nullptr, &viewer.surface);
@@ -1782,6 +1794,20 @@ int main(int argc, char* argv[]) {
 		// Resize the drawBuffers vector
 		viewer.drawBuffers.resize(frameOverlap);
 
+		// Setup ImGui. This requires the swapchain to already exist to know the format
+		auto imguiResult = viewer.imgui.init(viewer.device, viewer.allocator, viewer.window, viewer.swapchain.image_format);
+		vk::checkResult(imguiResult, "Failed to create ImGui rendering context: {}");
+		auto& io = ImGui::GetIO();
+		io.ConfigFlags |= ImGuiConfigFlags_IsSRGB;
+		io.Fonts->AddFontDefault();
+		viewer.imgui.createFontAtlas();
+		viewer.deletionQueue.push([&]() {
+			viewer.imgui.destroy();
+		});
+
+		// Init ImGui frame data
+		viewer.imgui.initFrameData(frameOverlap);
+
         // Creates the required fences and semaphores for frame sync
         viewer.createFrameData();
 
@@ -1804,6 +1830,12 @@ int main(int argc, char* argv[]) {
 			auto currentTime = static_cast<float>(glfwGetTime());
 			viewer.deltaTime = currentTime - viewer.lastFrame;
 			viewer.lastFrame = currentTime;
+
+			// New ImGui frame
+			viewer.imgui.newFrame();
+			ImGui::NewFrame();
+
+			viewer.renderUi();
 
             currentFrame = ++currentFrame % frameOverlap;
             auto& frameSyncData = viewer.frameSyncData[currentFrame];
@@ -1964,7 +1996,13 @@ int main(int argc, char* argv[]) {
 				vkCmdEndRendering(cmd);
             }
 
-            // Transition the swapchain image from (possibly) UNDEFINED -> PRESENT_SRC_KHR
+			// Draw UI
+			{
+				auto extent = glm::u32vec2(viewer.swapchain.extent.width, viewer.swapchain.extent.height);
+				viewer.imgui.draw(cmd, viewer.swapchainImageViews[swapchainImageIndex], extent, currentFrame);
+			}
+
+            // Transition the swapchain image from COLOR_ATTACHMENT -> PRESENT_SRC_KHR
 			const VkImageMemoryBarrier2 swapchainImageBarrier {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 				.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -2033,9 +2071,9 @@ int main(int argc, char* argv[]) {
 			FrameMarkEnd("frame");
         }
     } catch (const vulkan_error& error) {
-        std::cerr << error.what() << ": " << error.what_result() << '\n';
+		fmt::print("{}: {}\n", error.what(), error.what_result());
     } catch (const std::runtime_error& error) {
-        std::cerr << error.what() << '\n';
+		fmt::print("{}\n", error.what());
     }
 
     vkDeviceWaitIdle(viewer.device); // Make sure everything is done
