@@ -240,7 +240,7 @@ struct Viewer {
         deletionQueue.flush();
     }
 
-	void loadGltf(std::string_view file);
+	void loadGltf(const std::filesystem::path& file);
 
 	/** This function uploads a buffer to DEVICE_LOCAL memory on the GPU using a staging buffer. */
 	VkResult createGpuTransferBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) noexcept;

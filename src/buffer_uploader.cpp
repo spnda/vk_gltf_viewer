@@ -12,7 +12,7 @@ BufferUploadTask::BufferUploadTask(std::span<const std::byte> data, VkBuffer des
 	m_SetSize = (data.size_bytes() + uploader.getStagingBufferSize() - 1) / uploader.getStagingBufferSize();
 }
 
-void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) {
+void BufferUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) {
 	assert(!BufferUploader::getInstance().stagingBuffers.empty());
 	ZoneScoped;
 	for (auto i = range.start; i < range.end; ++i) {
@@ -144,7 +144,7 @@ void ImageUploadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t t
 		},
 		.imageOffset = {
 			.x = 0,
-			.y = static_cast<int32_t>(range.start),
+			.y = static_cast<std::int32_t>(range.start),
 			.z = 0,
 		},
 		.imageExtent = {

@@ -229,7 +229,7 @@ void Viewer::setupVulkanDevice() {
 	// for dedicated transfer queues.
 	std::vector<vkb::CustomQueueDescription> queues;
 	auto queueFamilies = physicalDevice.get_queue_families();
-	for (uint32_t i = 0; i < queueFamilies.size(); i++) {
+	for (std::uint32_t i = 0; i < queueFamilies.size(); i++) {
 		std::size_t queueCount = 1;
 		// Dedicated transfer queue; does not support graphics or present
 		if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && (queueFamilies[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0)
@@ -251,8 +251,13 @@ void Viewer::setupVulkanDevice() {
 
     volkLoadDevice(device);
 
+#if defined(TRACY_ENABLE)
 	// Initialize the tracy context
 	tracyCtx = TracyVkContextHostCalibrated(device.physical_device, device, vkResetQueryPool, vkGetPhysicalDeviceCalibrateableTimeDomainsEXT, vkGetCalibratedTimestampsEXT);
+	deletionQueue.push([&]() {
+		DestroyVkContext(tracyCtx);
+	});
+#endif
 
 	// Create the VMA allocator
 	// Create the VMA allocator object
@@ -674,7 +679,7 @@ void Viewer::createFrameData() {
 
 class Base64DecodeTask final : public enki::ITaskSet {
     std::string_view encodedData;
-    uint8_t* outputData;
+	std::uint8_t* outputData;
 
 public:
     // Arbitrarily chosen 1MB. Lower values will cause too many tasks to spawn, slowing down the process.
@@ -682,18 +687,19 @@ public:
     // overhead of launching threaded tasks gets noticeable.
     static constexpr const size_t minBase64DecodeSetSize = 1 * 1024 * 1024; // 1MB.
 
-    explicit Base64DecodeTask(uint32_t dataSize, std::string_view encodedData, uint8_t* outputData)
+    explicit Base64DecodeTask(std::uint32_t dataSize, std::string_view encodedData, std::uint8_t* outputData)
             : enki::ITaskSet(dataSize, minBase64DecodeSetSize), encodedData(encodedData), outputData(outputData) {}
 
-    void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override {
-        fastgltf::base64::decode_inplace(encodedData.substr(static_cast<size_t>(range.start) * 4, static_cast<size_t>(range.end) * 4),
+    void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
+		ZoneScoped;
+        fastgltf::base64::decode_inplace(encodedData.substr(static_cast<std::size_t>(range.start) * 4, static_cast<std::size_t>(range.end) * 4),
                                          &outputData[range.start * 3], 0);
     }
 };
 
 // The custom base64 callback for fastgltf to multithread base64 decoding, to divide the (possibly) large
 // input buffer into smaller chunks that can be worked on by multiple threads.
-void multithreadedBase64Decoding(std::string_view encodedData, uint8_t* outputData,
+void multithreadedBase64Decoding(std::string_view encodedData, std::uint8_t* outputData,
                                  std::size_t padding, std::size_t outputSize, void* userPointer) {
 	ZoneScoped;
     assert(fastgltf::base64::getOutputSize(encodedData.size(), padding) <= outputSize);
@@ -717,10 +723,8 @@ void multithreadedBase64Decoding(std::string_view encodedData, uint8_t* outputDa
     taskScheduler.WaitforTask(&task);
 }
 
-void Viewer::loadGltf(std::string_view file) {
+void Viewer::loadGltf(const std::filesystem::path& filePath) {
 	ZoneScoped;
-    const std::filesystem::path filePath(file);
-
     fastgltf::GltfDataBuffer fileBuffer;
     if (!fileBuffer.loadFromFile(filePath)) {
         throw std::runtime_error("Failed to load file");
@@ -1108,12 +1112,12 @@ struct ImageLoadTask : public enki::ITaskSet {
 	}
 
 	// We'll use the range to operate over multiple images
-	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override {
+	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
 		ZoneScoped;
 		// m_SetSize = 1, so range will always be 0,1
 		auto& image = viewer->asset.images[imageIdx - Viewer::numDefaultTextures];
 
-		uint8_t* imageData = nullptr;
+		std::uint8_t* imageData = nullptr;
 		VkExtent3D imageExtent;
 		imageExtent.depth = 1;
 		static constexpr auto channels = 4;
@@ -1436,7 +1440,7 @@ void Viewer::loadGltfMaterials() {
 	materials.emplace_back(Material {
 		.albedoFactor = glm::vec4(1.0f),
 		.albedoIndex = 0,
-		.alphaCutoff = 0.5,
+		.alphaCutoff = 0.5f,
 	});
 
 	for (auto& gltfMaterial : asset.materials) {
@@ -1560,8 +1564,8 @@ void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirec
 }
 
 void Viewer::updateDrawBuffer(std::size_t currentFrame) {
-	assert(drawBuffers.size() > currentFrame);
 	ZoneScoped;
+	assert(drawBuffers.size() > currentFrame);
 
 	auto& currentDrawBuffer = drawBuffers[currentFrame];
 
@@ -1698,6 +1702,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 }
 
 void Viewer::renderUi() {
+	ZoneScoped;
 	if (ImGui::Begin("vk_gltf_viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
 		ImGui::Checkbox("Enable AABB visualization", &enableAabbVisualization);
 		ImGui::Checkbox("Freeze Camera frustum", &freezeCameraFrustum);
@@ -1707,12 +1712,21 @@ void Viewer::renderUi() {
 	ImGui::Render();
 }
 
+#ifdef _MSC_VER
+int wmain(int argc, wchar_t* argv[]) {
+	if (argc < 2) {
+		fmt::print("No glTF file specified\n");
+		return -1;
+	}
+	std::filesystem::path gltfFile { argv[1] };
+#else
 int main(int argc, char* argv[]) {
     if (argc < 2) {
 		fmt::print("No glTF file specified\n");
         return -1;
     }
-    auto gltfFile = std::string_view { argv[1] };
+	std::filesystem::path gltfFile { argv[1] };
+#endif
 
 	if (!std::filesystem::is_regular_file(gltfFile)) {
 		return -1;
@@ -1999,6 +2013,8 @@ int main(int argc, char* argv[]) {
 
 			// Draw UI
 			{
+				TracyVkZone(viewer.tracyCtx, cmd, "ImGui rendering");
+
 				auto extent = glm::u32vec2(viewer.swapchain.extent.width, viewer.swapchain.extent.height);
 				viewer.imgui.draw(cmd, viewer.swapchainImageViews[swapchainImageIndex], extent, currentFrame);
 			}
