@@ -185,6 +185,7 @@ struct Viewer {
 
 	VkPipeline aabbVisualizingPipeline = VK_NULL_HANDLE;
 	bool enableAabbVisualization = false;
+	bool freezeCameraFrustum = false;
 
     fastgltf::Asset asset {};
     std::vector<std::shared_ptr<FileLoadTask>> fileLoadTasks;

@@ -48,6 +48,13 @@ if (EXISTS "${VKV_DEPS_DIR}/vulkan-headers")
     target_include_directories(Vulkan-Headers SYSTEM INTERFACE "${VKV_DEPS_DIR}/vulkan-headers/include")
 endif()
 
+if (EXISTS "${VKV_DEPS_DIR}/vulkan-utils")
+    message(STATUS "vk_gltf_viewer: Found Vulkan-Utils")
+    add_library(Vulkan-Utils INTERFACE)
+    add_library(Vulkan::Utils ALIAS Vulkan-Utils)
+    target_include_directories(Vulkan-Utils SYSTEM INTERFACE "${VKV_DEPS_DIR}/vulkan-utils/include")
+endif()
+
 if (EXISTS "${VKV_DEPS_DIR}/volk")
     message(STATUS "vk_gltf_viewer: Found volk")
     # volk automatically calls find_package(Vulkan) if VOLK_PULL_IN_VULKAN is ON. VOLK_HEADERS_ONLY makes it only add volk::volk_headers and

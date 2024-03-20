@@ -219,7 +219,7 @@ void Viewer::setupVulkanDevice() {
             .select();
     checkResult(selectionResult);
 
-	VmaAllocatorCreateFlags allocatorFlags;
+	VmaAllocatorCreateFlags allocatorFlags = 0;
 	auto& physicalDevice = selectionResult.value();
 	if (physicalDevice.enable_extension_if_present(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
 		allocatorFlags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
@@ -1680,28 +1680,29 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	projectionMatrix[1][1] *= -1;
 	camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 
-	// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
-	const auto& vp = camera.viewProjectionMatrix;
-	auto& p        = camera.frustum;
-	for (glm::length_t i = 0; i < 4; ++i) { p[0][i] = vp[i][3] + vp[i][0]; }
-	for (glm::length_t i = 0; i < 4; ++i) { p[1][i] = vp[i][3] - vp[i][0]; }
-	for (glm::length_t i = 0; i < 4; ++i) { p[2][i] = vp[i][3] + vp[i][1]; }
-	for (glm::length_t i = 0; i < 4; ++i) { p[3][i] = vp[i][3] - vp[i][1]; }
-	for (glm::length_t i = 0; i < 4; ++i) { p[4][i] = vp[i][3] + vp[i][2]; }
-	for (glm::length_t i = 0; i < 4; ++i) { p[5][i] = vp[i][3] - vp[i][2]; }
-	for (auto& plane : p) {
-		plane /= glm::length(glm::vec3(plane));
-		plane.w = -plane.w;
+	if (!freezeCameraFrustum) {
+		// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
+		const auto& vp = camera.viewProjectionMatrix;
+		auto& p = camera.frustum;
+		for (glm::length_t i = 0; i < 4; ++i) { p[0][i] = vp[i][3] + vp[i][0]; }
+		for (glm::length_t i = 0; i < 4; ++i) { p[1][i] = vp[i][3] - vp[i][0]; }
+		for (glm::length_t i = 0; i < 4; ++i) { p[2][i] = vp[i][3] + vp[i][1]; }
+		for (glm::length_t i = 0; i < 4; ++i) { p[3][i] = vp[i][3] - vp[i][1]; }
+		for (glm::length_t i = 0; i < 4; ++i) { p[4][i] = vp[i][3] + vp[i][2]; }
+		for (glm::length_t i = 0; i < 4; ++i) { p[5][i] = vp[i][3] - vp[i][2]; }
+		for (auto& plane: p) {
+			plane /= glm::length(glm::vec3(plane));
+			plane.w = -plane.w;
+		}
 	}
-
-	// Re-create the projection matrix to test if the culling works as expected
-	//projectionMatrix = glm::perspective(fov + glm::radians(45.0f), aspectRatio, zNear, zFar);
-	//projectionMatrix[1][1] *= -1;
-	//camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 }
 
 void Viewer::renderUi() {
-	ImGui::ShowDemoWindow();
+	if (ImGui::Begin("vk_gltf_viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+		ImGui::Checkbox("Enable AABB visualization", &enableAabbVisualization);
+		ImGui::Checkbox("Freeze Camera frustum", &freezeCameraFrustum);
+	}
+	ImGui::End();
 
 	ImGui::Render();
 }

@@ -7,6 +7,7 @@
 #include <fmt/ranges.h>
 
 #include <vulkan/vk.hpp>
+#include <vulkan/vk_enum_string_helper.h>
 
 namespace vk {
     // Represents a Vulkan version but wraps it in another type so that we can format it.
@@ -39,8 +40,7 @@ template <>
 struct fmt::formatter<VkResult> : formatter<std::string_view> {
     template <typename FormatContext>
     inline auto format(VkResult const& result, FormatContext& ctx) const {
-        return formatter<string_view>::format("VkResult", ctx);
-        //return formatter<string_view>::format(magic_enum::enum_name(result), ctx);
+		return formatter<string_view>::format(string_VkResult(result), ctx);
     }
 };
 
