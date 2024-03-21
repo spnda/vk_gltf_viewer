@@ -17,12 +17,14 @@
 #include <vulkan/debug_utils.hpp>
 
 #include <imgui.h>
+#include <imgui_stdlib.h>
 #include <vk_gltf_viewer/imgui_renderer.hpp>
 
 #define GLFW_INCLUDE_VULKAN
 #include <glfw/glfw3.h>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/quaternion.hpp>
@@ -1497,6 +1499,43 @@ void Viewer::loadGltfMaterials() {
 	vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
 
+glm::mat4 Viewer::getCameraProjectionMatrix(fastgltf::Camera& camera) const {
+	ZoneScoped;
+	// The following matrix math is for the projection matrices as defined by the glTF spec:
+	// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#projection-matrices
+	return std::visit(fastgltf::visitor {
+		[&](fastgltf::Camera::Perspective& perspective) {
+			glm::mat4x4 mat(0.0f);
+
+			assert(swapchain.extent.width != 0 && swapchain.extent.height != 0);
+			auto aspectRatio = perspective.aspectRatio.value_or(
+				static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height));
+			mat[0][0] = 1.f / (aspectRatio * tan(0.5f * perspective.yfov));
+			mat[1][1] = 1.f / (tan(0.5f * perspective.yfov));
+			mat[2][3] = -1;
+
+			if (perspective.zfar.has_value()) {
+				// Finite projection matrix
+				mat[2][2] = (*perspective.zfar + perspective.znear) / (perspective.znear - *perspective.zfar);
+				mat[3][2] = (2 * *perspective.zfar * perspective.znear) / (perspective.znear - *perspective.zfar);
+			} else {
+				// Infinite projection matrix
+				mat[2][2] = -1;
+				mat[3][2] = -2 * perspective.znear;
+			}
+			return mat;
+		},
+		[&](fastgltf::Camera::Orthographic& orthographic) {
+			glm::mat4x4 mat(1.0f);
+			mat[0][0] = 1.f / orthographic.xmag;
+			mat[1][1] = 1.f / orthographic.ymag;
+			mat[2][2] = 2.f / (orthographic.znear - orthographic.zfar);
+			mat[3][2] = (orthographic.zfar + orthographic.znear) / (orthographic.znear - orthographic.zfar);
+			return mat;
+		},
+	}, camera.camera);
+}
+
 glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
 	/** Both a matrix and TRS values are not allowed
 	 * to exist at the same time according to the spec */
@@ -1572,8 +1611,10 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	std::vector<PrimitiveDraw> draws;
 	std::vector<VkDrawIndirectCommand> aabbDraws;
 
-	std::size_t sceneIdx = asset.defaultScene.value_or(0);
-	auto& scene = asset.scenes[sceneIdx];
+	if (asset.scenes.empty() || sceneIndex >= asset.scenes.size())
+		return;
+
+	auto& scene = asset.scenes[sceneIndex];
 	for (auto& nodeIdx : scene.nodeIndices) {
 		drawNode(draws, aabbDraws, nodeIdx, glm::mat4(1.0f));
 	}
@@ -1667,22 +1708,49 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	vk::ScopedMap<Camera> map(allocator, cameraBuffer.allocation);
 	auto& camera = *map.get();
 
-	movement.velocity += (movement.accelerationVector * 2.0f);
-	// Lerp the velocity to 0, adding deceleration.
-	movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
-	// Add the velocity into the position
-	movement.position += movement.velocity * deltaTime;
-	auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
+	if (cameraIndex.has_value()) {
+		auto& scene = asset.scenes[sceneIndex];
 
-	static constexpr auto zNear = 0.01f;
-	static constexpr auto zFar = 1000.0f;
-	static constexpr auto fov = glm::radians(75.0f);
-	const auto aspectRatio = static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height);
-	auto projectionMatrix = glm::perspective(fov, aspectRatio, zNear, zFar);
+		// Get the view matrix by traversing the node tree and finding the selected cameraNode
+		glm::mat4 viewMatrix(1.0f);
+		auto getCameraViewMatrix = [this, &viewMatrix](std::size_t nodeIndex, glm::mat4 matrix, auto& self) -> void {
+			auto& node = asset.nodes[nodeIndex];
+			matrix = getTransformMatrix(node, matrix);
 
-	// Invert the Y-Axis to use the same coordinate system as glTF.
-	projectionMatrix[1][1] *= -1;
-	camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+			if (node.cameraIndex.has_value() && &node == cameraNodes[*cameraIndex]) {
+				viewMatrix = glm::affineInverse(matrix);
+			}
+
+			for (auto& child : node.children) {
+				self(child, matrix, self);
+			}
+		};
+		for (auto& sceneNode : scene.nodeIndices) {
+			getCameraViewMatrix(sceneNode, glm::mat4(1.0f), getCameraViewMatrix);
+		}
+
+		auto projectionMatrix = getCameraProjectionMatrix(asset.cameras[*cameraIndex]);
+
+		projectionMatrix[1][1] *= -1;
+		camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+	} else {
+		movement.velocity += (movement.accelerationVector * 2.0f);
+		// Lerp the velocity to 0, adding deceleration.
+		movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
+		// Add the velocity into the position
+		movement.position += movement.velocity * deltaTime;
+		auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
+
+		static constexpr auto zNear = 0.01f;
+		static constexpr auto zFar = 1000.0f;
+		static constexpr auto fov = glm::radians(75.0f);
+		const auto aspectRatio = static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height);
+		auto projectionMatrix = glm::perspective(fov, aspectRatio, zNear, zFar);
+
+		// Invert the Y-Axis to use the same coordinate system as glTF.
+		projectionMatrix[1][1] *= -1;
+		camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+	}
 
 	if (!freezeCameraFrustum) {
 		// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
@@ -1701,9 +1769,74 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	}
 }
 
+void Viewer::updateCameraNodes(std::size_t nodeIndex) {
+	ZoneScoped;
+	// This function recursively traverses the node hierarchy starting with the node at nodeIndex
+	// to find any nodes holding cameras.
+	auto& node = asset.nodes[nodeIndex];
+
+	if (node.cameraIndex.has_value()) {
+		if (node.name.empty()) {
+			// Always have a non-empty string for the ImGui UI
+			node.name = std::string("Camera ") + std::to_string(cameraNodes.size());
+		}
+		cameraNodes.emplace_back(&node);
+	}
+
+	for (auto& child : node.children) {
+		updateCameraNodes(child);
+	}
+}
+
 void Viewer::renderUi() {
 	ZoneScoped;
 	if (ImGui::Begin("vk_gltf_viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+		auto& sceneName = asset.scenes[sceneIndex].name;
+		if (ImGui::BeginCombo("Scene", sceneName.c_str(), ImGuiComboFlags_None)) {
+			for (std::size_t i = 0; i < asset.scenes.size(); ++i) {
+				const bool isSelected = i == sceneIndex;
+				if (ImGui::Selectable(asset.scenes[i].name.c_str(), isSelected)) {
+					sceneIndex = i;
+
+					cameraNodes.clear();
+					auto& scene = asset.scenes[sceneIndex];
+					for (auto& node: scene.nodeIndices) {
+						updateCameraNodes(node);
+					}
+				}
+				if (isSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+
+			ImGui::EndCombo();
+		}
+
+		auto cameraName = cameraIndex.has_value() ? cameraNodes[*cameraIndex]->name.c_str() : "Default";
+		if (ImGui::BeginCombo("Camera", cameraName, ImGuiComboFlags_None)) {
+			// Default camera
+			{
+				const bool isSelected = !cameraIndex.has_value();
+				if (ImGui::Selectable("Default", isSelected)) {
+					cameraIndex.reset();
+				}
+				if (isSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+
+			for (std::size_t i = 0; i < cameraNodes.size(); ++i) {
+				const bool isSelected = cameraIndex.has_value() && i == cameraIndex.value();
+				if (ImGui::Selectable(cameraNodes[i]->name.c_str(), isSelected)) {
+					cameraIndex = i;
+				}
+				if (isSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+
+			ImGui::EndCombo();
+		}
+
+		ImGui::Separator();
+
 		ImGui::Checkbox("Enable AABB visualization", &enableAabbVisualization);
 		ImGui::Checkbox("Freeze Camera frustum", &freezeCameraFrustum);
 	}
@@ -1826,7 +1959,21 @@ int main(int argc, char* argv[]) {
         // Creates the required fences and semaphores for frame sync
         viewer.createFrameData();
 
-        // The render loop
+		// Set scene defaults and give every object a readable name, if required and empty.
+		viewer.sceneIndex = viewer.asset.defaultScene.value_or(0);
+		for (std::size_t i = 0; auto& scene : viewer.asset.scenes) {
+			if (!scene.name.empty())
+				continue;
+			scene.name = std::string("Scene ") + std::to_string(i++);
+		}
+
+		// Initialize the glTF cameras array
+		auto& scene = viewer.asset.scenes[viewer.sceneIndex];
+		for (auto& node : scene.nodeIndices) {
+			viewer.updateCameraNodes(node);
+		}
+
+		// The render loop
         std::size_t currentFrame = 0;
         while (glfwWindowShouldClose(viewer.window) != GLFW_TRUE) {
             if (!viewer.swapchainNeedsRebuild) {

@@ -212,6 +212,11 @@ struct Viewer {
 	// ImGUI / UI objects
 	imgui::Renderer imgui;
 
+	// glTF data and options
+	std::size_t sceneIndex = 0;
+	fastgltf::Optional<std::size_t> cameraIndex = std::nullopt;
+	std::vector<fastgltf::Node*> cameraNodes;
+
     // This is the same paradigm as used by vkguide.dev. This makes sure every object
     // is properly destroyed in reverse-order to creation.
     class DeletionQueue {
@@ -275,6 +280,10 @@ struct Viewer {
 
 	void drawNode(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix);
 	void drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix);
+
+	/** Fills the cameraNodes vector */
+	void updateCameraNodes(std::size_t nodeIndex);
+	auto getCameraProjectionMatrix(fastgltf::Camera& camera) const -> glm::mat4;
 
 	/** Create UI using ImGui */
 	void renderUi();

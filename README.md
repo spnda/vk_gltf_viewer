@@ -5,10 +5,11 @@ It still shares a lot of the codebase with the OpenGL example for fastgltf, but 
 
 ### Vulkan requirements
 
-This application currently requires Vulkan 1.3, `VK_EXT_mesh_shader`, and `VK_EXT_host_image_copy`, as well as these core features:
+This application currently requires Vulkan 1.3 and `VK_EXT_mesh_shader` (with mesh & task shaders), as well as these core features:
 - `multiDrawIndirect`
 - `shaderDrawParameters`
 - `storageBuffer8BitAccess`
+- `shaderInt8`
 - `shaderSampledImageArrayNonUniformIndexing`
 - `runtimeDescriptorArray`
 - `scalarBlockLayout`
