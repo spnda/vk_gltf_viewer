@@ -46,6 +46,113 @@ enki::TaskScheduler taskScheduler;
 
 struct Viewer;
 
+/** Replacement buffer data adapter for fastgltf which supports decompressing with EXT_meshopt_compression */
+struct CompressedBufferDataAdapter {
+	std::vector<std::optional<fastgltf::StaticVector<std::byte>>> decompressedBuffers;
+
+	/** Get the data pointer of a loaded (possibly compressed) buffer */
+	[[nodiscard]] static auto getData(const fastgltf::Buffer& buffer, std::size_t byteOffset, std::size_t byteLength) {
+		using namespace fastgltf;
+		return std::visit(visitor {
+			[](auto&) -> span<const std::byte> {
+				assert(false && "Tried accessing a buffer with no data, likely because no buffers were loaded. Perhaps you forgot to specify the LoadExternalBuffers option?");
+				return {};
+			},
+			[](const sources::Fallback& fallback) -> span<const std::byte> {
+				assert(false && "Tried accessing data of a fallback buffer.");
+				return {};
+			},
+			[&](const sources::Array& array) -> span<const std::byte> {
+				return span(reinterpret_cast<const std::byte*>(array.bytes.data()), array.bytes.size_bytes());
+			},
+			[&](const sources::Vector& vec) -> span<const std::byte> {
+				return span(reinterpret_cast<const std::byte*>(vec.bytes.data()), vec.bytes.size());
+			},
+			[&](const sources::ByteView& bv) -> span<const std::byte> {
+				return bv.bytes;
+			},
+		}, buffer.data).subspan(byteOffset, byteLength);
+	}
+
+	/** Decompress all buffer views and store them in this adapter */
+	bool decompress(const fastgltf::Asset& asset) {
+		using namespace fastgltf;
+
+		decompressedBuffers.reserve(asset.bufferViews.size());
+		for (auto& bufferView : asset.bufferViews) {
+			if (!bufferView.meshoptCompression) {
+				decompressedBuffers.emplace_back(std::nullopt);
+				continue;
+			}
+
+			// This is a compressed buffer view.
+			// For the original implementation, see https://github.com/jkuhlmann/cgltf/pull/129#issue-739550034
+			auto& mc = *bufferView.meshoptCompression;
+			fastgltf::StaticVector<std::byte> result(mc.count * mc.byteStride);
+
+			// Get the data span from the compressed buffer.
+			auto data = getData(asset.buffers[mc.bufferIndex], mc.byteOffset, mc.byteLength);
+
+			int rc = -1;
+			switch (mc.mode) {
+				case MeshoptCompressionMode::Attributes: {
+					rc = meshopt_decodeVertexBuffer(result.data(), mc.count, mc.byteStride,
+													reinterpret_cast<const unsigned char*>(data.data()), mc.byteLength);
+					break;
+				}
+				case MeshoptCompressionMode::Triangles: {
+					rc = meshopt_decodeIndexBuffer(result.data(), mc.count, mc.byteStride,
+											  reinterpret_cast<const unsigned char*>(data.data()), mc.byteLength);
+					break;
+				}
+				case MeshoptCompressionMode::Indices: {
+					rc = meshopt_decodeIndexSequence(result.data(), mc.count, mc.byteStride,
+												reinterpret_cast<const unsigned char*>(data.data()), mc.byteLength);
+					break;
+				}
+			}
+
+			if (rc != 0)
+				return false;
+
+			switch (mc.filter) {
+				case MeshoptCompressionFilter::None:
+					break;
+				case MeshoptCompressionFilter::Octahedral: {
+					meshopt_decodeFilterOct(result.data(), mc.count, mc.byteStride);
+					break;
+				}
+				case MeshoptCompressionFilter::Quaternion: {
+					meshopt_decodeFilterQuat(result.data(), mc.count, mc.byteStride);
+					break;
+				}
+				case MeshoptCompressionFilter::Exponential: {
+					meshopt_decodeFilterExp(result.data(), mc.count, mc.byteStride);
+					break;
+				}
+			}
+
+			decompressedBuffers.emplace_back(std::move(result));
+		}
+
+		return true;
+	}
+
+	auto operator()(const fastgltf::Asset& asset, std::size_t bufferViewIdx) const {
+		using namespace fastgltf;
+
+		auto& bufferView = asset.bufferViews[bufferViewIdx];
+		if (bufferView.meshoptCompression) {
+			assert(decompressedBuffers.size() == asset.bufferViews.size());
+
+			assert(decompressedBuffers[bufferViewIdx].has_value());
+			return span(decompressedBuffers[bufferViewIdx]->data(), decompressedBuffers[bufferViewIdx]->size_bytes());
+		}
+
+		return getData(asset.buffers[bufferView.bufferIndex], bufferView.byteOffset, bufferView.byteLength);
+	}
+};
+
 void glfwErrorCallback(int errorCode, const char* description) {
     if (errorCode != GLFW_NO_ERROR) {
 		fmt::print(stderr, "GLFW error: {} {}\n", errorCode, description);
@@ -718,7 +825,6 @@ void multithreadedBase64Decoding(std::string_view encodedData, std::uint8_t* out
 
     // We divide by 4 to essentially create as many sets as there are decodable base64 blocks.
     Base64DecodeTask task(encodedData.size() / 4, encodedData, outputData);
-    auto* editor = static_cast<Viewer*>(userPointer);
     taskScheduler.AddTaskSetToPipe(&task);
 
     // Finally, wait for all other tasks to finish. enkiTS will use this thread as well to process the tasks.
@@ -732,7 +838,11 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
         throw std::runtime_error("Failed to load file");
     }
 
-    fastgltf::Parser parser(fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_lights_punctual);
+	static constexpr auto supportedExtensions = fastgltf::Extensions::KHR_mesh_quantization
+		| fastgltf::Extensions::KHR_lights_punctual
+		| fastgltf::Extensions::EXT_meshopt_compression;
+
+    fastgltf::Parser parser(supportedExtensions);
     parser.setUserPointer(this);
     parser.setBase64DecodeCallback(multithreadedBase64Decoding);
 
@@ -813,6 +923,10 @@ void Viewer::loadGltfMeshes() {
 	std::vector<unsigned int> globalMeshletVertices;
 	std::vector<unsigned char> globalMeshletTriangles;
 
+	CompressedBufferDataAdapter adapter;
+	if (!adapter.decompress(asset))
+		throw std::runtime_error("Failed to decompress all glTF buffers");
+
 	// Generate the meshes
 	for (auto& gltfMesh : asset.meshes) {
 		auto& mesh = meshes.emplace_back();
@@ -844,11 +958,11 @@ void Viewer::loadGltfMeshes() {
 				vertex.position = glm::vec4(val, 1.0f);
 				vertex.color = glm::vec4(1.0f);
 				vertex.uv = glm::vec2(0.0f);
-			});
+			}, adapter);
 
 			auto& indicesAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
 			std::vector<std::uint32_t> indices(indicesAccessor.count);
-			fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data());
+			fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data(), adapter);
 
 			if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
 				// The glTF spec allows VEC3 and VEC4 for COLOR_n, with VEC3 data having to be extended with 1.0f for the fourth component.
@@ -856,18 +970,18 @@ void Viewer::loadGltfMeshes() {
 				if (colorAccessor.type == fastgltf::AccessorType::Vec4) {
 					fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, asset.accessors[colorAttribute->second], [&](glm::vec4 val, std::size_t idx) {
 						vertices[idx].color = val;
-					});
+					}, adapter);
 				} else if (colorAccessor.type == fastgltf::AccessorType::Vec3) {
 					fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[colorAttribute->second], [&](glm::vec3 val, std::size_t idx) {
 						vertices[idx].color = glm::vec4(val, 1.0f);
-					});
+					}, adapter);
 				}
 			}
 
 			if (auto* uvAttribute = gltfPrimitive.findAttribute("TEXCOORD_0"); uvAttribute != gltfPrimitive.attributes.end()) {
 				fastgltf::iterateAccessorWithIndex<glm::vec2>(asset, asset.accessors[uvAttribute->second], [&](glm::vec2 val, std::size_t idx) {
 					vertices[idx].uv = val;
-				});
+				}, adapter);
 			}
 
 			// These are the optimal values for NVIDIA. What about the others?
@@ -1734,7 +1848,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		projectionMatrix[1][1] *= -1;
 		camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
 	} else {
-		movement.velocity += (movement.accelerationVector * 2.0f);
+		movement.velocity += (movement.accelerationVector * movement.speedMultiplier);
 		// Lerp the velocity to 0, adding deceleration.
 		movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
 		// Add the velocity into the position
@@ -1742,7 +1856,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
 
 		static constexpr auto zNear = 0.01f;
-		static constexpr auto zFar = 1000.0f;
+		static constexpr auto zFar = 10000.0f;
 		static constexpr auto fov = glm::radians(75.0f);
 		const auto aspectRatio = static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height);
 		auto projectionMatrix = glm::perspective(fov, aspectRatio, zNear, zFar);
@@ -1834,6 +1948,8 @@ void Viewer::renderUi() {
 
 			ImGui::EndCombo();
 		}
+
+		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.1f, 0.5f, 50.0f, "%.0f");
 
 		ImGui::Separator();
 
@@ -2240,36 +2356,39 @@ int main(int argc, char* argv[]) {
 		fmt::print("{}\n", error.what());
     }
 
-    vkDeviceWaitIdle(viewer.device); // Make sure everything is done
+	if (volkGetLoadedDevice() != VK_NULL_HANDLE) {
+		vkDeviceWaitIdle(viewer.device); // Make sure everything is done
 
-    taskScheduler.WaitforAll();
+		taskScheduler.WaitforAll();
 
-	// Destroy the samplers
-	for (auto& sampler : viewer.samplers) {
-		vkDestroySampler(viewer.device, sampler, VK_NULL_HANDLE);
+		// Destroy the samplers
+		for (auto& sampler: viewer.samplers) {
+			vkDestroySampler(viewer.device, sampler, VK_NULL_HANDLE);
+		}
+
+		// Destroy the images
+		for (auto& image: viewer.images) {
+			vkDestroyImageView(viewer.device, image.imageView, VK_NULL_HANDLE);
+			vmaDestroyImage(viewer.allocator, image.image, image.allocation);
+		}
+
+		// Destroy the draw buffers
+		for (auto& drawBuffer: viewer.drawBuffers) {
+			vmaDestroyBuffer(viewer.allocator, drawBuffer.aabbDrawHandle, drawBuffer.aabbDrawAllocation);
+			vmaDestroyBuffer(viewer.allocator, drawBuffer.primitiveDrawHandle, drawBuffer.primitiveDrawAllocation);
+		}
+
+		// Destroys everything. We leave this out of the try-catch block to make sure it gets executed.
+		// The swapchain is the only exception, as that gets recreated within the render loop. Managing it
+		// with this paradigm is quite hard.
+		viewer.swapchain.destroy_image_views(viewer.swapchainImageViews);
+		vkb::destroy_swapchain(viewer.swapchain);
+		vkDestroyImageView(viewer.device, viewer.depthImageView, VK_NULL_HANDLE);
+		vmaDestroyImage(viewer.allocator, viewer.depthImage, viewer.depthImageAllocation);
+
+		viewer.flushObjects();
 	}
 
-	// Destroy the images
-	for (auto& image : viewer.images) {
-		vkDestroyImageView(viewer.device, image.imageView, VK_NULL_HANDLE);
-		vmaDestroyImage(viewer.allocator, image.image, image.allocation);
-	}
-
-	// Destroy the draw buffers
-	for (auto& drawBuffer : viewer.drawBuffers) {
-		vmaDestroyBuffer(viewer.allocator, drawBuffer.aabbDrawHandle, drawBuffer.aabbDrawAllocation);
-		vmaDestroyBuffer(viewer.allocator, drawBuffer.primitiveDrawHandle, drawBuffer.primitiveDrawAllocation);
-	}
-
-    // Destroys everything. We leave this out of the try-catch block to make sure it gets executed.
-    // The swapchain is the only exception, as that gets recreated within the render loop. Managing it
-    // with this paradigm is quite hard.
-    viewer.swapchain.destroy_image_views(viewer.swapchainImageViews);
-    vkb::destroy_swapchain(viewer.swapchain);
-	vkDestroyImageView(viewer.device, viewer.depthImageView, VK_NULL_HANDLE);
-	vmaDestroyImage(viewer.allocator, viewer.depthImage, viewer.depthImageAllocation);
-
-    viewer.flushObjects();
     glfwDestroyWindow(viewer.window);
     glfwTerminate();
 

@@ -62,6 +62,8 @@ struct CameraMovement {
 	float yaw = -90.0f;
 	float pitch = 0.0f;
 	bool firstMouse = false;
+
+	float speedMultiplier = 2.0f;
 };
 
 struct Vertex {
