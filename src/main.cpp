@@ -76,6 +76,7 @@ struct CompressedBufferDataAdapter {
 
 	/** Decompress all buffer views and store them in this adapter */
 	bool decompress(const fastgltf::Asset& asset) {
+		ZoneScoped;
 		using namespace fastgltf;
 
 		decompressedBuffers.reserve(asset.bufferViews.size());
@@ -414,16 +415,18 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
     checkResult(swapchainResult);
 
     // The swapchain is not added to the deletionQueue, as it gets recreated throughout the application's lifetime.
+	for (auto& view : swapchainImageViews)
+		vkDestroyImageView(device, view, nullptr);
+	swapchainImageViews.clear();
     vkb::destroy_swapchain(swapchain);
     swapchain = swapchainResult.value();
 
-    auto imageResult = swapchain.get_images();
-    checkResult(imageResult);
-    swapchainImages = std::move(imageResult.value());
+	swapchainImages = std::move(vk::enumerateVector<VkImage, decltype(swapchainImages)>(vkGetSwapchainImagesKHR, device, swapchain));
 
     auto imageViewResult = swapchain.get_image_views();
     checkResult(imageViewResult);
-    swapchainImageViews = std::move(imageViewResult.value());
+	for (auto& view : imageViewResult.value())
+		swapchainImageViews.emplace_back(view);
 
 	if (depthImage != VK_NULL_HANDLE) {
 		vkDestroyImageView(device, depthImageView, VK_NULL_HANDLE);
@@ -452,6 +455,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 	};
 	auto result = vmaCreateImage(allocator, &imageInfo, &allocationInfo, &depthImage, &depthImageAllocation, VK_NULL_HANDLE);
 	vk::checkResult(result, "Failed to create depth image: {}");
+	vk::setDebugUtilsName(device, depthImage, "Depth image");
 
 	const VkImageViewCreateInfo imageViewInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -468,6 +472,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 	};
 	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &depthImageView);
 	vk::checkResult(result, "Failed to create depth image view: {}");
+	vk::setDebugUtilsName(device, depthImageView, "Depth image view");
 }
 
 void Viewer::createDescriptorPool() {
@@ -1306,6 +1311,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 			},
 		};
 		vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
+		vk::setDebugUtilsName(viewer->device, sampledImage.imageView, image.name.c_str());
 
 		taskScheduler.WaitforTask(&uploadTask);
 
@@ -1340,6 +1346,7 @@ void Viewer::createDefaultImages() {
 	auto result = vmaCreateImage(allocator, &imageInfo, &allocationInfo,
 				   &defaultTexture.image, &defaultTexture.allocation, nullptr);
 	vk::checkResult(result, "Failed to create default image: {}");
+	vk::setDebugUtilsName(device, defaultTexture.image, "Default image");
 
 	// We use R8G8B8A8_UNORM, so we need to use 8-bit integers for the colors here.
 	std::array<std::uint8_t, 4> white {{ 255, 255, 255, 255 }};
@@ -1360,6 +1367,7 @@ void Viewer::createDefaultImages() {
 	};
 	vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &defaultTexture.imageView);
 	vk::checkResult(result, "Failed to create default image view: {}");
+	vk::setDebugUtilsName(device, defaultTexture.imageView, "Default image view");
 
 	taskScheduler.WaitforTask(&uploadTask);
 }
@@ -1905,6 +1913,7 @@ void Viewer::updateCameraNodes(std::size_t nodeIndex) {
 void Viewer::renderUi() {
 	ZoneScoped;
 	if (ImGui::Begin("vk_gltf_viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+		ImGui::BeginDisabled(asset.scenes.size() <= 1);
 		auto& sceneName = asset.scenes[sceneIndex].name;
 		if (ImGui::BeginCombo("Scene", sceneName.c_str(), ImGuiComboFlags_None)) {
 			for (std::size_t i = 0; i < asset.scenes.size(); ++i) {
@@ -1924,7 +1933,9 @@ void Viewer::renderUi() {
 
 			ImGui::EndCombo();
 		}
+		ImGui::EndDisabled();
 
+		ImGui::BeginDisabled(cameraNodes.empty());
 		auto cameraName = cameraIndex.has_value() ? cameraNodes[*cameraIndex]->name.c_str() : "Default";
 		if (ImGui::BeginCombo("Camera", cameraName, ImGuiComboFlags_None)) {
 			// Default camera
@@ -1948,6 +1959,7 @@ void Viewer::renderUi() {
 
 			ImGui::EndCombo();
 		}
+		ImGui::EndDisabled();
 
 		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.1f, 0.5f, 50.0f, "%.0f");
 
@@ -2381,7 +2393,8 @@ int main(int argc, char* argv[]) {
 		// Destroys everything. We leave this out of the try-catch block to make sure it gets executed.
 		// The swapchain is the only exception, as that gets recreated within the render loop. Managing it
 		// with this paradigm is quite hard.
-		viewer.swapchain.destroy_image_views(viewer.swapchainImageViews);
+		for (auto& view : viewer.swapchainImageViews)
+			vkDestroyImageView(viewer.device, view, nullptr);
 		vkb::destroy_swapchain(viewer.swapchain);
 		vkDestroyImageView(viewer.device, viewer.depthImageView, VK_NULL_HANDLE);
 		vmaDestroyImage(viewer.allocator, viewer.depthImage, viewer.depthImageAllocation);

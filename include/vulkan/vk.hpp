@@ -33,14 +33,14 @@ public:
 };
 
 namespace vk {
-    template <typename R, typename F, typename... Args>
+    template <typename R, typename Vector = std::vector<R>, typename F, typename... Args>
     requires std::is_constructible_v<R> && requires(F func, Args... args, std::uint32_t count) {
         { func(args..., &count, nullptr) };
     }
-    std::vector<R> enumerateVector(F func, Args... args) {
+    Vector enumerateVector(F func, Args... args) {
         std::uint32_t count = 0;
         func(args..., &count, nullptr);
-        std::vector<R> ret(count);
+        Vector ret(count);
         func(args..., &count, ret.data());
         return ret;
     }
