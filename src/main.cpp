@@ -171,8 +171,7 @@ void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
 	void* ptr = glfwGetWindowUserPointer(window);
 	auto& movement = static_cast<Viewer*>(ptr)->movement;
 
-	int state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE);
-	if (state != GLFW_PRESS) {
+	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) != GLFW_PRESS && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) != GLFW_PRESS) {
 		movement.lastCursorPosition = { xpos, ypos };
 		return;
 	}
@@ -182,19 +181,29 @@ void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
 		movement.firstMouse = false;
 	}
 
-	auto offset = glm::vec2(xpos - movement.lastCursorPosition.x, movement.lastCursorPosition.y - ypos);
-	movement.lastCursorPosition = { xpos, ypos };
-	offset *= 0.1f;
+	if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
+		auto offset = glm::vec2(xpos - movement.lastCursorPosition.x, movement.lastCursorPosition.y - ypos);
+		movement.lastCursorPosition = { xpos, ypos };
+		offset *= 0.1f;
 
-	movement.yaw   += offset.x;
-	movement.pitch += offset.y;
-	movement.pitch = glm::clamp(movement.pitch, -89.0f, 89.0f);
+		movement.yaw   += offset.x;
+		movement.pitch += offset.y;
+		movement.pitch = glm::clamp(movement.pitch, -89.0f, 89.0f);
 
-	auto& direction = movement.direction;
-	direction.x = cos(glm::radians(movement.yaw)) * cos(glm::radians(movement.pitch));
-	direction.y = sin(glm::radians(movement.pitch));
-	direction.z = sin(glm::radians(movement.yaw)) * cos(glm::radians(movement.pitch));
-	direction = glm::normalize(direction);
+		auto& direction = movement.direction;
+		direction.x = cos(glm::radians(movement.yaw)) * cos(glm::radians(movement.pitch));
+		direction.y = sin(glm::radians(movement.pitch));
+		direction.z = sin(glm::radians(movement.yaw)) * cos(glm::radians(movement.pitch));
+		direction = glm::normalize(direction);
+	} else
+	if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+		auto offset = glm::vec2(xpos - movement.lastCursorPosition.x, movement.lastCursorPosition.y - ypos);
+		movement.lastCursorPosition = { xpos, ypos };
+		offset *= 0.1f;
+
+		auto& acceleration = movement.accelerationVector;
+		acceleration += movement.direction * offset.y;
+	}
 }
 
 static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
