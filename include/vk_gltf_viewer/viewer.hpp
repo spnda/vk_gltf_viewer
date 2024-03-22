@@ -6,6 +6,7 @@
 
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
+#include <vulkan/debug_utils.hpp>
 #include <VkBootstrap.h>
 
 #include <TaskScheduler.h>
@@ -152,6 +153,104 @@ struct SampledImage {
 	VkImageView imageView = VK_NULL_HANDLE;
 };
 
+/** Deletion queue, as used by vkguide.dev to ensure proper destruction order of global Vulkan objects */
+class DeletionQueue {
+	friend struct Viewer;
+	std::deque<std::function<void()>> deletors;
+
+public:
+	void push(std::function<void()>&& function) {
+		deletors.emplace_back(function);
+	}
+
+	void flush() {
+		ZoneScoped;
+		for (auto& func : deletors | std::views::reverse) {
+			func();
+		}
+		deletors.clear();
+	}
+};
+
+/** DeletionQueue that uses a timeline semaphore to destroy GPU objects when they have actually finished */
+struct TimelineDeletionQueue {
+	friend struct Viewer;
+	VkDevice device;
+	VkSemaphore timelineSemaphore;
+	std::uint64_t hostValue = 0;
+
+	struct Entry {
+		std::uint64_t timelineValue = 0;
+		std::function<void()> deletion;
+	};
+	std::vector<Entry> deletors;
+
+public:
+	void create(VkDevice nDevice) {
+		ZoneScoped;
+		device = nDevice;
+
+		const VkSemaphoreTypeCreateInfo timelineCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+			.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+			.initialValue = 0,
+		};
+
+		const VkSemaphoreCreateInfo createInfo {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+			.pNext = &timelineCreateInfo,
+			.flags = 0,
+		};
+
+		auto result = vkCreateSemaphore(device, &createInfo, nullptr, &timelineSemaphore);
+		vk::checkResult(result, "Failed to create timeline semaphore for deletion queue: {}");
+		vk::setDebugUtilsName(device, timelineSemaphore, "Deletion queue timeline semaphore");
+	}
+
+	void destroy() {
+		vkDestroySemaphore(device, timelineSemaphore, nullptr);
+		timelineSemaphore = VK_NULL_HANDLE;
+	}
+
+	[[nodiscard]] VkSemaphore getSemaphoreHandle() const noexcept {
+		return timelineSemaphore;
+	}
+
+	[[nodiscard]] std::uint64_t getSemaphoreCounter() const noexcept {
+		return hostValue;
+	}
+
+	void push(std::function<void()>&& function) {
+		deletors.emplace_back(hostValue, std::move(function));
+	}
+
+	/** Function to be called at the start of every frame, which deletes objects if they're old enough */
+	void check() {
+		ZoneScoped;
+		hostValue++;
+
+		std::uint64_t currentValue;
+		vkGetSemaphoreCounterValue(device, timelineSemaphore, &currentValue);
+		for (auto it = deletors.begin(); it != deletors.end();) {
+			auto& [timelineValue, deletion] = *it;
+			if (timelineValue < currentValue) {
+				deletion();
+				it = deletors.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+
+	void flush() {
+		ZoneScoped;
+		for (auto& entry : deletors) {
+			entry.deletion();
+		}
+		deletors.clear();
+	}
+};
+
 struct Viewer {
     vkb::Instance instance;
     vkb::Device device;
@@ -219,31 +318,15 @@ struct Viewer {
 	fastgltf::Optional<std::size_t> cameraIndex = std::nullopt;
 	std::vector<fastgltf::Node*> cameraNodes;
 
-    // This is the same paradigm as used by vkguide.dev. This makes sure every object
-    // is properly destroyed in reverse-order to creation.
-    class DeletionQueue {
-        friend struct Viewer;
-        std::deque<std::function<void()>> deletors;
-
-    public:
-        void push(std::function<void()>&& function) {
-            deletors.emplace_back(function);
-        }
-
-        void flush() {
-			for (auto& func : deletors | std::views::reverse) {
-				func();
-			}
-            deletors.clear();
-        }
-    };
     DeletionQueue deletionQueue;
+	TimelineDeletionQueue timelineDeletionQueue;
 
     Viewer() = default;
     ~Viewer() = default;
 
     void flushObjects() {
         vkDeviceWaitIdle(device);
+		timelineDeletionQueue.flush();
         deletionQueue.flush();
     }
 

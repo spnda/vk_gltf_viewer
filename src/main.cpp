@@ -292,7 +292,10 @@ void Viewer::setupVulkanDevice() {
 		.descriptorBindingPartiallyBound = VK_TRUE,
 		.runtimeDescriptorArray = VK_TRUE,
 		.scalarBlockLayout = VK_TRUE,
+#if defined(TRACY_ENABLE)
 		.hostQueryReset = VK_TRUE,
+#endif
+		.timelineSemaphore = VK_TRUE,
         .bufferDeviceAddress = VK_TRUE,
     };
 
@@ -414,11 +417,21 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
             .build();
     checkResult(swapchainResult);
 
-    // The swapchain is not added to the deletionQueue, as it gets recreated throughout the application's lifetime.
-	for (auto& view : swapchainImageViews)
-		vkDestroyImageView(device, view, nullptr);
+	// We delay the destruction of the old swapchain, its views, and the depth image until all presents related to this have finished.
+	// TODO: Is there no nicer way of declaring these captures?
+	timelineDeletionQueue.push([this, copy = swapchain, views = swapchainImageViews]() {
+		for (auto& view : views)
+			vkDestroyImageView(device, view, nullptr);
+		vkb::destroy_swapchain(copy);
+	});
+	timelineDeletionQueue.push([this, image = depthImage, allocation = depthImageAllocation, view = depthImageView] {
+		if (image != VK_NULL_HANDLE) {
+			vkDestroyImageView(device, view, VK_NULL_HANDLE);
+			vmaDestroyImage(allocator, image, allocation);
+		}
+	});
+
 	swapchainImageViews.clear();
-    vkb::destroy_swapchain(swapchain);
     swapchain = swapchainResult.value();
 
 	swapchainImages = std::move(vk::enumerateVector<VkImage, decltype(swapchainImages)>(vkGetSwapchainImagesKHR, device, swapchain));
@@ -427,11 +440,6 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
     checkResult(imageViewResult);
 	for (auto& view : imageViewResult.value())
 		swapchainImageViews.emplace_back(view);
-
-	if (depthImage != VK_NULL_HANDLE) {
-		vkDestroyImageView(device, depthImageView, VK_NULL_HANDLE);
-		vmaDestroyImage(allocator, depthImage, depthImageAllocation);
-	}
 
 	const VmaAllocationCreateInfo allocationInfo {
 		.usage = VMA_MEMORY_USAGE_GPU_ONLY,
@@ -2049,6 +2057,7 @@ int main(int argc, char* argv[]) {
 
         // Create the Vulkan device
         viewer.setupVulkanDevice();
+		viewer.timelineDeletionQueue.create(viewer.device);
 
 		// Create the MEGA descriptor pool
 		viewer.createDescriptorPool();
@@ -2135,6 +2144,8 @@ int main(int argc, char* argv[]) {
             vkWaitForFences(viewer.device, 1, &frameSyncData.presentFinished, VK_TRUE, UINT64_MAX);
             vkResetFences(viewer.device, 1, &frameSyncData.presentFinished);
 
+			viewer.timelineDeletionQueue.check();
+
 			// Update the camera matrices
 			viewer.updateCameraBuffer(currentFrame);
 
@@ -2174,7 +2185,7 @@ int main(int argc, char* argv[]) {
 				std::array<VkImageMemoryBarrier2, 2> imageBarriers = {{
 					{
 						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-						.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+						.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
 						.srcAccessMask = VK_ACCESS_2_NONE,
 						.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
 						.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -2191,7 +2202,7 @@ int main(int argc, char* argv[]) {
 					},
 					{
 						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-						.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+						.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
 						.srcAccessMask = VK_ACCESS_2_NONE,
 						.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
 						.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -2299,7 +2310,7 @@ int main(int argc, char* argv[]) {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 				.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
 				.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 				.dstAccessMask = VK_ACCESS_2_NONE,
 				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 				.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -2326,18 +2337,38 @@ int main(int argc, char* argv[]) {
             vkEndCommandBuffer(cmd);
 
             // Submit the command buffer
-            const VkPipelineStageFlags submitWaitStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			const VkSubmitInfo submitInfo {
-				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-				.waitSemaphoreCount = 1,
-				.pWaitSemaphores = &frameSyncData.imageAvailable,
-				.pWaitDstStageMask = &submitWaitStages,
-				.commandBufferCount = 1,
-				.pCommandBuffers = &cmd,
-				.signalSemaphoreCount = 1,
-				.pSignalSemaphores = &frameSyncData.renderingFinished,
+			const VkSemaphoreSubmitInfo waitSemaphoreInfo {
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = frameSyncData.imageAvailable,
+				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			};
-            auto submitResult = vkQueueSubmit(viewer.graphicsQueue, 1, &submitInfo, frameSyncData.presentFinished);
+			const VkCommandBufferSubmitInfo cmdSubmitInfo {
+				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+				.commandBuffer = cmd,
+			};
+			std::array<VkSemaphoreSubmitInfo, 2> signalSemaphoreInfos = {{
+				{
+					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+					.semaphore = frameSyncData.renderingFinished,
+					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+					.semaphore = viewer.timelineDeletionQueue.getSemaphoreHandle(),
+					.value = viewer.timelineDeletionQueue.getSemaphoreCounter(),
+					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				},
+			}};
+			const VkSubmitInfo2 submitInfo {
+				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+				.waitSemaphoreInfoCount = 1,
+				.pWaitSemaphoreInfos = &waitSemaphoreInfo,
+				.commandBufferInfoCount = 1,
+				.pCommandBufferInfos = &cmdSubmitInfo,
+				.signalSemaphoreInfoCount = static_cast<std::uint32_t>(signalSemaphoreInfos.size()),
+				.pSignalSemaphoreInfos = signalSemaphoreInfos.data(),
+			};
+            auto submitResult = vkQueueSubmit2(viewer.graphicsQueue, 1, &submitInfo, frameSyncData.presentFinished);
             if (submitResult != VK_SUCCESS) {
                 throw vulkan_error("Failed to submit to queue", submitResult);
             }
@@ -2371,6 +2402,10 @@ int main(int argc, char* argv[]) {
 	if (volkGetLoadedDevice() != VK_NULL_HANDLE) {
 		vkDeviceWaitIdle(viewer.device); // Make sure everything is done
 
+		for (auto& frame : viewer.frameSyncData) {
+			vkWaitForFences(viewer.device, 1, &frame.presentFinished, VK_TRUE, UINT64_MAX);
+		}
+
 		taskScheduler.WaitforAll();
 
 		// Destroy the samplers
@@ -2399,6 +2434,7 @@ int main(int argc, char* argv[]) {
 		vkDestroyImageView(viewer.device, viewer.depthImageView, VK_NULL_HANDLE);
 		vmaDestroyImage(viewer.allocator, viewer.depthImage, viewer.depthImageAllocation);
 
+		viewer.timelineDeletionQueue.destroy();
 		viewer.flushObjects();
 	}
 
