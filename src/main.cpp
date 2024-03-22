@@ -198,24 +198,61 @@ void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
 }
 
 static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+static constexpr auto cameraRight = glm::vec3(-1.0f, 0.0f, 0.0f);
 
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
 	void* ptr = glfwGetWindowUserPointer(window);
 	auto& movement = static_cast<Viewer*>(ptr)->movement;
 
+	ImGuiIO& io = ImGui::GetIO();
+	int specKeys = 0;
+
+	specKeys += io.KeyCtrl;
+	specKeys += io.KeyShift;
+	specKeys += io.KeyAlt;
+	specKeys += io.KeySuper;
+
+	float coef = 1.0f;
+
+	if(specKeys == 1) {
+		coef = 1.0f;
+		if(io.KeyCtrl) {
+			coef = 0.1f;
+		} else
+		if(io.KeyShift) {
+			coef = 10.0f;
+		} else
+		if(io.KeyAlt) {
+			coef = 0.05f;
+		}
+	} else
+	if(specKeys == 2) {
+		if(io.KeyCtrl && io.KeyShift) {
+			coef = 100.0f;
+		}
+	}
+
 	auto& acceleration = movement.accelerationVector;
 	switch (key) {
 		case GLFW_KEY_W:
-			acceleration += movement.direction;
+			acceleration += movement.direction * coef;
 			break;
 		case GLFW_KEY_S:
-			acceleration -= movement.direction;
+			acceleration -= movement.direction * coef;
 			break;
 		case GLFW_KEY_D:
-			acceleration += glm::normalize(glm::cross(movement.direction, cameraUp));
+			acceleration += glm::normalize(glm::cross(movement.direction, cameraUp)) * coef;
 			break;
 		case GLFW_KEY_A:
-			acceleration -= glm::normalize(glm::cross(movement.direction, cameraUp));
+			acceleration -= glm::normalize(glm::cross(movement.direction, cameraUp)) * coef;
+			break;
+		case GLFW_KEY_E:
+		case GLFW_KEY_F:
+			acceleration += glm::normalize(glm::cross(movement.direction, cameraRight)) * coef;
+			break;
+		case GLFW_KEY_Q:
+		case GLFW_KEY_R:
+			acceleration -= glm::normalize(glm::cross(movement.direction, cameraRight)) * coef;
 			break;
 		default:
 			break;
