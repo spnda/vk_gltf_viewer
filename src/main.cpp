@@ -507,6 +507,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 	auto result = vmaCreateImage(allocator, &imageInfo, &allocationInfo, &depthImage, &depthImageAllocation, VK_NULL_HANDLE);
 	vk::checkResult(result, "Failed to create depth image: {}");
 	vk::setDebugUtilsName(device, depthImage, "Depth image");
+	vk::setAllocationName(allocator, depthImageAllocation, "Depth image allocation");
 
 	const VkImageViewCreateInfo imageViewInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1425,15 +1426,15 @@ struct fmt::formatter<dds::ReadResult> : formatter<std::string_view> {
 
 struct ImageLoadTask : public enki::ITaskSet {
 	Viewer* viewer;
-	std::size_t imageIdx;
 
 	std::exception_ptr exception;
 
-	explicit ImageLoadTask(Viewer* viewer, std::size_t imageIdx) noexcept : viewer(viewer), imageIdx(imageIdx) {
-		m_SetSize = 1;
+	explicit ImageLoadTask(Viewer* viewer) noexcept : viewer(viewer) {
+		// We load the default images elsewhere.
+		m_SetSize = viewer->images.size() - Viewer::numDefaultTextures;
 	}
 
-	void loadWithStb(std::span<std::uint8_t> encodedImageData) const {
+	void loadWithStb(std::uint32_t imageIdx, std::span<std::uint8_t> encodedImageData) const {
 		ZoneScoped;
 		static constexpr VkFormat imageFormat = VK_FORMAT_R8G8B8A8_SRGB;
 		static constexpr auto channels = 4;
@@ -1655,7 +1656,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 		viewer->fencePool.wait_and_free(fence);
 	}
 
-	void loadDds(std::span<std::uint8_t> encodedImageData) const {
+	void loadDds(std::uint32_t imageIdx, std::span<std::uint8_t> encodedImageData) const {
 		ZoneScoped;
 		dds::Image image;
 		auto ddsResult = dds::readImage(encodedImageData.data(), encodedImageData.size_bytes(), &image);
@@ -1767,36 +1768,45 @@ struct ImageLoadTask : public enki::ITaskSet {
 		});
 	}
 
-	void load(std::span<std::uint8_t> data, fastgltf::MimeType mimeType) {
+	/** Sometimes, the mimeType field is unspecified. Here, we try and detect the mimeType if it's initially None */
+	fastgltf::MimeType detectMimeType(std::span<std::uint8_t> data, fastgltf::MimeType mimeType) {
 		if (mimeType != fastgltf::MimeType::None) {
-			switch (mimeType) {
-				case fastgltf::MimeType::PNG:
-				case fastgltf::MimeType::JPEG: {
-					loadWithStb(data);
-					break;
-				}
-				case fastgltf::MimeType::DDS: {
-					loadDds(data);
-					break;
-				}
-			}
+			return mimeType;
 		}
 
 		// The glTF did not provide a mime type. Try to detect the image format using the header magic.
 		auto magic = *reinterpret_cast<std::uint32_t*>(data.data());
 		switch (magic) {
-			case MAKE_FOUR_CHARACTER_CODE(0xFF, 0xD8, 0xFF, 0xE0): // JPEG
+			case MAKE_FOUR_CHARACTER_CODE(0xFF, 0xD8, 0xFF, 0xE0): {
+				return fastgltf::MimeType::JPEG;
+			}
 			case MAKE_FOUR_CHARACTER_CODE(0x89, 'P', 'N', 'G'): {
-				loadWithStb(data);
-				break;
+				return fastgltf::MimeType::PNG;
 			}
 			case dds::DdsMagicNumber::DDS: {
-				loadDds(data);
-				break;
+				return fastgltf::MimeType::DDS;
 			}
 			default: {
 				throw std::runtime_error(
-					fmt::format("Failed to detect image type while loading. Header magic: {0:x}", magic));
+					fmt::format("Failed to detect image mime type while loading. Header magic: {0:x}", magic));
+			}
+		}
+	}
+
+	void load(std::uint32_t imageIdx, std::span<std::uint8_t> data, fastgltf::MimeType mimeType) {
+		auto actualMime = detectMimeType(data, mimeType);
+		switch (actualMime) {
+			case fastgltf::MimeType::PNG:
+			case fastgltf::MimeType::JPEG: {
+				loadWithStb(imageIdx, data);
+				return;
+			}
+			case fastgltf::MimeType::DDS: {
+				loadDds(imageIdx, data);
+				return;
+			}
+			default: {
+				throw std::runtime_error(fmt::format("Unsupported mime type for loading images: {}", fastgltf::to_underlying(actualMime)));
 			}
 		}
 	}
@@ -1804,38 +1814,47 @@ struct ImageLoadTask : public enki::ITaskSet {
 	// We'll use the range to operate over multiple images
 	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
 		ZoneScoped;
-		auto& image = viewer->asset.images[imageIdx - Viewer::numDefaultTextures];
-
 		try {
-			std::visit(fastgltf::visitor{
-				[](auto& arg) {
-					throw std::runtime_error("Got an unexpected image data source. Can't load image.");
-					return;
-				},
-				[&](fastgltf::sources::Array& array) {
-					load(std::span(array.bytes.data(), array.bytes.size()), array.mimeType);
-				},
-				[&](fastgltf::sources::BufferView& bufferView) {
-					auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
-					auto& buffer = viewer->asset.buffers[view.bufferIndex];
-					std::visit(fastgltf::visitor{
-						[](auto& arg) {
-							throw std::runtime_error("Got an unexpected image data source. Can't load image.");
-							return;
-						},
-						[&](fastgltf::sources::Array& array) {
-							load(std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType);
-						}
-					}, buffer.data);
+			for (std::uint32_t i = range.start; i < range.end; ++i) {
+				auto& image = viewer->asset.images[i];
+
+				auto imageIdx = i + Viewer::numDefaultTextures;
+				std::visit(fastgltf::visitor{
+					[](auto& arg) {
+						throw std::runtime_error("Got an unexpected image data source. Can't load image.");
+						return;
+					},
+					[&](fastgltf::sources::Array& array) {
+						load(imageIdx, std::span(array.bytes.data(), array.bytes.size()), array.mimeType);
+					},
+					[&](fastgltf::sources::BufferView& bufferView) {
+						auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
+						auto& buffer = viewer->asset.buffers[view.bufferIndex];
+						std::visit(fastgltf::visitor{
+							[](auto& arg) {
+								throw std::runtime_error("Got an unexpected image data source. Can't load image.");
+								return;
+							},
+							[&](fastgltf::sources::Array& array) {
+								load(imageIdx, std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType);
+							}
+						}, buffer.data);
+					}
+				}, image.data);
+
+				if (image.name.empty()) {
+					image.name = fmt::format("Image {}", i);
 				}
-			}, image.data);
+
+				auto& sampledImage = viewer->images[imageIdx];
+				vk::setDebugUtilsName(viewer->device, sampledImage.image, image.name.c_str());
+				vk::setDebugUtilsName(viewer->device, sampledImage.imageView, fmt::format("View of {}", image.name));
+				vk::setAllocationName(viewer->allocator, sampledImage.allocation,
+									  fmt::format("Allocation of {}", image.name));
+			}
 		} catch (...) {
 			exception = std::current_exception();
 		}
-
-		auto& sampledImage = viewer->images[imageIdx];
-		vk::setDebugUtilsName(viewer->device, sampledImage.image, image.name.c_str());
-		vk::setDebugUtilsName(viewer->device, sampledImage.imageView, fmt::format("View of {}", image.name.c_str()));
 	}
 };
 
@@ -1867,6 +1886,7 @@ void Viewer::createDefaultImages() {
 				   &defaultTexture.image, &defaultTexture.allocation, nullptr);
 	vk::checkResult(result, "Failed to create default image: {}");
 	vk::setDebugUtilsName(device, defaultTexture.image, "Default image");
+	vk::setAllocationName(allocator, defaultTexture.allocation, "Default image allocation");
 
 	// We use R8G8B8A8_UNORM, so we need to use 8-bit integers for the colors here.
 	std::array<std::uint8_t, 4> white {{ 255, 255, 255, 255 }};
@@ -1990,15 +2010,11 @@ VkSamplerAddressMode getVulkanAddressMode(fastgltf::Wrap wrap) {
 void Viewer::loadGltfImages() {
 	ZoneScoped;
 	// Schedule image loading first
-	// TODO: When anything throws while these tasks are running, the vector will be destroyed and the ~enki::ICompletable
+	// TODO: When anything throws while these tasks are running, the task will be destroyed and the ~enki::ICompletable
 	//       destructor will assert, as the task has not completed yet.
 	images.resize(numDefaultTextures + asset.images.size());
-	std::vector<std::unique_ptr<ImageLoadTask>> loadTasks; loadTasks.reserve(asset.images.size());
-	for (auto i = numDefaultTextures; i < asset.images.size() + numDefaultTextures; ++i) {
-		auto task = std::make_unique<ImageLoadTask>(this, i);
-		taskScheduler.AddTaskSetToPipe(task.get());
-		loadTasks.emplace_back(std::move(task));
-	}
+	ImageLoadTask loadTask(this);
+	taskScheduler.AddTaskSetToPipe(&loadTask);
 
 	createDefaultImages();
 
@@ -2088,11 +2104,9 @@ void Viewer::loadGltfImages() {
 	}
 
 	// Finish all texture decode and upload tasks
-	for (auto& task : loadTasks) {
-		taskScheduler.WaitforTask(task.get());
-		if (task->exception)
-			std::rethrow_exception(task->exception);
-	}
+	taskScheduler.WaitforTask(&loadTask);
+	if (loadTask.exception)
+		std::rethrow_exception(loadTask.exception);
 
 	// Update the texture descriptor
 	std::vector<VkWriteDescriptorSet> writes; writes.reserve(asset.textures.size() + numDefaultTextures);

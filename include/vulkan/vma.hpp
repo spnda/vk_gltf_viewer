@@ -11,6 +11,15 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
+// Set to 1 if VMA debug output is necessary
+#if 0
+#include <fmt/printf.h>
+#define VMA_DEBUG_LOG_FORMAT(format, ...) do { \
+	fmt::printf((format), __VA_ARGS__); \
+	fmt::printf("\n"); \
+} while(false)
+#endif
+
 // clang-format off
 #include <volk.h>
 #include <vk_mem_alloc.h>
@@ -37,4 +46,8 @@ namespace vk {
 			vmaUnmapMemory(allocator, allocation);
 		}
 	};
+
+	[[gnu::always_inline]] inline void setAllocationName(VmaAllocator allocator, VmaAllocation allocation, std::string string) {
+		vmaSetAllocationName(allocator, allocation, string.c_str());
+	}
 }

@@ -80,6 +80,7 @@ void imgui::Renderer::createFontAtlas() {
 				   &fontAtlas, &fontAtlasAllocation, VK_NULL_HANDLE);
 	vk::checkResult(result, "Failed to create ImGui font atlas: {}");
 	vk::setDebugUtilsName(viewer->device, fontAtlas, "ImGui font atlas");
+	vk::setAllocationName(viewer->allocator, fontAtlasAllocation, "ImGui font atlas allocation");
 
 	const VkImageViewCreateInfo imageViewCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
