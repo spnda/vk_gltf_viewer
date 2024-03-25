@@ -391,27 +391,29 @@ void Viewer::setupVulkanDevice() {
 		vmaDestroyAllocator(allocator);
 	});
 
-	// Get the main graphics queue
-	auto graphicsQueueIndexResult = device.get_queue_index(vkb::QueueType::graphics);
-	checkResult(graphicsQueueIndexResult);
+	{
+		// Get the main graphics queue
+		auto graphicsQueueIndexResult = device.get_queue_index(vkb::QueueType::graphics);
+		checkResult(graphicsQueueIndexResult);
+		graphicsQueueFamily = graphicsQueueIndexResult.value();
 
-	vkGetDeviceQueue(device, graphicsQueueIndexResult.value(), 0, &graphicsQueue.handle);
-	graphicsQueue.lock = std::make_unique<std::mutex>();
+		vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue.handle);
+		graphicsQueue.lock = std::make_unique<std::mutex>();
 
-	// Get the transfer queue handles
-	auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
-	checkResult(transferQueueIndexRes);
+		// Get the transfer queue handles
+		auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
+		checkResult(transferQueueIndexRes);
 
-	auto transferQueueFamilyIndex = transferQueueIndexRes.value();
-	transferQueues.resize(queueFamilies[transferQueueFamilyIndex].queueCount);
-	for (std::size_t i = 0; auto& queue : transferQueues) {
-		queue.lock = std::make_unique<std::mutex>();
-		vkGetDeviceQueue(device, transferQueueFamilyIndex, i++, &queue.handle);
+		transferQueueFamily = transferQueueIndexRes.value();
+		transferQueues.resize(queueFamilies[transferQueueFamily].queueCount);
+		for (std::size_t i = 0; auto& queue: transferQueues) {
+			queue.lock = std::make_unique<std::mutex>();
+			vkGetDeviceQueue(device, transferQueueFamily, i++, &queue.handle);
+		}
 	}
 
-	auto threadCount = std::thread::hardware_concurrency();
-
 	// Create the transfer command pools
+	auto threadCount = std::thread::hardware_concurrency();
 	auto createPools = [&](std::vector<CommandPool>& pools, std::uint32_t queueFamily) {
 		pools.resize(threadCount);
 		for (auto& commandPool : pools) {
@@ -433,8 +435,8 @@ void Viewer::setupVulkanDevice() {
 			vk::checkResult(allocateResult, "Failed to allocate buffer upload command buffers: {}");
 		}
 	};
-	createPools(uploadCommandPools, transferQueueFamilyIndex);
-	createPools(graphicsCommandPools, graphicsQueueIndexResult.value());
+	createPools(uploadCommandPools, transferQueueFamily);
+	createPools(graphicsCommandPools, graphicsQueueFamily);
 
 	deletionQueue.push([this]() {
 		for (auto& cmdPool : uploadCommandPools)
@@ -550,7 +552,7 @@ void Viewer::createDescriptorPool() {
 		.pPoolSizes = sizes.data(),
 	};
 	auto result = vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &descriptorPool);
-	vk::checkResult(result, "Failed to create descriptor pool");
+	vk::checkResult(result, "Failed to create descriptor pool: {}");
 
 	deletionQueue.push([&]() {
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -662,7 +664,7 @@ void Viewer::buildMeshPipeline() {
         .pushConstantRangeCount = 0,
     };
     auto result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &meshPipelineLayout);
-	vk::checkResult(result, "Failed to create mesh pipeline layout");
+	vk::checkResult(result, "Failed to create mesh pipeline layout: {}");
 	vk::setDebugUtilsName(device, meshPipelineLayout, "Mesh shading pipeline layout");
 
     // Load the mesh pipeline shaders
@@ -792,21 +794,23 @@ void Viewer::createFrameData() {
 	ZoneScoped;
     frameSyncData.resize(frameOverlap);
     for (auto& frame : frameSyncData) {
-        VkSemaphoreCreateInfo semaphoreCreateInfo = {};
-        semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        constexpr VkSemaphoreCreateInfo semaphoreCreateInfo = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+		};
         auto semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.imageAvailable);
-		vk::checkResult(semaphoreResult, "Failed to create image semaphore");
+		vk::checkResult(semaphoreResult, "Failed to create image semaphore: {}");
 		vk::setDebugUtilsName(device, frame.imageAvailable, "Image acquire semaphore");
 
         semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.renderingFinished);
-		vk::checkResult(semaphoreResult, "Failed to create rendering semaphore");
+		vk::checkResult(semaphoreResult, "Failed to create rendering semaphore: {}");
 		vk::setDebugUtilsName(device, frame.renderingFinished, "Rendering finished semaphore");
 
-        VkFenceCreateInfo fenceCreateInfo = {};
-        fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+		constexpr VkFenceCreateInfo fenceCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
+		};
         auto fenceResult = vkCreateFence(device, &fenceCreateInfo, nullptr, &frame.presentFinished);
-		vk::checkResult(fenceResult, "Failed to create present fence");
+		vk::checkResult(fenceResult, "Failed to create present fence: {}");
 		vk::setDebugUtilsName(device, frame.presentFinished, "Present fence");
     }
 	deletionQueue.push([this]() {
@@ -819,21 +823,23 @@ void Viewer::createFrameData() {
 
     frameCommandPools.resize(frameOverlap);
     for (auto& frame : frameCommandPools) {
-        VkCommandPoolCreateInfo commandPoolInfo = {};
-        commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        // commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        commandPoolInfo.queueFamilyIndex = 0;
+        const VkCommandPoolCreateInfo commandPoolInfo {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			// .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = graphicsQueueFamily,
+		};
         auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &frame.pool);
-		vk::checkResult(createResult, "Failed to create frame command pool");
+		vk::checkResult(createResult, "Failed to create frame command pool: {}");
 
-        VkCommandBufferAllocateInfo allocateInfo = {};
-        allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocateInfo.commandPool = frame.pool;
-        allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocateInfo.commandBufferCount = 1;
+        const VkCommandBufferAllocateInfo allocateInfo {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = frame.pool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1,
+		};
         frame.commandBuffers.resize(1);
         auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, frame.commandBuffers.data());
-		vk::checkResult(allocateResult, "Failed to allocate frame command buffers");
+		vk::checkResult(allocateResult, "Failed to allocate frame command buffers: {}");
     }
 	deletionQueue.push([this]() {
 		for (auto& frame : frameCommandPools)
@@ -1427,7 +1433,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 		m_SetSize = 1;
 	}
 
-	void loadWithStb(std::span<std::uint8_t> encodedImageData, std::uint32_t threadnum) const {
+	void loadWithStb(std::span<std::uint8_t> encodedImageData) const {
 		ZoneScoped;
 		static constexpr VkFormat imageFormat = VK_FORMAT_R8G8B8A8_SRGB;
 		static constexpr auto channels = 4;
@@ -1649,7 +1655,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 		viewer->fencePool.wait_and_free(fence);
 	}
 
-	void loadDds(std::span<std::uint8_t> encodedImageData, std::uint32_t threadnum) const {
+	void loadDds(std::span<std::uint8_t> encodedImageData) const {
 		ZoneScoped;
 		dds::Image image;
 		auto ddsResult = dds::readImage(encodedImageData.data(), encodedImageData.size_bytes(), &image);
@@ -1761,20 +1767,36 @@ struct ImageLoadTask : public enki::ITaskSet {
 		});
 	}
 
-	void load(std::span<std::uint8_t> data, fastgltf::MimeType mimeType, std::uint32_t threadnum) {
-		switch (mimeType) {
-			case fastgltf::MimeType::PNG:
-			case fastgltf::MimeType::JPEG: {
-				loadWithStb(data, threadnum);
+	void load(std::span<std::uint8_t> data, fastgltf::MimeType mimeType) {
+		if (mimeType != fastgltf::MimeType::None) {
+			switch (mimeType) {
+				case fastgltf::MimeType::PNG:
+				case fastgltf::MimeType::JPEG: {
+					loadWithStb(data);
+					break;
+				}
+				case fastgltf::MimeType::DDS: {
+					loadDds(data);
+					break;
+				}
+			}
+		}
+
+		// The glTF did not provide a mime type. Try to detect the image format using the header magic.
+		auto magic = *reinterpret_cast<std::uint32_t*>(data.data());
+		switch (magic) {
+			case MAKE_FOUR_CHARACTER_CODE(0xFF, 0xD8, 0xFF, 0xE0): // JPEG
+			case MAKE_FOUR_CHARACTER_CODE(0x89, 'P', 'N', 'G'): {
+				loadWithStb(data);
 				break;
 			}
-			case fastgltf::MimeType::DDS: {
-				loadDds(data, threadnum);
+			case dds::DdsMagicNumber::DDS: {
+				loadDds(data);
 				break;
 			}
 			default: {
-				assert(false);
-				break;
+				throw std::runtime_error(
+					fmt::format("Failed to detect image type while loading. Header magic: {0:x}", magic));
 			}
 		}
 	}
@@ -1787,22 +1809,22 @@ struct ImageLoadTask : public enki::ITaskSet {
 		try {
 			std::visit(fastgltf::visitor{
 				[](auto& arg) {
-					assert(false && "Got unexpected image data source.");
+					throw std::runtime_error("Got an unexpected image data source. Can't load image.");
 					return;
 				},
 				[&](fastgltf::sources::Array& array) {
-					load(std::span(array.bytes.data(), array.bytes.size()), array.mimeType, threadnum);
+					load(std::span(array.bytes.data(), array.bytes.size()), array.mimeType);
 				},
 				[&](fastgltf::sources::BufferView& bufferView) {
 					auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
 					auto& buffer = viewer->asset.buffers[view.bufferIndex];
 					std::visit(fastgltf::visitor{
 						[](auto& arg) {
-							assert(false && "Got unexpected image data source.");
+							throw std::runtime_error("Got an unexpected image data source. Can't load image.");
 							return;
 						},
 						[&](fastgltf::sources::Array& array) {
-							load(std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType, threadnum);
+							load(std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType);
 						}
 					}, buffer.data);
 				}
@@ -2151,7 +2173,7 @@ void Viewer::loadGltfMaterials() {
 	};
 	auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 								  &materialBuffer, &materialAllocation, VK_NULL_HANDLE);
-	vk::checkResult(result, "Failed to allocate material buffer");
+	vk::checkResult(result, "Failed to allocate material buffer: {}");
 	vk::setDebugUtilsName(device, materialBuffer, "Material buffer");
 
 	deletionQueue.push([this]() {

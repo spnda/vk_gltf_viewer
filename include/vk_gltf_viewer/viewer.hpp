@@ -263,7 +263,9 @@ struct Viewer {
 
 	FencePool fencePool;
 
+	std::uint32_t graphicsQueueFamily;
     Queue graphicsQueue;
+	std::uint32_t transferQueueFamily;
 	std::vector<Queue> transferQueues;
 
 	Queue& getNextTransferQueueHandle() {

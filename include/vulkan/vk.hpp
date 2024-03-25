@@ -47,7 +47,7 @@ namespace vk {
 
     [[gnu::always_inline]] inline void checkResult(VkResult result, const char* message) noexcept(false) {
         if (result != VK_SUCCESS) {
-			throw vulkan_error(fmt::format(fmt::runtime(message), result), result);
+			throw vulkan_error(message, result);
         }
     }
 

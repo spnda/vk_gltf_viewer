@@ -14,7 +14,7 @@ struct Material {
     float alphaCutoff;
 };
 
-layout(set = 2, binding = 0, scalar) buffer Materials {
+layout(set = 2, binding = 0, scalar) readonly buffer Materials {
     Material materials[];
 };
 
