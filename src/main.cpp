@@ -483,7 +483,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 		swapchainImageViews.emplace_back(view);
 
 	const VmaAllocationCreateInfo allocationInfo {
-		.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+		.usage = VMA_MEMORY_USAGE_AUTO,
 	};
 	const VkImageCreateInfo imageInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -608,9 +608,8 @@ void Viewer::buildCameraDescriptor() {
 
 		// Create the camera buffers
 		const VmaAllocationCreateInfo allocationCreateInfo {
-			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
-			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -1222,6 +1221,7 @@ void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<vo
 	VmaAllocation stagingAllocation;
 	auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 					&stagingBuffer, &stagingAllocation, VK_NULL_HANDLE);
+	vk::checkResult(result, "Failed to create staging buffer for image upload: {}");
 
 	// Reset fences and command buffers.
 	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].buffer;
@@ -1252,7 +1252,8 @@ void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<vo
 			.commandBufferInfoCount = 1,
 			.pCommandBufferInfos = &cmdInfo,
 		};
-		vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
+		result = vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
+		vk::checkResult(result, "Failed to submit image upload: {}");
 	}
 
 	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
@@ -1385,9 +1386,42 @@ void Viewer::uploadMeshlets(std::vector<Meshlet>& meshlets,
 #define DDS_USE_STD_FILESYSTEM 1
 #include <dds.hpp>
 
+template <>
+struct fmt::formatter<dds::ReadResult> : formatter<std::string_view> {
+    template <typename FormatContext>
+    inline auto format(dds::ReadResult const& result, FormatContext& ctx) const {
+		std::string_view stringified;
+		switch (result) {
+			case dds::ReadResult::Success: {
+				stringified = "Success";
+				break;
+			}
+			case dds::ReadResult::Failure: {
+				stringified = "Failure";
+				break;
+			}
+			case dds::ReadResult::UnsupportedFormat: {
+				stringified = "UnsupportedFormat";
+				break;
+			}
+			case dds::ReadResult::NoDx10Header: {
+				stringified = "NoDx10Header";
+				break;
+			}
+			case dds::ReadResult::InvalidSize: {
+				stringified = "InvalidSize";
+				break;
+			}
+		}
+		return formatter<string_view>::format(stringified, ctx);
+    }
+};
+
 struct ImageLoadTask : public enki::ITaskSet {
 	Viewer* viewer;
 	std::size_t imageIdx;
+
+	std::exception_ptr exception;
 
 	explicit ImageLoadTask(Viewer* viewer, std::size_t imageIdx) noexcept : viewer(viewer), imageIdx(imageIdx) {
 		m_SetSize = 1;
@@ -1423,11 +1457,11 @@ struct ImageLoadTask : public enki::ITaskSet {
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		};
 		const VmaAllocationCreateInfo allocationInfo {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
-			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
 		};
-		vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
+		auto result = vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
 					   &sampledImage.image, &sampledImage.allocation, nullptr);
+		vk::checkResult(result, "Failed to create Vulkan image from stbi: {}");
 
 		const VkImageViewCreateInfo imageViewInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1440,7 +1474,8 @@ struct ImageLoadTask : public enki::ITaskSet {
 				.layerCount = 1,
 			},
 		};
-		vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
+		result = vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
+		vk::checkResult(result, "Failed to create Vulkan image view from stbi: {}");
 
 		auto imageData = std::span(ptr, width * height * sizeof(std::uint8_t) * channels);
 		viewer->uploadImageToDevice(imageData.size_bytes(), [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
@@ -1607,7 +1642,8 @@ struct ImageLoadTask : public enki::ITaskSet {
 				.commandBufferInfoCount = 1,
 				.pCommandBufferInfos = &cmdInfo,
 			};
-			vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
+			result = vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
+			vk::checkResult(result, "Failed to submit mipmap generation: {}");
 		}
 
 		viewer->fencePool.wait_and_free(fence);
@@ -1618,7 +1654,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 		dds::Image image;
 		auto ddsResult = dds::readImage(encodedImageData.data(), encodedImageData.size_bytes(), &image);
 		if (ddsResult != dds::ReadResult::Success) {
-			// TODO
+			throw std::runtime_error(fmt::format("Failed to read DDS image: {}", ddsResult));
 		}
 
 		auto& sampledImage = viewer->images[imageIdx];
@@ -1631,15 +1667,16 @@ struct ImageLoadTask : public enki::ITaskSet {
 		imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		const VmaAllocationCreateInfo allocationInfo {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
-			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 		};
-		vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
+		auto result = vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
 					   &sampledImage.image, &sampledImage.allocation, nullptr);
+		vk::checkResult(result, "Failed to create Vulkan image for DDS texture: {}");
 
 		auto imageViewInfo = dds::getVulkanImageViewCreateInfo(&image, vkFormat);
 		imageViewInfo.image = sampledImage.image;
-		vkCreateImageView(viewer->device, &imageViewInfo, nullptr, &sampledImage.imageView);
+		result = vkCreateImageView(viewer->device, &imageViewInfo, nullptr, &sampledImage.imageView);
+		vk::checkResult(result, "Failed to create Vulkan image view for DDS texture: {}");
 
 		// Compute the aligned offsets for every mip level
 		std::size_t totalSize = 0;
@@ -1747,28 +1784,32 @@ struct ImageLoadTask : public enki::ITaskSet {
 		ZoneScoped;
 		auto& image = viewer->asset.images[imageIdx - Viewer::numDefaultTextures];
 
-		std::visit(fastgltf::visitor {
-			[](auto& arg) {
-				assert(false && "Got unexpected image data source.");
-				return;
-			},
-			[&](fastgltf::sources::Array& array) {
-				load(std::span(array.bytes.data(), array.bytes.size()), array.mimeType, threadnum);
-			},
-			[&](fastgltf::sources::BufferView& bufferView) {
-				auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
-				auto& buffer = viewer->asset.buffers[view.bufferIndex];
-				std::visit(fastgltf::visitor {
-					[](auto& arg) {
-						assert(false && "Got unexpected image data source.");
-						return;
-					},
-					[&](fastgltf::sources::Array& array) {
-						load(std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType, threadnum);
-					}
-				}, buffer.data);
-			}
-		}, image.data);
+		try {
+			std::visit(fastgltf::visitor{
+				[](auto& arg) {
+					assert(false && "Got unexpected image data source.");
+					return;
+				},
+				[&](fastgltf::sources::Array& array) {
+					load(std::span(array.bytes.data(), array.bytes.size()), array.mimeType, threadnum);
+				},
+				[&](fastgltf::sources::BufferView& bufferView) {
+					auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
+					auto& buffer = viewer->asset.buffers[view.bufferIndex];
+					std::visit(fastgltf::visitor{
+						[](auto& arg) {
+							assert(false && "Got unexpected image data source.");
+							return;
+						},
+						[&](fastgltf::sources::Array& array) {
+							load(std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType, threadnum);
+						}
+					}, buffer.data);
+				}
+			}, image.data);
+		} catch (...) {
+			exception = std::current_exception();
+		}
 
 		auto& sampledImage = viewer->images[imageIdx];
 		vk::setDebugUtilsName(viewer->device, sampledImage.image, image.name.c_str());
@@ -1927,6 +1968,8 @@ VkSamplerAddressMode getVulkanAddressMode(fastgltf::Wrap wrap) {
 void Viewer::loadGltfImages() {
 	ZoneScoped;
 	// Schedule image loading first
+	// TODO: When anything throws while these tasks are running, the vector will be destroyed and the ~enki::ICompletable
+	//       destructor will assert, as the task has not completed yet.
 	images.resize(numDefaultTextures + asset.images.size());
 	std::vector<std::unique_ptr<ImageLoadTask>> loadTasks; loadTasks.reserve(asset.images.size());
 	for (auto i = numDefaultTextures; i < asset.images.size() + numDefaultTextures; ++i) {
@@ -2025,6 +2068,8 @@ void Viewer::loadGltfImages() {
 	// Finish all texture decode and upload tasks
 	for (auto& task : loadTasks) {
 		taskScheduler.WaitforTask(task.get());
+		if (task->exception)
+			std::rethrow_exception(task->exception);
 	}
 
 	// Update the texture descriptor
@@ -2096,8 +2141,8 @@ void Viewer::loadGltfMaterials() {
 
 	// Create the material buffer
 	const VmaAllocationCreateInfo allocationCreateInfo {
-		.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-		.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO,
 	};
 	const VkBufferCreateInfo bufferCreateInfo {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -2269,8 +2314,8 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 		}
 
 		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -2315,8 +2360,8 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 		}
 
 		const VmaAllocationCreateInfo allocationCreateInfo {
-			.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

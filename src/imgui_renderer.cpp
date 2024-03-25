@@ -230,8 +230,8 @@ VkResult imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize 
 
 	constexpr auto bufferUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 	const VmaAllocationCreateInfo allocationCreateInfo = {
-		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
-		.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 	};
 
 	VkResult result = VK_SUCCESS;
