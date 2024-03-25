@@ -1442,6 +1442,11 @@ struct ImageLoadTask : public enki::ITaskSet {
 		// Load and decode the image data using stbi
 		int width = 0, height = 0, nrChannels = 0;
 		auto* ptr = stbi_load_from_memory(encodedImageData.data(), static_cast<int>(encodedImageData.size()), &width, &height, &nrChannels, channels);
+		if (ptr == nullptr) {
+			if (auto* reason = stbi_failure_reason(); reason != nullptr)
+				throw std::runtime_error(fmt::format("Failed to load image using stbi from memory: {}", reason));
+			throw std::runtime_error("Failed to load image using stbi from memory");
+		}
 
 		auto& sampledImage = viewer->images[imageIdx];
 
@@ -1775,21 +1780,16 @@ struct ImageLoadTask : public enki::ITaskSet {
 		}
 
 		// The glTF did not provide a mime type. Try to detect the image format using the header magic.
-		auto magic = *reinterpret_cast<std::uint32_t*>(data.data());
-		switch (magic) {
-			case MAKE_FOUR_CHARACTER_CODE(0xFF, 0xD8, 0xFF, 0xE0): {
-				return fastgltf::MimeType::JPEG;
-			}
-			case MAKE_FOUR_CHARACTER_CODE(0x89, 'P', 'N', 'G'): {
-				return fastgltf::MimeType::PNG;
-			}
-			case dds::DdsMagicNumber::DDS: {
-				return fastgltf::MimeType::DDS;
-			}
-			default: {
-				throw std::runtime_error(
-					fmt::format("Failed to detect image mime type while loading. Header magic: {0:x}", magic));
-			}
+		// See https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#images for the table of patterns
+		if (data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
+			return fastgltf::MimeType::JPEG;
+		} else if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 && data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A) {
+			return fastgltf::MimeType::PNG;
+		} else if (*reinterpret_cast<std::uint32_t*>(data.data()) == dds::DdsMagicNumber::DDS) {
+			return fastgltf::MimeType::DDS;
+		} else {
+			throw std::runtime_error(
+				fmt::format("Failed to detect image mime type while loading. Header magic: {0:x}", *reinterpret_cast<std::uint32_t*>(data.data())));
 		}
 	}
 
@@ -1836,7 +1836,7 @@ struct ImageLoadTask : public enki::ITaskSet {
 								return;
 							},
 							[&](fastgltf::sources::Array& array) {
-								load(imageIdx, std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType);
+								load(imageIdx, std::span(array.bytes.data() + view.byteOffset, array.bytes.size()), bufferView.mimeType);
 							}
 						}, buffer.data);
 					}
