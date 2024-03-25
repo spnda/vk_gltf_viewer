@@ -1,3 +1,7 @@
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
 const uint maxVertices = 64;
 const uint maxPrimitives = 126;
 const uint maxMeshlets = 128;
@@ -6,8 +10,8 @@ struct Meshlet {
     uint vertexOffset;
     uint triangleOffset;
 
-    uint vertexCount;
-    uint triangleCount;
+    uint8_t vertexCount;
+    uint8_t triangleCount;
 
     vec3 aabbExtents;
     vec3 aabbCenter;
@@ -16,7 +20,7 @@ struct Meshlet {
 struct Vertex {
     vec4 position;
     vec4 color;
-    vec2 uv;
+    f16vec2 uv;
 };
 
 struct VkDrawMeshTasksIndirectCommandEXT {

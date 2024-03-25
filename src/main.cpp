@@ -279,12 +279,14 @@ void Viewer::setupVulkanDevice() {
 
 	const VkPhysicalDeviceVulkan11Features vulkan11Features {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		.storageBuffer16BitAccess = VK_TRUE,
 		.shaderDrawParameters = VK_TRUE,
 	};
 
 	const VkPhysicalDeviceVulkan12Features vulkan12Features {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.storageBuffer8BitAccess = VK_TRUE,
+		.shaderFloat16 = VK_TRUE,
 		.shaderInt8 = VK_TRUE,
 		.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
 		.descriptorBindingPartiallyBound = VK_TRUE,
@@ -1046,7 +1048,10 @@ void Viewer::loadGltfMeshes() {
 
 			if (auto* uvAttribute = gltfPrimitive.findAttribute("TEXCOORD_0"); uvAttribute != gltfPrimitive.attributes.end()) {
 				fastgltf::iterateAccessorWithIndex<glm::vec2>(asset, asset.accessors[uvAttribute->second], [&](glm::vec2 val, std::size_t idx) {
-					vertices[idx].uv = val;
+					vertices[idx].uv = {
+						meshopt_quantizeHalf(val.x),
+						meshopt_quantizeHalf(val.y),
+					};
 				}, adapter);
 			}
 
@@ -1104,9 +1109,14 @@ void Viewer::loadGltfMeshes() {
 						max.z = vertex.position.z;
 				}
 
+				assert(meshlet.vertex_count <= std::numeric_limits<std::uint8_t>::max());
+				assert(meshlet.triangle_count <= std::numeric_limits<std::uint8_t>::max());
 				glm::vec3 center = (min + max) * 0.5f;
 				finalMeshlets.emplace_back(Meshlet {
-					.meshlet = meshlet,
+					.vertexOffset = meshlet.vertex_offset,
+					.triangleOffset = meshlet.triangle_offset,
+					.vertexCount = static_cast<std::uint8_t>(meshlet.vertex_count),
+					.triangleCount = static_cast<std::uint8_t>(meshlet.triangle_count),
 					.aabbExtents = max - center,
 					.aabbCenter = center,
 				});
@@ -1424,10 +1434,8 @@ struct fmt::formatter<dds::ReadResult> : formatter<std::string_view> {
     }
 };
 
-struct ImageLoadTask : public enki::ITaskSet {
+struct ImageLoadTask : public ExceptionTaskSet {
 	Viewer* viewer;
-
-	std::exception_ptr exception;
 
 	explicit ImageLoadTask(Viewer* viewer) noexcept : viewer(viewer) {
 		// We load the default images elsewhere.
@@ -1812,48 +1820,44 @@ struct ImageLoadTask : public enki::ITaskSet {
 	}
 
 	// We'll use the range to operate over multiple images
-	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
+	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override {
 		ZoneScoped;
-		try {
-			for (std::uint32_t i = range.start; i < range.end; ++i) {
-				auto& image = viewer->asset.images[i];
+		for (std::uint32_t i = range.start; i < range.end; ++i) {
+			auto& image = viewer->asset.images[i];
 
-				auto imageIdx = i + Viewer::numDefaultTextures;
-				std::visit(fastgltf::visitor{
-					[](auto& arg) {
-						throw std::runtime_error("Got an unexpected image data source. Can't load image.");
-						return;
-					},
-					[&](fastgltf::sources::Array& array) {
-						load(imageIdx, std::span(array.bytes.data(), array.bytes.size()), array.mimeType);
-					},
-					[&](fastgltf::sources::BufferView& bufferView) {
-						auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
-						auto& buffer = viewer->asset.buffers[view.bufferIndex];
-						std::visit(fastgltf::visitor{
-							[](auto& arg) {
-								throw std::runtime_error("Got an unexpected image data source. Can't load image.");
-								return;
-							},
-							[&](fastgltf::sources::Array& array) {
-								load(imageIdx, std::span(array.bytes.data() + view.byteOffset, array.bytes.size()), bufferView.mimeType);
-							}
-						}, buffer.data);
-					}
-				}, image.data);
-
-				if (image.name.empty()) {
-					image.name = fmt::format("Image {}", i);
+			auto imageIdx = i + Viewer::numDefaultTextures;
+			std::visit(fastgltf::visitor{
+				[](auto& arg) {
+					throw std::runtime_error("Got an unexpected image data source. Can't load image.");
+					return;
+				},
+				[&](fastgltf::sources::Array& array) {
+					load(imageIdx, std::span(array.bytes.data(), array.bytes.size()), array.mimeType);
+				},
+				[&](fastgltf::sources::BufferView& bufferView) {
+					auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
+					auto& buffer = viewer->asset.buffers[view.bufferIndex];
+					std::visit(fastgltf::visitor{
+						[](auto& arg) {
+							throw std::runtime_error("Got an unexpected image data source. Can't load image.");
+							return;
+						},
+						[&](fastgltf::sources::Array& array) {
+							load(imageIdx, std::span(array.bytes.data() + view.byteOffset, array.bytes.size()), bufferView.mimeType);
+						}
+					}, buffer.data);
 				}
+			}, image.data);
 
-				auto& sampledImage = viewer->images[imageIdx];
-				vk::setDebugUtilsName(viewer->device, sampledImage.image, image.name.c_str());
-				vk::setDebugUtilsName(viewer->device, sampledImage.imageView, fmt::format("View of {}", image.name));
-				vk::setAllocationName(viewer->allocator, sampledImage.allocation,
-									  fmt::format("Allocation of {}", image.name));
+			if (image.name.empty()) {
+				image.name = fmt::format("Image {}", i);
 			}
-		} catch (...) {
-			exception = std::current_exception();
+
+			auto& sampledImage = viewer->images[imageIdx];
+			vk::setDebugUtilsName(viewer->device, sampledImage.image, image.name.c_str());
+			vk::setDebugUtilsName(viewer->device, sampledImage.imageView, fmt::format("View of {}", image.name));
+			vk::setAllocationName(viewer->allocator, sampledImage.allocation,
+								  fmt::format("Allocation of {}", image.name));
 		}
 	}
 };

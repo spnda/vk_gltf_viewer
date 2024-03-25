@@ -71,11 +71,16 @@ struct CameraMovement {
 struct Vertex {
 	glm::vec4 position;
 	glm::vec4 color;
-	glm::vec2 uv;
+	// Quantized float16_t vec2
+	glm::u16vec2 uv;
 };
 
 struct Meshlet {
-	meshopt_Meshlet meshlet;
+	std::uint32_t vertexOffset;
+	std::uint32_t triangleOffset;
+
+	std::uint8_t vertexCount;
+	std::uint8_t triangleCount;
 
 	glm::vec3 aabbExtents;
 	glm::vec3 aabbCenter;
