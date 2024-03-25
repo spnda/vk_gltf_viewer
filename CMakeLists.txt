@@ -34,15 +34,30 @@ foreach(SHADER_FILE ${SHADER_FILES})
     string(SHA1 PATH_HASH ${SHADER_FILE})
     set(SHADER_TARGET_NAME "build_shader_${PATH_HASH}")
     set(SHADER_TIMESTAMP_NAME "${PATH_HASH}.timestamp")
+    cmake_path(GET SHADER_FILE PARENT_PATH SHADER_FOLDER)
 
-    # TODO: Should we parse the shader files, and look for includes that we should add to the DEPENDS?
-    #       Should be pretty trivial, tbh...
+    # Parse includes and add them as a dependency
+    # TODO: Make this recursive?
+    file(STRINGS ${SHADER_FILE} FILE_CONTENTS)
+    set(FILE_INCLUDES "")
+    foreach(LINE IN LISTS FILE_CONTENTS)
+        # Search for potential includes
+        if (LINE MATCHES "^#include ")
+            string(LENGTH ${LINE} LINE_LENGTH)
+            MATH(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
+            string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
+            set(INCLUDED_FILE "${SHADER_FOLDER}/${INCLUDED_FILE}")
+            message(STATUS "Found include: ${INCLUDED_FILE}")
+            list(APPEND FILE_INCLUDES ${INCLUDED_FILE})
+        endif()
+    endforeach()
+
     cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
     add_custom_command(
         OUTPUT ${SHADER_TIMESTAMP_NAME}
         COMMAND ${GLSLANG_EXECUTABLE} --target-env vulkan1.3 -o ${SHADER_FILENAME}.spv ${SHADER_FILE}
         COMMAND ${CMAKE_COMMAND} -E touch ${SHADER_TIMESTAMP_NAME}
-        DEPENDS ${SHADER_FILE}
+        DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
         WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
         VERBATIM
         COMMENT "Processing ${SHADER_FILE}"

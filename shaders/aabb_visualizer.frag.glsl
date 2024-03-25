@@ -1,8 +1,6 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-#include "mesh_common.glsl.h"
-
 layout (location = 0) out vec4 outFragColor;
 
 void main() {
