@@ -274,6 +274,7 @@ void Viewer::setupVulkanDevice() {
 	ZoneScoped;
 	const VkPhysicalDeviceFeatures vulkan10features {
 		.multiDrawIndirect = VK_TRUE,
+		.samplerAnisotropy = VK_TRUE,
 	};
 
 	const VkPhysicalDeviceVulkan11Features vulkan11Features {
@@ -391,12 +392,11 @@ void Viewer::setupVulkanDevice() {
 	});
 
 	// Get the main graphics queue
-	auto graphicsQueueResult = device.get_queue(vkb::QueueType::graphics);
-	checkResult(graphicsQueueResult);
-	graphicsQueue = Queue {
-		.handle = graphicsQueueResult.value(),
-		.lock = std::make_unique<std::mutex>(),
-	};
+	auto graphicsQueueIndexResult = device.get_queue_index(vkb::QueueType::graphics);
+	checkResult(graphicsQueueIndexResult);
+
+	vkGetDeviceQueue(device, graphicsQueueIndexResult.value(), 0, &graphicsQueue.handle);
+	graphicsQueue.lock = std::make_unique<std::mutex>();
 
 	// Get the transfer queue handles
 	auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
@@ -412,44 +412,40 @@ void Viewer::setupVulkanDevice() {
 	auto threadCount = std::thread::hardware_concurrency();
 
 	// Create the transfer command pools
-	uploadCommandPools.resize(threadCount);
-	for (auto& commandPool : uploadCommandPools) {
-		const VkCommandPoolCreateInfo commandPoolInfo{
-			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-			.queueFamilyIndex = transferQueueFamilyIndex,
-		};
-		auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool.pool);
-		vk::checkResult(createResult, "Failed to allocate buffer upload command pool: {}");
+	auto createPools = [&](std::vector<CommandPool>& pools, std::uint32_t queueFamily) {
+		pools.resize(threadCount);
+		for (auto& commandPool : pools) {
+			const VkCommandPoolCreateInfo commandPoolInfo{
+				.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+				.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+				.queueFamilyIndex = queueFamily,
+			};
+			auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool.pool);
+			vk::checkResult(createResult, "Failed to allocate buffer upload command pool: {}");
 
-		const VkCommandBufferAllocateInfo allocateInfo {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-			.commandPool = commandPool.pool,
-			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-			.commandBufferCount = 1,
-		};
-		auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, &commandPool.buffer);
-		vk::checkResult(allocateResult, "Failed to allocate buffer upload command buffers: {}");
-	}
+			const VkCommandBufferAllocateInfo allocateInfo {
+				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+				.commandPool = commandPool.pool,
+				.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+				.commandBufferCount = 1,
+			};
+			auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, &commandPool.buffer);
+			vk::checkResult(allocateResult, "Failed to allocate buffer upload command buffers: {}");
+		}
+	};
+	createPools(uploadCommandPools, transferQueueFamilyIndex);
+	createPools(graphicsCommandPools, graphicsQueueIndexResult.value());
+
 	deletionQueue.push([this]() {
 		for (auto& cmdPool : uploadCommandPools)
 			vkDestroyCommandPool(device, cmdPool.pool, nullptr);
+		for (auto& cmdPool : graphicsCommandPools)
+			vkDestroyCommandPool(device, cmdPool.pool, nullptr);
 	});
 
-	// Create the transfer fences
-	uploadFences.resize(threadCount);
-	for (auto& fence : uploadFences) {
-		// Create the submit fence
-		const VkFenceCreateInfo fenceCreateInfo{
-			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
-		};
-		auto fenceResult = vkCreateFence(device, &fenceCreateInfo, nullptr, &fence);
-		vk::checkResult(fenceResult, "Failed to create buffer upload fence: {}");
-	}
+	fencePool.init(device);
 	deletionQueue.push([this]() {
-		for (auto& fence : uploadFences)
-			vkDestroyFence(device, fence, nullptr);
+		fencePool.destroy();
 	});
 }
 
@@ -1168,9 +1164,9 @@ void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bu
 
 	// Reset fences and command buffers.
 	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].buffer;
-	auto fence = uploadFences[taskScheduler.GetThreadNum()];
-	vkResetFences(device, 1, &fence);
 	vkResetCommandBuffer(cmd, 0);
+	auto fence = fencePool.acquire();
+	vkResetFences(device, 1, &fence->handle);
 
 	const VkCommandBufferBeginInfo beginInfo {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1201,12 +1197,12 @@ void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bu
 			.commandBufferCount = 1,
 			.pCommandBuffers = &cmd,
 		};
-		auto submitResult = vkQueueSubmit(queue.handle, 1, &submitInfo, fence);
+		auto submitResult = vkQueueSubmit(queue.handle, 1, &submitInfo, fence->handle);
 		vk::checkResult(submitResult, "Failed to submit buffer copy: {}");
 	}
 
 	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
-	vkWaitForFences(device, 1, &fence, VK_TRUE, 9999999999);
+	fencePool.wait_and_free(fence);
 
 	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
 }
@@ -1229,9 +1225,9 @@ void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<vo
 
 	// Reset fences and command buffers.
 	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].buffer;
-	auto fence = uploadFences[taskScheduler.GetThreadNum()];
-	vkResetFences(device, 1, &fence);
 	vkResetCommandBuffer(cmd, 0);
+	auto fence = fencePool.acquire();
+	vkResetFences(device, 1, &fence->handle);
 
 	const VkCommandBufferBeginInfo beginInfo {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1256,11 +1252,11 @@ void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<vo
 			.commandBufferInfoCount = 1,
 			.pCommandBufferInfos = &cmdInfo,
 		};
-		vkQueueSubmit2(queue.handle, 1, &submitInfo, fence);
+		vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
 	}
 
 	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
-	vkWaitForFences(device, 1, &fence, VK_TRUE, 9999999999);
+	fencePool.wait_and_free(fence);
 
 	// Destroy the staging buffer
 	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
@@ -1406,11 +1402,9 @@ struct ImageLoadTask : public enki::ITaskSet {
 		int width = 0, height = 0, nrChannels = 0;
 		auto* ptr = stbi_load_from_memory(encodedImageData.data(), static_cast<int>(encodedImageData.size()), &width, &height, &nrChannels, channels);
 
-		std::span<std::byte> imageData = std::span(reinterpret_cast<std::byte*>(ptr),
-												   width * height * sizeof(std::byte) * channels);
-
 		auto& sampledImage = viewer->images[imageIdx];
 
+		auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
 		const VkImageCreateInfo imageInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.imageType = VK_IMAGE_TYPE_2D,
@@ -1420,11 +1414,11 @@ struct ImageLoadTask : public enki::ITaskSet {
 				.height = static_cast<std::uint32_t>(height),
 				.depth = 1,
 			},
-			.mipLevels = 1,
+			.mipLevels = mipLevels,
 			.arrayLayers = 1,
 			.samples = VK_SAMPLE_COUNT_1_BIT,
 			.tiling = VK_IMAGE_TILING_OPTIMAL,
-			.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		};
@@ -1442,19 +1436,20 @@ struct ImageLoadTask : public enki::ITaskSet {
 			.format = imageInfo.format,
 			.subresourceRange = {
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.levelCount = 1,
+				.levelCount = mipLevels,
 				.layerCount = 1,
 			},
 		};
 		vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
 
+		auto imageData = std::span(ptr, width * height * sizeof(std::uint8_t) * channels);
 		viewer->uploadImageToDevice(imageData.size_bytes(), [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
 			{
 				vk::ScopedMap map(viewer->allocator, stagingAllocation);
 				std::memcpy(map.get(), imageData.data(), imageData.size_bytes());
 			}
 
-			// Transition the image to TRANSFER_DST_OPTIMAL
+			// Transition the entire image (with all mip levels) to TRANSFER_DST_OPTIMAL
 			VkImageMemoryBarrier2 imageBarrier {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 				.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -1469,7 +1464,8 @@ struct ImageLoadTask : public enki::ITaskSet {
 				.subresourceRange = {
 					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 					.baseMipLevel = 0,
-					.levelCount = 1,
+					.levelCount = mipLevels,
+					.baseArrayLayer = 0,
 					.layerCount = 1,
 				},
 			};
@@ -1499,18 +1495,122 @@ struct ImageLoadTask : public enki::ITaskSet {
 			};
 			vkCmdCopyBufferToImage(cmd, stagingBuffer, sampledImage.image,
 								   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-
-			// Transition the image into the destinationLayout
-			imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-			imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-			imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-			imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
-			imageBarrier.oldLayout = imageBarrier.newLayout;
-			imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 		});
 
 		stbi_image_free(imageData.data());
+
+		// Generate mipmaps
+		auto cmd = viewer->graphicsCommandPools[taskScheduler.GetThreadNum()].buffer;
+		vkResetCommandBuffer(cmd, 0);
+		auto fence = viewer->fencePool.acquire();
+		vkResetFences(viewer->device, 1, &fence->handle);
+
+		const VkCommandBufferBeginInfo beginInfo {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		};
+		vkBeginCommandBuffer(cmd, &beginInfo);
+
+		// Reused image barrier for transitioning each mip layer
+		VkImageMemoryBarrier2 barrier {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = sampledImage.image,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			},
+		};
+		const VkDependencyInfo dependencyInfo {
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.imageMemoryBarrierCount = 1,
+			.pImageMemoryBarriers = &barrier,
+		};
+
+		std::int32_t mipWidth = width;
+		std::int32_t mipHeight = height;
+		for (std::uint32_t i = 1; i < mipLevels; ++i) {
+			// Transition mip i - 1 to TRANSFER_SRC_OPTIMAL
+			barrier.subresourceRange.baseMipLevel = i - 1;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+			vkCmdPipelineBarrier2(cmd,&dependencyInfo);
+
+			const VkImageBlit blit {
+				.srcSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = i - 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.srcOffsets = {
+					0, 0, 0,
+					mipWidth, mipHeight, 1,
+				},
+				.dstSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = i,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.dstOffsets = {
+					0, 0, 0,
+					mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1,
+				},
+			};
+			vkCmdBlitImage(cmd,
+						   sampledImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+						   sampledImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						   1, &blit, VK_FILTER_LINEAR);
+
+			// Transition mip i to TRANSFER_SRC_OPTIMAL
+			barrier.subresourceRange.baseMipLevel = i - 1;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+			vkCmdPipelineBarrier2(cmd,&dependencyInfo);
+
+			if (mipWidth > 1) mipWidth /= 2;
+			if (mipHeight > 1) mipHeight /= 2;
+		}
+
+		// Transition the last mip level to SHARED_READ_ONLY_OPTIMAL
+		barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+		vkCmdPipelineBarrier2(cmd,&dependencyInfo);
+
+		vkEndCommandBuffer(cmd);
+
+		// TODO: Use compute queues instead of the main queue?
+		auto& queue = viewer->graphicsQueue;
+		{
+			std::lock_guard lock(*queue.lock);
+
+			const VkCommandBufferSubmitInfo cmdInfo {
+				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+				.commandBuffer = cmd,
+			};
+			const VkSubmitInfo2 submitInfo {
+				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+				.commandBufferInfoCount = 1,
+				.pCommandBufferInfos = &cmdInfo,
+			};
+			vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
+		}
+
+		viewer->fencePool.wait_and_free(fence);
 	}
 
 	void loadDds(std::span<std::uint8_t> encodedImageData, std::uint32_t threadnum) const {
@@ -1902,6 +2002,9 @@ void Viewer::loadGltfImages() {
 		.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 		.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 		.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+		.mipLodBias = -1.0f,
+		.anisotropyEnable = VK_TRUE,
+		.maxAnisotropy = 16.0f,
 		.maxLod = VK_LOD_CLAMP_NONE,
 	};
 	result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[0]);

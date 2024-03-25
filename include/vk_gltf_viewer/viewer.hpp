@@ -22,6 +22,7 @@
 #include <fastgltf/types.hpp>
 
 #include <vk_gltf_viewer/imgui_renderer.hpp>
+#include <vk_gltf_viewer/fence_pool.hpp>
 
 extern enki::TaskScheduler taskScheduler;
 
@@ -260,6 +261,8 @@ struct Viewer {
 	VmaAllocator allocator = VK_NULL_HANDLE;
 	TracyVkCtx tracyCtx = nullptr;
 
+	FencePool fencePool;
+
     Queue graphicsQueue;
 	std::vector<Queue> transferQueues;
 
@@ -274,9 +277,8 @@ struct Viewer {
 		//       Perhaps we can use up to N command buffers and fences for multiple submits from a single thread.
 		VkCommandBuffer buffer;
 	};
-
-	std::vector<CommandPool> uploadCommandPools;
-	std::vector<VkFence> uploadFences;
+	std::vector<CommandPool> uploadCommandPools; //< Command pools for transfer queues
+	std::vector<CommandPool> graphicsCommandPools; //< Command pools for the main graphics queue
 
     GLFWwindow* window = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
