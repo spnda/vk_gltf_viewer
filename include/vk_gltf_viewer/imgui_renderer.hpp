@@ -11,6 +11,8 @@
 
 #include <glfw/glfw3.h>
 
+struct Viewer;
+
 namespace imgui {
 	struct PushConstants {
 		glm::fvec2 scale = {};
@@ -32,8 +34,7 @@ namespace imgui {
 	class Renderer final {
 		friend class ShaderLoadTask;
 
-		VkDevice device = VK_NULL_HANDLE;
-		VmaAllocator allocator = VK_NULL_HANDLE;
+		Viewer* viewer = nullptr;
 
 		PushConstants pushConstants = {};
 		std::vector<PerFrameBuffers> buffers;
@@ -68,7 +69,7 @@ namespace imgui {
 		void createFontAtlas();
 		void destroy();
 		void draw(VkCommandBuffer commandBuffer, VkImageView swapchainImageView, glm::u32vec2 framebufferSize, std::size_t currentFrame);
-		auto init(VkDevice device, VmaAllocator allocator, GLFWwindow* window, VkFormat swapchainImageFormat) -> VkResult;
+		auto init(Viewer* viewer) -> VkResult;
 		auto initFrameData(std::uint32_t frameCount) -> VkResult;
 		void newFrame();
 	};

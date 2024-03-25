@@ -40,3 +40,6 @@
 [submodule "submodules/imgui"]
 	path = submodules/imgui
 	url = https://github.com/ocornut/imgui
+[submodule "submodules/dds_image"]
+	path = submodules/dds_image
+	url = https://github.com/spnda/dds_image

@@ -4,8 +4,6 @@
 
 #include <TaskScheduler.h>
 
-#include "stb_image.h"
-
 #include <tracy/Tracy.hpp>
 
 #include <vulkan/vk.hpp>
@@ -39,7 +37,6 @@
 
 #include <vk_gltf_viewer/util.hpp>
 #include <vk_gltf_viewer/viewer.hpp>
-#include <vk_gltf_viewer/buffer_uploader.hpp>
 #include <vk_gltf_viewer/scheduler.hpp>
 
 enki::TaskScheduler taskScheduler;
@@ -266,7 +263,7 @@ void Viewer::setupVulkanInstance() {
     checkResult(instanceResult);
 
     instance = instanceResult.value();
-    deletionQueue.push([&]() {
+    deletionQueue.push([this]() {
         vkb::destroy_instance(instance);
     });
 
@@ -358,7 +355,7 @@ void Viewer::setupVulkanDevice() {
     checkResult(creationResult);
 
     device = creationResult.value();
-    deletionQueue.push([&]() {
+    deletionQueue.push([this]() {
         vkb::destroy_device(device);
     });
 
@@ -367,7 +364,7 @@ void Viewer::setupVulkanDevice() {
 #if defined(TRACY_ENABLE)
 	// Initialize the tracy context
 	tracyCtx = TracyVkContextHostCalibrated(device.physical_device, device, vkResetQueryPool, vkGetPhysicalDeviceCalibrateableTimeDomainsEXT, vkGetCalibratedTimestampsEXT);
-	deletionQueue.push([&]() {
+	deletionQueue.push([this]() {
 		DestroyVkContext(tracyCtx);
 	});
 #endif
@@ -389,22 +386,70 @@ void Viewer::setupVulkanDevice() {
 	auto result = vmaCreateAllocator(&allocatorInfo, &allocator);
 	vk::checkResult(result, "Failed to create VMA allocator: {}");
 
-	deletionQueue.push([&]() {
+	deletionQueue.push([this]() {
 		vmaDestroyAllocator(allocator);
 	});
 
-	// Get the queues
-    auto graphicsQueueRes = device.get_queue(vkb::QueueType::graphics);
-    checkResult(graphicsQueueRes);
-    graphicsQueue = graphicsQueueRes.value();
+	// Get the main graphics queue
+	auto graphicsQueueResult = device.get_queue(vkb::QueueType::graphics);
+	checkResult(graphicsQueueResult);
+	graphicsQueue = Queue {
+		.handle = graphicsQueueResult.value(),
+		.lock = std::make_unique<std::mutex>(),
+	};
 
+	// Get the transfer queue handles
 	auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
 	checkResult(transferQueueIndexRes);
 
-	BufferUploader::getInstance().init(device, allocator, transferQueueIndexRes.value(),
-									   queueFamilies[transferQueueIndexRes.value()].queueCount);
-	deletionQueue.push([&]() {
-		BufferUploader::getInstance().destroy();
+	auto transferQueueFamilyIndex = transferQueueIndexRes.value();
+	transferQueues.resize(queueFamilies[transferQueueFamilyIndex].queueCount);
+	for (std::size_t i = 0; auto& queue : transferQueues) {
+		queue.lock = std::make_unique<std::mutex>();
+		vkGetDeviceQueue(device, transferQueueFamilyIndex, i++, &queue.handle);
+	}
+
+	auto threadCount = std::thread::hardware_concurrency();
+
+	// Create the transfer command pools
+	uploadCommandPools.resize(threadCount);
+	for (auto& commandPool : uploadCommandPools) {
+		const VkCommandPoolCreateInfo commandPoolInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = transferQueueFamilyIndex,
+		};
+		auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool.pool);
+		vk::checkResult(createResult, "Failed to allocate buffer upload command pool: {}");
+
+		const VkCommandBufferAllocateInfo allocateInfo {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = commandPool.pool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1,
+		};
+		auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, &commandPool.buffer);
+		vk::checkResult(allocateResult, "Failed to allocate buffer upload command buffers: {}");
+	}
+	deletionQueue.push([this]() {
+		for (auto& cmdPool : uploadCommandPools)
+			vkDestroyCommandPool(device, cmdPool.pool, nullptr);
+	});
+
+	// Create the transfer fences
+	uploadFences.resize(threadCount);
+	for (auto& fence : uploadFences) {
+		// Create the submit fence
+		const VkFenceCreateInfo fenceCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
+		};
+		auto fenceResult = vkCreateFence(device, &fenceCreateInfo, nullptr, &fence);
+		vk::checkResult(fenceResult, "Failed to create buffer upload fence: {}");
+	}
+	deletionQueue.push([this]() {
+		for (auto& fence : uploadFences)
+			vkDestroyFence(device, fence, nullptr);
 	});
 }
 
@@ -741,7 +786,7 @@ void Viewer::buildMeshPipeline() {
 	vkDestroyShaderModule(device, aabbFragModule, VK_NULL_HANDLE);
 	vkDestroyShaderModule(device, aabbVertModule, VK_NULL_HANDLE);
 
-    deletionQueue.push([&]() {
+    deletionQueue.push([this]() {
         vkDestroyPipeline(device, meshPipeline, VK_NULL_HANDLE);
         vkDestroyPipelineLayout(device, meshPipelineLayout, VK_NULL_HANDLE);
 		vkDestroyPipeline(device, aabbVisualizingPipeline, VK_NULL_HANDLE);
@@ -768,13 +813,14 @@ void Viewer::createFrameData() {
         auto fenceResult = vkCreateFence(device, &fenceCreateInfo, nullptr, &frame.presentFinished);
 		vk::checkResult(fenceResult, "Failed to create present fence");
 		vk::setDebugUtilsName(device, frame.presentFinished, "Present fence");
-
-        deletionQueue.push([&]() {
-            vkDestroyFence(device, frame.presentFinished, nullptr);
-            vkDestroySemaphore(device, frame.renderingFinished, nullptr);
-            vkDestroySemaphore(device, frame.imageAvailable, nullptr);
-        });
     }
+	deletionQueue.push([this]() {
+		for (auto& frame : frameSyncData) {
+			vkDestroyFence(device, frame.presentFinished, nullptr);
+			vkDestroySemaphore(device, frame.renderingFinished, nullptr);
+			vkDestroySemaphore(device, frame.imageAvailable, nullptr);
+		}
+	});
 
     frameCommandPools.resize(frameOverlap);
     for (auto& frame : frameCommandPools) {
@@ -793,10 +839,11 @@ void Viewer::createFrameData() {
         frame.commandBuffers.resize(1);
         auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, frame.commandBuffers.data());
 		vk::checkResult(allocateResult, "Failed to allocate frame command buffers");
-        deletionQueue.push([&]() {
-            vkDestroyCommandPool(device, frame.pool, nullptr);
-        });
     }
+	deletionQueue.push([this]() {
+		for (auto& frame : frameCommandPools)
+			vkDestroyCommandPool(device, frame.pool, nullptr);
+	});
 }
 
 class Base64DecodeTask final : public enki::ITaskSet {
@@ -853,14 +900,18 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
 
 	static constexpr auto supportedExtensions = fastgltf::Extensions::KHR_mesh_quantization
 		| fastgltf::Extensions::KHR_lights_punctual
-		| fastgltf::Extensions::EXT_meshopt_compression;
+		| fastgltf::Extensions::EXT_meshopt_compression
+		| fastgltf::Extensions::MSFT_texture_dds;
 
     fastgltf::Parser parser(supportedExtensions);
     parser.setUserPointer(this);
     parser.setBase64DecodeCallback(multithreadedBase64Decoding);
 
 	// TODO: Extract buffer/image loading into async functions in the future
-	static constexpr auto gltfOptions = fastgltf::Options::LoadGLBBuffers | fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages | fastgltf::Options::GenerateMeshIndices;
+	static constexpr auto gltfOptions = fastgltf::Options::LoadGLBBuffers
+		| fastgltf::Options::LoadExternalBuffers
+		| fastgltf::Options::LoadExternalImages
+		| fastgltf::Options::GenerateMeshIndices;
 
     auto expected = parser.loadGltf(&fileBuffer, filePath.parent_path(), gltfOptions);
     if (expected.error() != fastgltf::Error::None) {
@@ -927,7 +978,7 @@ void Viewer::loadGltfMeshes() {
 	vk::checkResult(result, "Failed to create meshlet descriptor set layout: {}");
 	vk::setDebugUtilsName(device, meshletSetLayout, "Mesh shader pipeline descriptor layout");
 
-	deletionQueue.push([&]() {
+	deletionQueue.push([this]() {
 		vkDestroyDescriptorSetLayout(device, meshletSetLayout, nullptr);
 	});
 
@@ -1070,9 +1121,9 @@ void Viewer::loadGltfMeshes() {
 	uploadMeshlets(globalMeshlets, globalMeshletVertices, globalMeshletTriangles, globalVertices);
 }
 
-VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer, VmaAllocation *allocation) noexcept {
+VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer, VmaAllocation *allocation) const noexcept {
 	const VmaAllocationCreateInfo allocationCreateInfo {
-		.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 	};
 	const VkBufferCreateInfo bufferCreateInfo {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -1083,61 +1134,168 @@ VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer,
 						   buffer, allocation, VK_NULL_HANDLE);
 }
 
+VkResult Viewer::createHostStagingBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) const noexcept {
+	// Using HOST_ACCESS_SEQUENTIAL_WRITE and adding TRANSFER_SRC to usage will make this buffer
+	// either land in BAR scope, or in system memory. In either case, this is sufficient for a staging buffer.
+	const VmaAllocationCreateInfo allocationCreateInfo {
+		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+	};
+	const VkBufferCreateInfo bufferCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = byteSize,
+		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	};
+	return vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+						   buffer, allocation, VK_NULL_HANDLE);
+}
+
+void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bufferHandle, VmaAllocation* allocationHandle) {
+	// Create the destination buffer
+	auto result = createGpuTransferBuffer(bytes.size_bytes(), bufferHandle, allocationHandle);
+	vk::checkResult(result, "Failed to create GPU transfer storage buffer: {}");
+
+	// Create the staging buffer and map it.
+	VkBuffer stagingBuffer;
+	VmaAllocation stagingAllocation;
+	result = createHostStagingBuffer(bytes.size_bytes(), &stagingBuffer, &stagingAllocation);
+	vk::checkResult(result, "Failed to create host staging buffer: {}");
+
+	{
+		vk::ScopedMap map(allocator, stagingAllocation);
+		std::memcpy(map.get(), bytes.data(), bytes.size_bytes());
+	}
+
+	// Reset fences and command buffers.
+	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].buffer;
+	auto fence = uploadFences[taskScheduler.GetThreadNum()];
+	vkResetFences(device, 1, &fence);
+	vkResetCommandBuffer(cmd, 0);
+
+	const VkCommandBufferBeginInfo beginInfo {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	vkBeginCommandBuffer(cmd, &beginInfo);
+
+	// Perform the simple copy
+	const VkBufferCopy region {
+		.srcOffset = 0,
+		.dstOffset = 0,
+		.size = bytes.size_bytes(),
+	};
+	vkCmdCopyBuffer(cmd, stagingBuffer, *bufferHandle, 1, &region);
+
+	vkEndCommandBuffer(cmd);
+
+	auto& queue = getNextTransferQueueHandle();
+	{
+		// We need to guard the vkQueueSubmit call
+		std::lock_guard lock(*queue.lock);
+
+		// Submit the command buffer
+		const VkPipelineStageFlags submitWaitStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		const VkSubmitInfo submitInfo {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.pWaitDstStageMask = &submitWaitStages,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &cmd,
+		};
+		auto submitResult = vkQueueSubmit(queue.handle, 1, &submitInfo, fence);
+		vk::checkResult(submitResult, "Failed to submit buffer copy: {}");
+	}
+
+	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
+	vkWaitForFences(device, 1, &fence, VK_TRUE, 9999999999);
+
+	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+}
+
+void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)> commands) {
+	// Create a host allocation to hold our image data.
+	const VmaAllocationCreateInfo allocationCreateInfo {
+		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+	};
+	const VkBufferCreateInfo bufferCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = stagingBufferSize,
+		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	};
+	VkBuffer stagingBuffer;
+	VmaAllocation stagingAllocation;
+	auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+					&stagingBuffer, &stagingAllocation, VK_NULL_HANDLE);
+
+	// Reset fences and command buffers.
+	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].buffer;
+	auto fence = uploadFences[taskScheduler.GetThreadNum()];
+	vkResetFences(device, 1, &fence);
+	vkResetCommandBuffer(cmd, 0);
+
+	const VkCommandBufferBeginInfo beginInfo {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	vkBeginCommandBuffer(cmd, &beginInfo);
+
+	commands(cmd, stagingBuffer, stagingAllocation);
+
+	vkEndCommandBuffer(cmd);
+
+	auto& queue = getNextTransferQueueHandle();
+	{
+		std::lock_guard lock(*queue.lock);
+
+		const VkCommandBufferSubmitInfo cmdInfo {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+			.commandBuffer = cmd,
+		};
+		const VkSubmitInfo2 submitInfo {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+			.commandBufferInfoCount = 1,
+			.pCommandBufferInfos = &cmdInfo,
+		};
+		vkQueueSubmit2(queue.handle, 1, &submitInfo, fence);
+	}
+
+	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
+	vkWaitForFences(device, 1, &fence, VK_TRUE, 9999999999);
+
+	// Destroy the staging buffer
+	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+}
+
 void Viewer::uploadMeshlets(std::vector<Meshlet>& meshlets,
 							std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 							std::vector<Vertex>& vertices) {
 	ZoneScoped;
-	std::vector<std::unique_ptr<BufferUploadTask>> uploadTasks;
 	{
 		// Create the meshlet description buffer
-		auto result = createGpuTransferBuffer(meshlets.size() * sizeof(std::remove_reference_t<decltype(meshlets)>::value_type),
-											  &globalMeshBuffers.descHandle, &globalMeshBuffers.descAllocation);
-		vk::checkResult(result, "Failed to allocate meshlet description buffer: {}");
+		uploadBufferToDevice(std::as_bytes(std::span(meshlets.begin(), meshlets.end())),
+							 &globalMeshBuffers.descHandle, &globalMeshBuffers.descAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, "Meshlet descriptions");
-
-		auto task = BufferUploader::getInstance().uploadToBuffer(
-			std::as_bytes(std::span{meshlets.begin(), meshlets.end()}),
-			globalMeshBuffers.descHandle);
-		uploadTasks.emplace_back(std::move(task));
 	}
 	{
 		// Create the vertex index buffer
-		auto result = createGpuTransferBuffer(meshletVertices.size() * sizeof(std::remove_reference_t<decltype(meshletVertices)>::value_type),
-											  &globalMeshBuffers.vertexIndiciesHandle, &globalMeshBuffers.vertexIndiciesAllocation);
-		vk::checkResult(result, "Failed to allocate vertex index buffer: {}");
+		uploadBufferToDevice(std::as_bytes(std::span(meshletVertices.begin(), meshletVertices.end())),
+							 &globalMeshBuffers.vertexIndiciesHandle, &globalMeshBuffers.vertexIndiciesAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.vertexIndiciesHandle, "Meshlet vertex indices");
-
-		auto task = BufferUploader::getInstance().uploadToBuffer(
-			std::as_bytes(std::span{meshletVertices.begin(), meshletVertices.end()}),
-			globalMeshBuffers.vertexIndiciesHandle);
-		uploadTasks.emplace_back(std::move(task));
 	}
 	{
 		// Create the meshlet description buffer
-		auto result = createGpuTransferBuffer(meshletTriangles.size() * sizeof(std::remove_reference_t<decltype(meshletTriangles)>::value_type),
-											  &globalMeshBuffers.triangleIndicesHandle, &globalMeshBuffers.triangleIndicesAllocation);
-		vk::checkResult(result, "Failed to allocate triangle index buffer: {}");
+		uploadBufferToDevice(std::as_bytes(std::span(meshletTriangles.begin(), meshletTriangles.end())),
+							 &globalMeshBuffers.triangleIndicesHandle, &globalMeshBuffers.triangleIndicesAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.triangleIndicesHandle, "Meshlet triangle indices");
-
-		auto task = BufferUploader::getInstance().uploadToBuffer(
-			std::as_bytes(std::span{meshletTriangles.begin(), meshletTriangles.end()}),
-			globalMeshBuffers.triangleIndicesHandle);
-		uploadTasks.emplace_back(std::move(task));
 	}
 	{
 		// Create the vertex buffer
-		auto result = createGpuTransferBuffer(vertices.size() * sizeof(std::remove_reference_t<decltype(vertices)>::value_type),
-											  &globalMeshBuffers.verticesHandle, &globalMeshBuffers.verticesAllocation);
-		vk::checkResult(result, "Failed to allocate vertex buffer: {}");
+		uploadBufferToDevice(std::as_bytes(std::span(vertices.begin(), vertices.end())),
+							 &globalMeshBuffers.verticesHandle, &globalMeshBuffers.verticesAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.verticesHandle, "Meshlet vertices");
-
-		auto task = BufferUploader::getInstance().uploadToBuffer(
-			std::as_bytes(std::span{vertices.begin(), vertices.end()}),
-			globalMeshBuffers.verticesHandle);
-		uploadTasks.emplace_back(std::move(task));
 	}
 
-	deletionQueue.push([&]() {
+	deletionQueue.push([this]() {
 		vmaDestroyBuffer(allocator, globalMeshBuffers.verticesHandle, globalMeshBuffers.verticesAllocation);
 		vmaDestroyBuffer(allocator, globalMeshBuffers.triangleIndicesHandle, globalMeshBuffers.triangleIndicesAllocation);
 		vmaDestroyBuffer(allocator, globalMeshBuffers.vertexIndiciesHandle, globalMeshBuffers.vertexIndiciesAllocation);
@@ -1224,13 +1382,12 @@ void Viewer::uploadMeshlets(std::vector<Meshlet>& meshlets,
 		vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0,
 							   nullptr);
 	}
-
-	for (auto& task : uploadTasks) {
-		taskScheduler.WaitforTask(task.get());
-	}
 }
 
 #include <stb_image.h>
+
+#define DDS_USE_STD_FILESYSTEM 1
+#include <dds.hpp>
 
 struct ImageLoadTask : public enki::ITaskSet {
 	Viewer* viewer;
@@ -1240,52 +1397,29 @@ struct ImageLoadTask : public enki::ITaskSet {
 		m_SetSize = 1;
 	}
 
-	// We'll use the range to operate over multiple images
-	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
+	void loadWithStb(std::span<std::uint8_t> encodedImageData, std::uint32_t threadnum) const {
 		ZoneScoped;
-		// m_SetSize = 1, so range will always be 0,1
-		auto& image = viewer->asset.images[imageIdx - Viewer::numDefaultTextures];
-
-		std::uint8_t* imageData = nullptr;
-		VkExtent3D imageExtent;
-		imageExtent.depth = 1;
+		static constexpr VkFormat imageFormat = VK_FORMAT_R8G8B8A8_SRGB;
 		static constexpr auto channels = 4;
 
-		// Load and decode the image data using stbi from the various sources.
-		std::visit(fastgltf::visitor {
-			[](auto arg) { },
-			[&](fastgltf::sources::Array& vector) {
-				int width = 0, height = 0, nrChannels = 0;
-				imageData = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, channels);
-				imageExtent.width = width;
-				imageExtent.height = height;
-			},
-			[&](fastgltf::sources::BufferView& view) {
-				auto& bufferView = viewer->asset.bufferViews[view.bufferViewIndex];
-				auto& buffer = viewer->asset.buffers[bufferView.bufferIndex];
-				// Yes, we've already loaded every buffer into some GL buffer. However, with GL it's simpler
-				// to just copy the buffer data again for the texture. Besides, this is just an example.
-				std::visit(fastgltf::visitor {
-					// We only care about VectorWithMime here, because we specify LoadExternalBuffers, meaning
-					// all buffers are already loaded into a vector.
-					[](auto& arg) {},
-					[&](fastgltf::sources::Array& vector) {
-						int width = 0, height = 0, nrChannels = 0;
-						imageData = stbi_load_from_memory(vector.bytes.data() + bufferView.byteOffset, static_cast<int>(bufferView.byteLength), &width, &height, &nrChannels, channels);
-						imageExtent.width = width;
-						imageExtent.height = height;
-					}
-				}, buffer.data);
-			},
-		}, image.data);
+		// Load and decode the image data using stbi
+		int width = 0, height = 0, nrChannels = 0;
+		auto* ptr = stbi_load_from_memory(encodedImageData.data(), static_cast<int>(encodedImageData.size()), &width, &height, &nrChannels, channels);
 
-		SampledImage& sampledImage = viewer->images[imageIdx];
+		std::span<std::byte> imageData = std::span(reinterpret_cast<std::byte*>(ptr),
+												   width * height * sizeof(std::byte) * channels);
+
+		auto& sampledImage = viewer->images[imageIdx];
 
 		const VkImageCreateInfo imageInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.imageType = VK_IMAGE_TYPE_2D,
-			.format = VK_FORMAT_R8G8B8A8_SRGB,
-			.extent = imageExtent,
+			.format = imageFormat,
+			.extent = {
+				.width = static_cast<std::uint32_t>(width),
+				.height = static_cast<std::uint32_t>(height),
+				.depth = 1,
+			},
 			.mipLevels = 1,
 			.arrayLayers = 1,
 			.samples = VK_SAMPLE_COUNT_1_BIT,
@@ -1301,12 +1435,6 @@ struct ImageLoadTask : public enki::ITaskSet {
 		vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
 					   &sampledImage.image, &sampledImage.allocation, nullptr);
 
-		// Create and schedule the ImageUploadTask.
-		auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(imageData),
-			imageExtent.width * imageExtent.height * sizeof(std::byte) * channels };
-		ImageUploadTask uploadTask(data, sampledImage.image, imageExtent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, channels);
-		taskScheduler.AddTaskSetToPipe(&uploadTask);
-
 		const VkImageViewCreateInfo imageViewInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 			.image = sampledImage.image,
@@ -1319,11 +1447,232 @@ struct ImageLoadTask : public enki::ITaskSet {
 			},
 		};
 		vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
-		vk::setDebugUtilsName(viewer->device, sampledImage.imageView, image.name.c_str());
 
-		taskScheduler.WaitforTask(&uploadTask);
+		viewer->uploadImageToDevice(imageData.size_bytes(), [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
+			{
+				vk::ScopedMap map(viewer->allocator, stagingAllocation);
+				std::memcpy(map.get(), imageData.data(), imageData.size_bytes());
+			}
 
-		stbi_image_free(imageData);
+			// Transition the image to TRANSFER_DST_OPTIMAL
+			VkImageMemoryBarrier2 imageBarrier {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+				.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+				.srcAccessMask = VK_ACCESS_2_NONE,
+				.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+				.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = sampledImage.image,
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.layerCount = 1,
+				},
+			};
+			const VkDependencyInfo dependencyInfo {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 1,
+				.pImageMemoryBarriers = &imageBarrier,
+			};
+			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+			// Copy the image
+			const VkBufferImageCopy copy {
+				.bufferOffset = 0,
+				.bufferRowLength = 0,
+				.bufferImageHeight = 0,
+				.imageSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = 0,
+					.layerCount = 1,
+				},
+				.imageOffset = {
+					.x = 0,
+					.y = 0,
+					.z = 0,
+				},
+				.imageExtent = imageInfo.extent,
+			};
+			vkCmdCopyBufferToImage(cmd, stagingBuffer, sampledImage.image,
+								   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+			// Transition the image into the destinationLayout
+			imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+			imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+			imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+			imageBarrier.oldLayout = imageBarrier.newLayout;
+			imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+		});
+
+		stbi_image_free(imageData.data());
+	}
+
+	void loadDds(std::span<std::uint8_t> encodedImageData, std::uint32_t threadnum) const {
+		ZoneScoped;
+		dds::Image image;
+		auto ddsResult = dds::readImage(encodedImageData.data(), encodedImageData.size_bytes(), &image);
+		if (ddsResult != dds::ReadResult::Success) {
+			// TODO
+		}
+
+		auto& sampledImage = viewer->images[imageIdx];
+
+		// Create the Vulkan image
+		auto vkFormat = dds::getVulkanFormat(image.format, image.supportsAlpha);
+		auto imageInfo = dds::getVulkanImageCreateInfo(&image, vkFormat);
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		const VmaAllocationCreateInfo allocationInfo {
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		};
+		vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
+					   &sampledImage.image, &sampledImage.allocation, nullptr);
+
+		auto imageViewInfo = dds::getVulkanImageViewCreateInfo(&image, vkFormat);
+		imageViewInfo.image = sampledImage.image;
+		vkCreateImageView(viewer->device, &imageViewInfo, nullptr, &sampledImage.imageView);
+
+		// Compute the aligned offsets for every mip level
+		std::size_t totalSize = 0;
+		fastgltf::StaticVector<VkDeviceSize> offsets(image.mipmaps.size());
+		for (std::size_t i = 0; auto& mip : image.mipmaps) {
+			offsets[i++] = fastgltf::alignUp(totalSize, static_cast<std::int32_t>(dds::getBlockSize(image.format)));
+			totalSize += mip.size_bytes();
+		}
+
+		viewer->uploadImageToDevice(totalSize, [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
+			// Copy the image mips with correct offsets, aligned to the format's texel size
+			{
+				vk::ScopedMap<std::byte> map(viewer->allocator, stagingAllocation);
+				for (std::size_t i = 0; auto& mip : image.mipmaps) {
+					std::memcpy(map.get() + offsets[i++], mip.data(), mip.size_bytes());
+				}
+			}
+
+			// For each mip, submit a command buffer copying the staging buffer to the device image
+			glm::u32vec2 extent(image.width, image.height);
+			for (std::uint32_t i = 0; i < image.numMips; ++i) {
+				// Transition the image to TRANSFER_DST_OPTIMAL
+				VkImageMemoryBarrier2 imageBarrier {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+					.srcAccessMask = VK_ACCESS_2_NONE,
+					.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+					.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = sampledImage.image,
+					.subresourceRange = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.baseMipLevel = i,
+						.levelCount = 1,
+						.layerCount = 1,
+					},
+				};
+				const VkDependencyInfo dependencyInfo {
+					.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+					.imageMemoryBarrierCount = 1,
+					.pImageMemoryBarriers = &imageBarrier,
+				};
+				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+				const VkBufferImageCopy copy {
+					.bufferOffset = offsets[i],
+					.bufferRowLength = 0,
+					.bufferImageHeight = 0,
+					.imageSubresource = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel = i,
+						.layerCount = 1,
+					},
+					.imageOffset = {
+						.x = 0,
+						.y = 0,
+						.z = 0,
+					},
+					.imageExtent = {
+						.width = extent.x,
+						.height = extent.y,
+						.depth = 1,
+					},
+				};
+				vkCmdCopyBufferToImage(cmd, stagingBuffer, sampledImage.image,
+									   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+				// Transition the image into the destinationLayout
+				imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+				imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+				imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+				imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+				imageBarrier.oldLayout = imageBarrier.newLayout;
+				imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+				extent /= 2;
+			}
+		});
+	}
+
+	void load(std::span<std::uint8_t> data, fastgltf::MimeType mimeType, std::uint32_t threadnum) {
+		switch (mimeType) {
+			case fastgltf::MimeType::PNG:
+			case fastgltf::MimeType::JPEG: {
+				loadWithStb(data, threadnum);
+				break;
+			}
+			case fastgltf::MimeType::DDS: {
+				loadDds(data, threadnum);
+				break;
+			}
+			default: {
+				assert(false);
+				break;
+			}
+		}
+	}
+
+	// We'll use the range to operate over multiple images
+	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
+		ZoneScoped;
+		auto& image = viewer->asset.images[imageIdx - Viewer::numDefaultTextures];
+
+		std::visit(fastgltf::visitor {
+			[](auto& arg) {
+				assert(false && "Got unexpected image data source.");
+				return;
+			},
+			[&](fastgltf::sources::Array& array) {
+				load(std::span(array.bytes.data(), array.bytes.size()), array.mimeType, threadnum);
+			},
+			[&](fastgltf::sources::BufferView& bufferView) {
+				auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
+				auto& buffer = viewer->asset.buffers[view.bufferIndex];
+				std::visit(fastgltf::visitor {
+					[](auto& arg) {
+						assert(false && "Got unexpected image data source.");
+						return;
+					},
+					[&](fastgltf::sources::Array& array) {
+						load(std::span(array.bytes.data(), array.bytes.size()), bufferView.mimeType, threadnum);
+					}
+				}, buffer.data);
+			}
+		}, image.data);
+
+		auto& sampledImage = viewer->images[imageIdx];
+		vk::setDebugUtilsName(viewer->device, sampledImage.image, image.name.c_str());
+		vk::setDebugUtilsName(viewer->device, sampledImage.imageView, fmt::format("View of {}", image.name.c_str()));
 	}
 };
 
@@ -1348,7 +1697,7 @@ void Viewer::createDefaultImages() {
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
 	const VmaAllocationCreateInfo allocationInfo {
-		.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 	};
 	auto& defaultTexture = images[0];
 	auto result = vmaCreateImage(allocator, &imageInfo, &allocationInfo,
@@ -1358,9 +1707,67 @@ void Viewer::createDefaultImages() {
 
 	// We use R8G8B8A8_UNORM, so we need to use 8-bit integers for the colors here.
 	std::array<std::uint8_t, 4> white {{ 255, 255, 255, 255 }};
-	auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(white.data()), sizeof(white) };
-	ImageUploadTask uploadTask(data, defaultTexture.image, imageInfo.extent, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 4);
-	taskScheduler.AddTaskSetToPipe(&uploadTask);
+	uploadImageToDevice(sizeof white, [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
+		{
+			vk::ScopedMap map(allocator, stagingAllocation);
+			std::memcpy(map.get(), white.data(), sizeof white);
+		}
+
+		// Transition the image to TRANSFER_DST_OPTIMAL
+		VkImageMemoryBarrier2 imageBarrier {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+			.srcAccessMask = VK_ACCESS_2_NONE,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = defaultTexture.image,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		const VkDependencyInfo dependencyInfo {
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.imageMemoryBarrierCount = 1,
+			.pImageMemoryBarriers = &imageBarrier,
+		};
+		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+		// Copy the image
+		const VkBufferImageCopy copy {
+			.bufferOffset = 0,
+			.bufferRowLength = 0,
+			.bufferImageHeight = 0,
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.mipLevel = 0,
+				.layerCount = 1,
+			},
+			.imageOffset = {
+				.x = 0,
+				.y = 0,
+				.z = 0,
+			},
+			.imageExtent = imageInfo.extent,
+		};
+		vkCmdCopyBufferToImage(cmd, stagingBuffer, defaultTexture.image,
+							   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+		// Transition the image into the destinationLayout
+		imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+		imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+		imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+		imageBarrier.oldLayout = imageBarrier.newLayout;
+		imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+	});
 
 	const VkImageViewCreateInfo imageViewInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1376,8 +1783,6 @@ void Viewer::createDefaultImages() {
 	vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &defaultTexture.imageView);
 	vk::checkResult(result, "Failed to create default image view: {}");
 	vk::setDebugUtilsName(device, defaultTexture.imageView, "Default image view");
-
-	taskScheduler.WaitforTask(&uploadTask);
 }
 
 VkFilter getVulkanFilter(fastgltf::Filter filter) {
@@ -1470,7 +1875,7 @@ void Viewer::loadGltfImages() {
 											  VK_NULL_HANDLE, &materialSetLayout);
 	vk::checkResult(result, "Failed to create material descriptor set layout: {}");
 	vk::setDebugUtilsName(device, materialSetLayout, "Material descriptor layout");
-	deletionQueue.push([&]() {
+	deletionQueue.push([this]() {
 		vkDestroyDescriptorSetLayout(device, materialSetLayout, nullptr);
 	});
 
@@ -1601,7 +2006,7 @@ void Viewer::loadGltfMaterials() {
 	vk::checkResult(result, "Failed to allocate material buffer");
 	vk::setDebugUtilsName(device, materialBuffer, "Material buffer");
 
-	deletionQueue.push([&]() {
+	deletionQueue.push([this]() {
 		vmaDestroyBuffer(allocator, materialBuffer, materialAllocation);
 	});
 
@@ -2080,7 +2485,7 @@ int main(int argc, char* argv[]) {
 		viewer.drawBuffers.resize(frameOverlap);
 
 		// Setup ImGui. This requires the swapchain to already exist to know the format
-		auto imguiResult = viewer.imgui.init(viewer.device, viewer.allocator, viewer.window, viewer.swapchain.image_format);
+		auto imguiResult = viewer.imgui.init(&viewer);
 		vk::checkResult(imguiResult, "Failed to create ImGui rendering context: {}");
 		auto& io = ImGui::GetIO();
 		io.ConfigFlags |= ImGuiConfigFlags_IsSRGB;
@@ -2368,28 +2773,34 @@ int main(int argc, char* argv[]) {
 				.signalSemaphoreInfoCount = static_cast<std::uint32_t>(signalSemaphoreInfos.size()),
 				.pSignalSemaphoreInfos = signalSemaphoreInfos.data(),
 			};
-            auto submitResult = vkQueueSubmit2(viewer.graphicsQueue, 1, &submitInfo, frameSyncData.presentFinished);
-            if (submitResult != VK_SUCCESS) {
-                throw vulkan_error("Failed to submit to queue", submitResult);
-            }
 
-            // Present the rendered image
-			const VkPresentInfoKHR presentInfo {
-				.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-				.waitSemaphoreCount = 1,
-				.pWaitSemaphores = &frameSyncData.renderingFinished,
-				.swapchainCount = 1,
-				.pSwapchains = &viewer.swapchain.swapchain,
-				.pImageIndices = &swapchainImageIndex,
-			};
-            auto presentResult = vkQueuePresentKHR(viewer.graphicsQueue, &presentInfo);
-            if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
-                viewer.swapchainNeedsRebuild = true;
-                continue;
-            }
-            if (presentResult != VK_SUCCESS) {
-                throw vulkan_error("Failed to present to queue", presentResult);
-            }
+			// Submit & present
+			{
+				std::lock_guard lock(*viewer.graphicsQueue.lock);
+				auto submitResult = vkQueueSubmit2(viewer.graphicsQueue.handle, 1, &submitInfo,
+												   frameSyncData.presentFinished);
+				if (submitResult != VK_SUCCESS) {
+					throw vulkan_error("Failed to submit to queue", submitResult);
+				}
+
+				// Present the rendered image
+				const VkPresentInfoKHR presentInfo {
+					.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+					.waitSemaphoreCount = 1,
+					.pWaitSemaphores = &frameSyncData.renderingFinished,
+					.swapchainCount = 1,
+					.pSwapchains = &viewer.swapchain.swapchain,
+					.pImageIndices = &swapchainImageIndex,
+				};
+				auto presentResult = vkQueuePresentKHR(viewer.graphicsQueue.handle, &presentInfo);
+				if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+					viewer.swapchainNeedsRebuild = true;
+					continue;
+				}
+				if (presentResult != VK_SUCCESS) {
+					throw vulkan_error("Failed to present to queue", presentResult);
+				}
+			}
 
 			FrameMarkEnd("frame");
         }
@@ -2425,15 +2836,13 @@ int main(int argc, char* argv[]) {
 			vmaDestroyBuffer(viewer.allocator, drawBuffer.primitiveDrawHandle, drawBuffer.primitiveDrawAllocation);
 		}
 
-		// Destroys everything. We leave this out of the try-catch block to make sure it gets executed.
-		// The swapchain is the only exception, as that gets recreated within the render loop. Managing it
-		// with this paradigm is quite hard.
 		for (auto& view : viewer.swapchainImageViews)
 			vkDestroyImageView(viewer.device, view, nullptr);
 		vkb::destroy_swapchain(viewer.swapchain);
 		vkDestroyImageView(viewer.device, viewer.depthImageView, VK_NULL_HANDLE);
 		vmaDestroyImage(viewer.allocator, viewer.depthImage, viewer.depthImageAllocation);
 
+		// Destroys everything. We leave this out of the try-catch block to make sure it gets executed.
 		viewer.timelineDeletionQueue.destroy();
 		viewer.flushObjects();
 	}

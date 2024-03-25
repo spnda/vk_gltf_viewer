@@ -36,6 +36,11 @@ if(EXISTS "${VKV_DEPS_DIR}/stb")
     target_include_directories(stb INTERFACE "${VKV_DEPS_DIR}/stb")
 endif()
 
+if (EXISTS "${VKV_DEPS_DIR}/dds_image")
+    message(STATUS "vk_gltf_viewer: Found dds_image")
+    add_subdirectory("${VKV_DEPS_DIR}/dds_image")
+endif()
+
 if (EXISTS "${VKV_DEPS_DIR}/fmt")
     message(STATUS "vk_gltf_viewer: Found fmtlib")
     add_subdirectory("${VKV_DEPS_DIR}/fmt")

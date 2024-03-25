@@ -12,8 +12,6 @@ struct Material {
     vec4 albedoFactor;
     uint albedoIdx;
     float alphaCutoff;
-
-    vec2 padding;
 };
 
 layout(set = 2, binding = 0, scalar) buffer Materials {

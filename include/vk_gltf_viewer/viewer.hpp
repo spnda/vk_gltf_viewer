@@ -143,8 +143,6 @@ struct Material {
 	glm::vec4 albedoFactor;
 	std::uint32_t albedoIndex;
 	float alphaCutoff;
-
-	glm::vec2 padding;
 };
 
 struct SampledImage {
@@ -251,13 +249,34 @@ public:
 	}
 };
 
+struct Queue {
+	VkQueue handle = VK_NULL_HANDLE;
+	std::unique_ptr<std::mutex> lock; // Can't hold the object in a vector otherwise.
+};
+
 struct Viewer {
     vkb::Instance instance;
     vkb::Device device;
 	VmaAllocator allocator = VK_NULL_HANDLE;
 	TracyVkCtx tracyCtx = nullptr;
 
-    VkQueue graphicsQueue = VK_NULL_HANDLE;
+    Queue graphicsQueue;
+	std::vector<Queue> transferQueues;
+
+	Queue& getNextTransferQueueHandle() {
+		static std::atomic<std::size_t> idx = 0;
+		return transferQueues[idx++ % transferQueues.size()];
+	}
+
+	struct CommandPool {
+		VkCommandPool pool;
+		// TODO: Find some mechanism to allow using multiple command buffers on one thread.
+		//       Perhaps we can use up to N command buffers and fences for multiple submits from a single thread.
+		VkCommandBuffer buffer;
+	};
+
+	std::vector<CommandPool> uploadCommandPools;
+	std::vector<VkFence> uploadFences;
 
     GLFWwindow* window = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -332,8 +351,15 @@ struct Viewer {
 
 	void loadGltf(const std::filesystem::path& file);
 
-	/** This function uploads a buffer to DEVICE_LOCAL memory on the GPU using a staging buffer. */
-	VkResult createGpuTransferBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) noexcept;
+	/** This function creates a DEVICE_LOCAL storage buffer suitable for a transfer destination */
+	VkResult createGpuTransferBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) const noexcept;
+	/** This function creates a VkBuffer on host memory suitable as a staging buffer (transfer source) */
+	VkResult createHostStagingBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) const noexcept;
+	/** Uploads the data to a new storage buffer */
+	void uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* buffer, VmaAllocation* allocation);
+	/** Uploads image data to a image */
+	void uploadImageToDevice(std::size_t stagingBufferSize, std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)> commands);
+
 	void uploadMeshlets(std::vector<Meshlet>& meshlets,
 						std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
 						std::vector<Vertex>& vertices);
