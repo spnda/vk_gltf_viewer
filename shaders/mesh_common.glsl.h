@@ -64,6 +64,18 @@ struct PrimitiveDraw {
     uint materialIndex;
 };
 
+struct Material {
+    vec4 albedoFactor;
+
+    // Albedo texture
+    uint albedoIndex;
+    vec2 uvOffset;
+    vec2 uvScale;
+    float uvRotation;
+
+    float alphaCutoff;
+};
+
 #if defined(__cplusplus)
 } // namespace shaders
 #endif

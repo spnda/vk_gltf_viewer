@@ -121,12 +121,6 @@ struct FrameDrawCommandBuffers {
 	std::uint32_t drawCount;
 };
 
-struct Material {
-	glm::vec4 albedoFactor;
-	std::uint32_t albedoIndex;
-	float alphaCutoff;
-};
-
 struct SampledImage {
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation allocation = VK_NULL_HANDLE;

@@ -905,6 +905,7 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
 	static constexpr auto supportedExtensions = fastgltf::Extensions::KHR_mesh_quantization
 		| fastgltf::Extensions::KHR_lights_punctual
 		| fastgltf::Extensions::KHR_materials_variants
+		| fastgltf::Extensions::KHR_texture_transform
 		| fastgltf::Extensions::EXT_meshopt_compression
 		| fastgltf::Extensions::MSFT_texture_dds;
 
@@ -2206,10 +2207,10 @@ void Viewer::loadGltfImages() {
 void Viewer::loadGltfMaterials() {
 	ZoneScoped;
 	// Create the material buffer data
-	std::vector<Material> materials; materials.reserve(asset.materials.size());
+	std::vector<glsl::Material> materials; materials.reserve(asset.materials.size());
 
 	// Add the default material
-	materials.emplace_back(Material {
+	materials.emplace_back(glsl::Material {
 		.albedoFactor = glm::vec4(1.0f),
 		.albedoIndex = 0,
 		.alphaCutoff = 0.5f,
@@ -2218,8 +2219,18 @@ void Viewer::loadGltfMaterials() {
 	for (auto& gltfMaterial : asset.materials) {
 		auto& mat = materials.emplace_back();
 		mat.albedoFactor = glm::make_vec4(gltfMaterial.pbrData.baseColorFactor.data());
+		mat.uvOffset = glm::vec2(0);
+		mat.uvScale = glm::vec2(1.0f);
+		mat.uvRotation = 0.0f;
+
 		if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
-			mat.albedoIndex = gltfMaterial.pbrData.baseColorTexture->textureIndex;
+			auto& albedoTex = gltfMaterial.pbrData.baseColorTexture.value();
+			mat.albedoIndex = albedoTex.textureIndex;
+			if (albedoTex.transform) {
+				mat.uvOffset = glm::make_vec2(albedoTex.transform->uvOffset.data());
+				mat.uvScale = glm::make_vec2(albedoTex.transform->uvScale.data());
+				mat.uvRotation = albedoTex.transform->rotation;
+			}
 		} else {
 			mat.albedoIndex = 0;
 		}
@@ -2247,7 +2258,7 @@ void Viewer::loadGltfMaterials() {
 
 	// Copy the material data to the buffer
 	{
-		vk::ScopedMap<Material> map(allocator, materialAllocation);
+		vk::ScopedMap<glsl::Material> map(allocator, materialAllocation);
 		std::memcpy(map.get(), materials.data(), bufferCreateInfo.size);
 	}
 
@@ -2627,7 +2638,7 @@ void Viewer::renderUi() {
 		}
 		ImGui::EndDisabled();
 
-		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.1f, 0.5f, 50.0f, "%.0f");
+		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.1f, 0.5f, 50.0f, "%.2f");
 
 		ImGui::Separator();
 
