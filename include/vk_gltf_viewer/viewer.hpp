@@ -116,6 +116,15 @@ struct MeshBuffers {
 	std::vector<VkDescriptorSet> descriptors;
 };
 
+/** Temporary object used when generating all of the mesh data for a glTF */
+struct GlobalMeshData {
+	std::vector<Vertex> globalVertices;
+	std::vector<Meshlet> globalMeshlets;
+	std::vector<unsigned int> globalMeshletVertices;
+	std::vector<unsigned char> globalMeshletTriangles;
+	std::mutex lock;
+};
+
 struct PrimitiveDraw {
 	VkDrawMeshTasksIndirectCommandEXT command;
 
@@ -369,9 +378,7 @@ struct Viewer {
 	/** Uploads image data to a image */
 	void uploadImageToDevice(std::size_t stagingBufferSize, std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)> commands);
 
-	void uploadMeshlets(std::vector<Meshlet>& meshlets,
-						std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
-						std::vector<Vertex>& vertices);
+	void uploadMeshlets(GlobalMeshData& globalMeshData);
 	/** Takes glTF meshes and uploads them to the GPU */
 	void loadGltfMeshes();
 

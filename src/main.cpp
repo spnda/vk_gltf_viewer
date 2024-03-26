@@ -932,6 +932,158 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
     }
 }
 
+/** Processes the primitives of every mesh and generates meshlet data */
+struct PrimitiveProcessingTask : enki::ITaskSet {
+	Viewer* viewer;
+	GlobalMeshData& meshData;
+	CompressedBufferDataAdapter& adapter;
+
+	explicit PrimitiveProcessingTask(Viewer* viewer, GlobalMeshData& data, CompressedBufferDataAdapter& adapter) : viewer(viewer), meshData(data), adapter(adapter) {
+		m_SetSize = viewer->asset.meshes.size();
+	}
+
+	void loadPrimitive(Mesh& mesh, fastgltf::Primitive& gltfPrimitive) {
+		ZoneScoped;
+		// These cases are possible in code, but cannot happen in reality.
+		auto* positionIt = gltfPrimitive.findAttribute("POSITION");
+		assert(positionIt != gltfPrimitive.attributes.end());
+		assert(gltfPrimitive.indicesAccessor.has_value());
+
+		auto& primitive = mesh.primitives.emplace_back();
+		if (gltfPrimitive.materialIndex.has_value()) {
+			primitive.materialIndex = gltfPrimitive.materialIndex.value() + Viewer::numDefaultMaterials;
+		} else {
+			gltfPrimitive.materialIndex = 0;
+		}
+
+		// Copy the positions and indices
+		auto& posAccessor = viewer->asset.accessors[positionIt->second];
+		std::vector<Vertex> vertices; vertices.reserve(posAccessor.count);
+		fastgltf::iterateAccessor<glm::vec3>(viewer->asset, posAccessor, [&](glm::vec3 val) {
+			auto& vertex = vertices.emplace_back();
+			vertex.position = glm::vec4(val, 1.0f);
+			vertex.color = glm::vec4(1.0f);
+			vertex.uv = glm::vec2(0.0f);
+		}, adapter);
+
+		auto& indicesAccessor = viewer->asset.accessors[gltfPrimitive.indicesAccessor.value()];
+		std::vector<std::uint32_t> indices(indicesAccessor.count);
+		fastgltf::copyFromAccessor<std::uint32_t>(viewer->asset, indicesAccessor, indices.data(), adapter);
+
+		if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
+			// The glTF spec allows VEC3 and VEC4 for COLOR_n, with VEC3 data having to be extended with 1.0f for the fourth component.
+			auto& colorAccessor = viewer->asset.accessors[colorAttribute->second];
+			if (colorAccessor.type == fastgltf::AccessorType::Vec4) {
+				fastgltf::iterateAccessorWithIndex<glm::vec4>(viewer->asset, viewer->asset.accessors[colorAttribute->second], [&](glm::vec4 val, std::size_t idx) {
+					vertices[idx].color = val;
+				}, adapter);
+			} else if (colorAccessor.type == fastgltf::AccessorType::Vec3) {
+				fastgltf::iterateAccessorWithIndex<glm::vec3>(viewer->asset, viewer->asset.accessors[colorAttribute->second], [&](glm::vec3 val, std::size_t idx) {
+					vertices[idx].color = glm::vec4(val, 1.0f);
+				}, adapter);
+			}
+		}
+
+		if (auto* uvAttribute = gltfPrimitive.findAttribute("TEXCOORD_0"); uvAttribute != gltfPrimitive.attributes.end()) {
+			fastgltf::iterateAccessorWithIndex<glm::vec2>(viewer->asset, viewer->asset.accessors[uvAttribute->second], [&](glm::vec2 val, std::size_t idx) {
+				vertices[idx].uv = {
+					meshopt_quantizeHalf(val.x),
+					meshopt_quantizeHalf(val.y),
+				};
+			}, adapter);
+		}
+
+		// TODO: These are the optimal values for NVIDIA. What about the others?
+		const std::size_t maxVertices = 64;
+		const std::size_t maxTriangles = 124; // NVIDIA wants 126 but meshopt only allows 124 for alignment reasons.
+		const float coneWeight = 0.0f; // We leave this as 0 because we're not using cluster cone culling.
+
+		std::size_t maxMeshlets = meshopt_buildMeshletsBound(indicesAccessor.count, maxVertices, maxTriangles);
+		std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
+		std::vector<unsigned int> meshlet_vertices(maxMeshlets * maxVertices);
+		std::vector<unsigned char> meshlet_triangles(maxMeshlets * maxTriangles * 3);
+
+		// Generate the meshlets for this primitive
+		primitive.meshlet_count = meshopt_buildMeshlets(
+			meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(),
+			indices.data(), indices.size(),
+			&vertices[0].position.x, vertices.size(), sizeof(decltype(vertices)::value_type),
+			maxVertices, maxTriangles, coneWeight);
+
+		// Trim the buffers
+		const auto& lastMeshlet = meshlets[primitive.meshlet_count - 1];
+		meshlet_vertices.resize(lastMeshlet.vertex_count + lastMeshlet.vertex_offset);
+		meshlet_triangles.resize(((lastMeshlet.triangle_count * 3 + 3) & ~3) + lastMeshlet.triangle_offset);
+		meshlets.resize(primitive.meshlet_count);
+
+		std::vector<Meshlet> finalMeshlets; finalMeshlets.reserve(primitive.meshlet_count);
+		for (auto& meshlet : meshlets) {
+			// Compute AABB bounds
+			auto& initialVertex = vertices[meshlet_vertices[meshlet.vertex_offset]];
+			auto min = glm::vec3(initialVertex.position), max = glm::vec3(initialVertex.position);
+
+			for (std::size_t i = 1; i < meshlet.vertex_count; ++i) {
+				std::uint32_t vertexIndex = meshlet_vertices[meshlet.vertex_offset + i];
+				auto& vertex = vertices[vertexIndex];
+
+				if (min.x > vertex.position.x)
+					min.x = vertex.position.x;
+				if (min.y > vertex.position.y)
+					min.y = vertex.position.y;
+				if (min.z > vertex.position.z)
+					min.z = vertex.position.z;
+
+				if (max.x < vertex.position.x)
+					max.x = vertex.position.x;
+				if (max.y < vertex.position.y)
+					max.y = vertex.position.y;
+				if (max.z < vertex.position.z)
+					max.z = vertex.position.z;
+			}
+
+			assert(meshlet.vertex_count <= std::numeric_limits<std::uint8_t>::max());
+			assert(meshlet.triangle_count <= std::numeric_limits<std::uint8_t>::max());
+			glm::vec3 center = (min + max) * 0.5f;
+			finalMeshlets.emplace_back(Meshlet {
+				.vertexOffset = meshlet.vertex_offset,
+				.triangleOffset = meshlet.triangle_offset,
+				.vertexCount = static_cast<std::uint8_t>(meshlet.vertex_count),
+				.triangleCount = static_cast<std::uint8_t>(meshlet.triangle_count),
+				.aabbExtents = max - center,
+				.aabbCenter = center,
+			});
+		}
+
+		{
+			std::lock_guard lock(meshData.lock);
+
+			primitive.descOffset = meshData.globalMeshlets.size();
+			primitive.vertexIndicesOffset = meshData.globalMeshletVertices.size();
+			primitive.triangleIndicesOffset = meshData.globalMeshletTriangles.size();
+			primitive.verticesOffset = meshData.globalVertices.size();
+
+			// Append the data to the end of the global buffers.
+			meshData.globalVertices.insert(meshData.globalVertices.end(), vertices.begin(), vertices.end());
+			meshData.globalMeshlets.insert(meshData.globalMeshlets.end(), finalMeshlets.begin(), finalMeshlets.end());
+			meshData.globalMeshletVertices.insert(meshData.globalMeshletVertices.end(), meshlet_vertices.begin(), meshlet_vertices.end());
+			meshData.globalMeshletTriangles.insert(meshData.globalMeshletTriangles.end(), meshlet_triangles.begin(), meshlet_triangles.end());
+		}
+	}
+
+	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
+		ZoneScoped;
+		for (auto i = range.start; i < range.end; ++i) {
+			auto& gltfMesh = viewer->asset.meshes[i];
+			auto& mesh = viewer->meshes[i];
+
+			mesh.primitives.reserve(gltfMesh.primitives.size());
+			for (auto& gltfPrimitive : gltfMesh.primitives) {
+				loadPrimitive(mesh, gltfPrimitive);
+			}
+		}
+	}
+};
+
 void Viewer::loadGltfMeshes() {
 	ZoneScoped;
 	// The meshlet descriptor layout
@@ -986,151 +1138,20 @@ void Viewer::loadGltfMeshes() {
 		vkDestroyDescriptorSetLayout(device, meshletSetLayout, nullptr);
 	});
 
-	std::vector<Vertex> globalVertices;
-	std::vector<Meshlet> globalMeshlets;
-	std::vector<unsigned int> globalMeshletVertices;
-	std::vector<unsigned char> globalMeshletTriangles;
+	GlobalMeshData globalMeshData;
 
+	// Create the compressed adapter, which decompresses all buffer views using EXT_meshopt_compression.
+	// All other data is passed along as usual.
 	CompressedBufferDataAdapter adapter;
 	if (!adapter.decompress(asset))
 		throw std::runtime_error("Failed to decompress all glTF buffers");
 
-	// Generate the meshes
-	for (auto& gltfMesh : asset.meshes) {
-		auto& mesh = meshes.emplace_back();
+	meshes.resize(asset.meshes.size());
+	PrimitiveProcessingTask task(this, globalMeshData, adapter);
+	taskScheduler.AddTaskSetToPipe(&task);
+	taskScheduler.WaitforTask(&task);
 
-		// We need this as we require pointer-stability for the generate task.
-		mesh.primitives.reserve(gltfMesh.primitives.size());
-		for (auto& gltfPrimitive : gltfMesh.primitives) {
-			if (!gltfPrimitive.indicesAccessor.has_value()) {
-				throw std::runtime_error("Every primitive should have a value.");
-			}
-
-			auto* positionIt = gltfPrimitive.findAttribute("POSITION");
-			if (positionIt == gltfPrimitive.attributes.end()) {
-				throw std::runtime_error("Every primitive has a POSITION attribute.");
-			}
-
-			auto& primitive = mesh.primitives.emplace_back();
-			if (gltfPrimitive.materialIndex.has_value()) {
-				primitive.materialIndex = gltfPrimitive.materialIndex.value() + numDefaultMaterials;
-			} else {
-				primitive.materialIndex = 0;
-			}
-
-			// Copy the positions and indices
-			auto& posAccessor = asset.accessors[positionIt->second];
-			std::vector<Vertex> vertices; vertices.reserve(posAccessor.count);
-			fastgltf::iterateAccessor<glm::vec3>(asset, posAccessor, [&](glm::vec3 val) {
-				auto& vertex = vertices.emplace_back();
-				vertex.position = glm::vec4(val, 1.0f);
-				vertex.color = glm::vec4(1.0f);
-				vertex.uv = glm::vec2(0.0f);
-			}, adapter);
-
-			auto& indicesAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
-			std::vector<std::uint32_t> indices(indicesAccessor.count);
-			fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data(), adapter);
-
-			if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
-				// The glTF spec allows VEC3 and VEC4 for COLOR_n, with VEC3 data having to be extended with 1.0f for the fourth component.
-				auto& colorAccessor = asset.accessors[colorAttribute->second];
-				if (colorAccessor.type == fastgltf::AccessorType::Vec4) {
-					fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, asset.accessors[colorAttribute->second], [&](glm::vec4 val, std::size_t idx) {
-						vertices[idx].color = val;
-					}, adapter);
-				} else if (colorAccessor.type == fastgltf::AccessorType::Vec3) {
-					fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[colorAttribute->second], [&](glm::vec3 val, std::size_t idx) {
-						vertices[idx].color = glm::vec4(val, 1.0f);
-					}, adapter);
-				}
-			}
-
-			if (auto* uvAttribute = gltfPrimitive.findAttribute("TEXCOORD_0"); uvAttribute != gltfPrimitive.attributes.end()) {
-				fastgltf::iterateAccessorWithIndex<glm::vec2>(asset, asset.accessors[uvAttribute->second], [&](glm::vec2 val, std::size_t idx) {
-					vertices[idx].uv = {
-						meshopt_quantizeHalf(val.x),
-						meshopt_quantizeHalf(val.y),
-					};
-				}, adapter);
-			}
-
-			// These are the optimal values for NVIDIA. What about the others?
-			const std::size_t maxVertices = 64;
-			const std::size_t maxTriangles = 124; // NVIDIA wants 126 but meshopt only allows 124 for alignment reasons.
-			const float coneWeight = 0.0f; // We leave this as 0 because we're not using cluster cone culling.
-
-			// TODO: Meshlet generation and data resizing should probably be threaded, too.
-			std::size_t maxMeshlets = meshopt_buildMeshletsBound(indicesAccessor.count, maxVertices, maxTriangles);
-			std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
-			std::vector<unsigned int> meshlet_vertices(maxMeshlets * maxVertices);
-			std::vector<unsigned char> meshlet_triangles(maxMeshlets * maxTriangles * 3);
-
-			// Generate the meshlets for this primitive
-			primitive.meshlet_count = meshopt_buildMeshlets(
-				meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(),
-				indices.data(), indices.size(),
-				&vertices[0].position.x, vertices.size(), sizeof(decltype(vertices)::value_type),
-				maxVertices, maxTriangles, coneWeight);
-
-			primitive.descOffset = globalMeshlets.size();
-			primitive.vertexIndicesOffset = globalMeshletVertices.size();
-			primitive.triangleIndicesOffset = globalMeshletTriangles.size();
-			primitive.verticesOffset = globalVertices.size();
-
-			// Trim the buffers
-			const auto& lastMeshlet = meshlets[primitive.meshlet_count - 1];
-			meshlet_vertices.resize(lastMeshlet.vertex_count + lastMeshlet.vertex_offset);
-			meshlet_triangles.resize(((lastMeshlet.triangle_count * 3 + 3) & ~3) + lastMeshlet.triangle_offset);
-			meshlets.resize(primitive.meshlet_count);
-
-			std::vector<Meshlet> finalMeshlets; finalMeshlets.reserve(primitive.meshlet_count);
-			for (auto& meshlet : meshlets) {
-				// Compute AABB bounds
-				auto& initialVertex = vertices[meshlet_vertices[meshlet.vertex_offset]];
-				auto min = glm::vec3(initialVertex.position), max = glm::vec3(initialVertex.position);
-
-				for (std::size_t i = 1; i < meshlet.vertex_count; ++i) {
-					std::uint32_t vertexIndex = meshlet_vertices[meshlet.vertex_offset + i];
-					auto& vertex = vertices[vertexIndex];
-
-					if (min.x > vertex.position.x)
-						min.x = vertex.position.x;
-					if (min.y > vertex.position.y)
-						min.y = vertex.position.y;
-					if (min.z > vertex.position.z)
-						min.z = vertex.position.z;
-
-					if (max.x < vertex.position.x)
-						max.x = vertex.position.x;
-					if (max.y < vertex.position.y)
-						max.y = vertex.position.y;
-					if (max.z < vertex.position.z)
-						max.z = vertex.position.z;
-				}
-
-				assert(meshlet.vertex_count <= std::numeric_limits<std::uint8_t>::max());
-				assert(meshlet.triangle_count <= std::numeric_limits<std::uint8_t>::max());
-				glm::vec3 center = (min + max) * 0.5f;
-				finalMeshlets.emplace_back(Meshlet {
-					.vertexOffset = meshlet.vertex_offset,
-					.triangleOffset = meshlet.triangle_offset,
-					.vertexCount = static_cast<std::uint8_t>(meshlet.vertex_count),
-					.triangleCount = static_cast<std::uint8_t>(meshlet.triangle_count),
-					.aabbExtents = max - center,
-					.aabbCenter = center,
-				});
-			}
-
-			// Append the data to the end of the global buffers.
-			globalVertices.insert(globalVertices.end(), vertices.begin(), vertices.end());
-			globalMeshlets.insert(globalMeshlets.end(), finalMeshlets.begin(), finalMeshlets.end());
-			globalMeshletVertices.insert(globalMeshletVertices.end(), meshlet_vertices.begin(), meshlet_vertices.end());
-			globalMeshletTriangles.insert(globalMeshletTriangles.end(), meshlet_triangles.begin(), meshlet_triangles.end());
-		}
-	}
-
-	uploadMeshlets(globalMeshlets, globalMeshletVertices, globalMeshletTriangles, globalVertices);
+	uploadMeshlets(globalMeshData);
 }
 
 VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer, VmaAllocation *allocation) const noexcept {
@@ -1163,6 +1184,7 @@ VkResult Viewer::createHostStagingBuffer(std::size_t byteSize, VkBuffer* buffer,
 }
 
 void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bufferHandle, VmaAllocation* allocationHandle) {
+	ZoneScoped;
 	// Create the destination buffer
 	auto result = createGpuTransferBuffer(bytes.size_bytes(), bufferHandle, allocationHandle);
 	vk::checkResult(result, "Failed to create GPU transfer storage buffer: {}");
@@ -1224,6 +1246,7 @@ void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bu
 }
 
 void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)> commands) {
+	ZoneScoped;
 	// Create a host allocation to hold our image data.
 	const VmaAllocationCreateInfo allocationCreateInfo {
 		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
@@ -1280,31 +1303,29 @@ void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<vo
 	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
 }
 
-void Viewer::uploadMeshlets(std::vector<Meshlet>& meshlets,
-							std::vector<unsigned int>& meshletVertices, std::vector<unsigned char>& meshletTriangles,
-							std::vector<Vertex>& vertices) {
+void Viewer::uploadMeshlets(GlobalMeshData& data) {
 	ZoneScoped;
 	{
 		// Create the meshlet description buffer
-		uploadBufferToDevice(std::as_bytes(std::span(meshlets.begin(), meshlets.end())),
+		uploadBufferToDevice(std::as_bytes(std::span(data.globalMeshlets.begin(), data.globalMeshlets.end())),
 							 &globalMeshBuffers.descHandle, &globalMeshBuffers.descAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.descHandle, "Meshlet descriptions");
 	}
 	{
 		// Create the vertex index buffer
-		uploadBufferToDevice(std::as_bytes(std::span(meshletVertices.begin(), meshletVertices.end())),
+		uploadBufferToDevice(std::as_bytes(std::span(data.globalMeshletVertices.begin(), data.globalMeshletVertices.end())),
 							 &globalMeshBuffers.vertexIndiciesHandle, &globalMeshBuffers.vertexIndiciesAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.vertexIndiciesHandle, "Meshlet vertex indices");
 	}
 	{
 		// Create the meshlet description buffer
-		uploadBufferToDevice(std::as_bytes(std::span(meshletTriangles.begin(), meshletTriangles.end())),
+		uploadBufferToDevice(std::as_bytes(std::span(data.globalMeshletTriangles.begin(), data.globalMeshletTriangles.end())),
 							 &globalMeshBuffers.triangleIndicesHandle, &globalMeshBuffers.triangleIndicesAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.triangleIndicesHandle, "Meshlet triangle indices");
 	}
 	{
 		// Create the vertex buffer
-		uploadBufferToDevice(std::as_bytes(std::span(vertices.begin(), vertices.end())),
+		uploadBufferToDevice(std::as_bytes(std::span(data.globalVertices.begin(), data.globalVertices.end())),
 							 &globalMeshBuffers.verticesHandle, &globalMeshBuffers.verticesAllocation);
 		vk::setDebugUtilsName(device, globalMeshBuffers.verticesHandle, "Meshlet vertices");
 	}
@@ -1822,7 +1843,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 	// We'll use the range to operate over multiple images
 	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override {
 		ZoneScoped;
-		for (std::uint32_t i = range.start; i < range.end; ++i) {
+		for (auto i = range.start; i < range.end; ++i) {
 			auto& image = viewer->asset.images[i];
 
 			auto imageIdx = i + Viewer::numDefaultTextures;
