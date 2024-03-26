@@ -29,12 +29,12 @@ struct Meshlet {
 };
 
 struct Vertex {
-    vec4 position;
+    vec3 position;
     vec4 color;
 
 // Quantized float16_t vec2. TODO: glm has half float types, use those?
 #if defined(__cplusplus)
-    glm::u16vec2 uv;
+    u16vec2 uv;
 #else
     f16vec2 uv;
 #endif

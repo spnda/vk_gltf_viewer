@@ -762,7 +762,7 @@ void Viewer::buildMeshPipeline() {
 		.addDynamicState(1, VK_DYNAMIC_STATE_VIEWPORT)
 		.setBlendAttachment(1, &aabbBlendAttachment)
 		.setTopology(1, VK_PRIMITIVE_TOPOLOGY_LINE_LIST)
-		.setDepthState(1, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
+		.setDepthState(1, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER_OR_EQUAL)
 		.setRasterState(1, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
 		.setMultisampleCount(1, VK_SAMPLE_COUNT_1_BIT)
 		.setScissorCount(1, 1U)
@@ -904,6 +904,7 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
 
 	static constexpr auto supportedExtensions = fastgltf::Extensions::KHR_mesh_quantization
 		| fastgltf::Extensions::KHR_lights_punctual
+		| fastgltf::Extensions::KHR_materials_variants
 		| fastgltf::Extensions::EXT_meshopt_compression
 		| fastgltf::Extensions::MSFT_texture_dds;
 
@@ -942,6 +943,22 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 		m_SetSize = viewer->asset.meshes.size();
 	}
 
+	glm::vec3 getMinMax(decltype(fastgltf::Accessor::min)& values) {
+		return std::visit(fastgltf::visitor {
+			[](auto& arg) {
+				return glm::vec3();
+			},
+			[&](FASTGLTF_STD_PMR_NS::vector<double>& values) {
+				assert(values.size() == 3);
+				return glm::fvec3(values[0], values[1], values[2]);
+			},
+			[&](FASTGLTF_STD_PMR_NS::vector<std::int64_t>& values) {
+				assert(values.size() == 3);
+				return glm::fvec3(values[0], values[1], values[2]);
+			},
+		}, values);
+	}
+
 	void loadPrimitive(Mesh& mesh, fastgltf::Primitive& gltfPrimitive) {
 		ZoneScoped;
 		// These cases are possible in code, but cannot happen in reality.
@@ -958,10 +975,16 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 
 		// Copy the positions and indices
 		auto& posAccessor = viewer->asset.accessors[positionIt->second];
+
+		// Get AABB for the entire primitive to quantize positions
+		auto primitiveMin = getMinMax(posAccessor.min);
+		auto primitiveMax = getMinMax(posAccessor.max);
+
+		// Read vertices.
 		std::vector<glsl::Vertex> vertices; vertices.reserve(posAccessor.count);
 		fastgltf::iterateAccessor<glm::vec3>(viewer->asset, posAccessor, [&](glm::vec3 val) {
 			auto& vertex = vertices.emplace_back();
-			vertex.position = glm::vec4(val, 1.0f);
+			vertex.position = val;
 			vertex.color = glm::vec4(1.0f);
 			vertex.uv = {
 				meshopt_quantizeHalf(0.0f),
@@ -2285,8 +2308,17 @@ void Viewer::drawMesh(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawI
 
 	auto& mesh = meshes[meshIndex];
 
-	for (auto& primitive : mesh.primitives) {
+	for (std::size_t i = 0; auto& primitive : mesh.primitives) {
 		auto& draw = cmd.emplace_back();
+
+		// Get the appropriate material variant, if any.
+		std::uint32_t materialIndex;
+		auto& mappings = asset.meshes[meshIndex].primitives[i++].mappings;
+		if (!mappings.empty() && mappings[materialVariant].has_value()) {
+			materialIndex = mappings[materialVariant].value() + numDefaultMaterials; // Adjust for default material
+		} else {
+			materialIndex = primitive.materialIndex;
+		}
 
 		// Dispatch so many groups that we only have to use up to maxMeshlets 16-bit indices in the shared payload.
 		const VkDrawMeshTasksIndirectCommandEXT indirectCommand {
@@ -2301,7 +2333,7 @@ void Viewer::drawMesh(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawI
 		draw.triangleIndicesOffset = primitive.triangleIndicesOffset;
 		draw.verticesOffset = primitive.verticesOffset;
 		draw.meshletCount = static_cast<std::uint32_t>(primitive.meshlet_count);
-		draw.materialIndex = primitive.materialIndex;
+		draw.materialIndex = materialIndex;
 
 		// Create the AABB draw command
 		auto& aabb = aabbCmd.emplace_back();
@@ -2575,6 +2607,22 @@ void Viewer::renderUi() {
 					ImGui::SetItemDefaultFocus();
 			}
 
+			ImGui::EndCombo();
+		}
+		ImGui::EndDisabled();
+
+		ImGui::BeginDisabled(asset.materialVariants.empty());
+		const auto currentVariantName = asset.materialVariants.empty()
+			? "N/A"
+			: asset.materialVariants[materialVariant].c_str();
+		if (ImGui::BeginCombo("Variant", currentVariantName, ImGuiComboFlags_None)) {
+			for (std::size_t i = 0; i < asset.materialVariants.size(); ++i) {
+				const bool isSelected = i == materialVariant;
+				if (ImGui::Selectable(asset.materialVariants[i].c_str(), isSelected))
+					materialVariant = i;
+				if (isSelected)
+					ImGui::SetItemDefaultFocus();
+			}
 			ImGui::EndCombo();
 		}
 		ImGui::EndDisabled();

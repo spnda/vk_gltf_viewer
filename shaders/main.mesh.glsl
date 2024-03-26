@@ -76,7 +76,7 @@ void main() {
         uint vertexIndex = vertexIndices[primitive.vertexIndicesOffset + meshlet.vertexOffset + vidx];
         Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
 
-        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * primitive.modelMatrix * vertex.position;
+        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * primitive.modelMatrix * vec4(vertex.position, 1.0f);
 
         colors[vidx] = vertex.color;
         uvs[vidx] = vertex.uv;

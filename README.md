@@ -6,6 +6,7 @@ It still shares a lot of the codebase with the OpenGL example for fastgltf, but 
 ### Supported glTF features
 
 - `KHR_mesh_quantization`
+- `KHR_materials_variants`
 - `EXT_meshopt_compression`
 - `MSFT_texture_dds`
 

@@ -319,6 +319,7 @@ struct Viewer {
 
 	// glTF data and options
 	std::size_t sceneIndex = 0;
+	std::size_t materialVariant = 0;
 	fastgltf::Optional<std::size_t> cameraIndex = std::nullopt;
 	std::vector<fastgltf::Node*> cameraNodes;
 
