@@ -730,7 +730,7 @@ void Viewer::buildMeshPipeline() {
         .addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
         .setBlendAttachment(0, &blendAttachment)
         .setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-        .setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
+        .setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER_OR_EQUAL)
         .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
         .setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
         .setScissorCount(0, 1U)
@@ -2243,32 +2243,6 @@ void Viewer::loadGltfMaterials() {
 	vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
 
-glm::mat4 Viewer::getCameraProjectionMatrix(fastgltf::Camera& camera) const {
-	ZoneScoped;
-	// The following projection matrices do not use the math defined by the glTF spec here:
-	// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#projection-matrices
-	// The reason is that Vulkan uses a different depth range to OpenGL, which has to be accounted.
-	// Therefore, we always use the appropriate _ZO glm functrions.
-	return std::visit(fastgltf::visitor {
-		[&](fastgltf::Camera::Perspective& perspective) {
-			assert(swapchain.extent.width != 0 && swapchain.extent.height != 0);
-			auto aspectRatio = perspective.aspectRatio.value_or(
-				static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height));
-
-			if (perspective.zfar.has_value()) {
-				return glm::perspectiveRH_ZO(perspective.yfov, aspectRatio, perspective.znear, *perspective.zfar);
-			} else {
-				return glm::infinitePerspectiveRH_ZO(perspective.yfov, aspectRatio, perspective.znear);
-			}
-		},
-		[&](fastgltf::Camera::Orthographic& orthographic) {
-			return glm::orthoRH_ZO(-orthographic.xmag, orthographic.xmag,
-								   -orthographic.ymag, orthographic.ymag,
-								   orthographic.znear, orthographic.zfar);
-		},
-	}, camera.camera);
-}
-
 glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
 	/** Both a matrix and TRS values are not allowed
 	 * to exist at the same time according to the spec */
@@ -2432,6 +2406,32 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	}
 }
 
+glm::mat4 Viewer::getCameraProjectionMatrix(fastgltf::Camera& camera) const {
+	ZoneScoped;
+	// The following projection matrices do not use the math defined by the glTF spec here:
+	// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#projection-matrices
+	// The reason is that Vulkan uses a different depth range to OpenGL, which has to be accounted.
+	// Therefore, we always use the appropriate _ZO glm functions.
+	return std::visit(fastgltf::visitor {
+		[&](fastgltf::Camera::Perspective& perspective) {
+			assert(swapchain.extent.width != 0 && swapchain.extent.height != 0);
+			auto aspectRatio = perspective.aspectRatio.value_or(
+				static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height));
+
+			if (perspective.zfar.has_value()) {
+				return glm::perspectiveRH_ZO(perspective.yfov, aspectRatio, perspective.znear, *perspective.zfar);
+			} else {
+				return glm::infinitePerspectiveRH_ZO(perspective.yfov, aspectRatio, perspective.znear);
+			}
+		},
+		[&](fastgltf::Camera::Orthographic& orthographic) {
+			return glm::orthoRH_ZO(-orthographic.xmag, orthographic.xmag,
+								   -orthographic.ymag, orthographic.ymag,
+								   orthographic.znear, orthographic.zfar);
+		},
+	}, camera.camera);
+}
+
 void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	assert(cameraBuffers.size() > currentFrame);
 	ZoneScoped;
@@ -2441,11 +2441,11 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	vk::ScopedMap<Camera> map(allocator, cameraBuffer.allocation);
 	auto& camera = *map.get();
 
+	glm::mat4 viewMatrix(1.0f), projectionMatrix;
 	if (cameraIndex.has_value()) {
 		auto& scene = asset.scenes[sceneIndex];
 
 		// Get the view matrix by traversing the node tree and finding the selected cameraNode
-		glm::mat4 viewMatrix(1.0f);
 		auto getCameraViewMatrix = [this, &viewMatrix](std::size_t nodeIndex, glm::mat4 matrix, auto& self) -> void {
 			auto& node = asset.nodes[nodeIndex];
 			matrix = getTransformMatrix(node, matrix);
@@ -2462,28 +2462,32 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 			getCameraViewMatrix(sceneNode, glm::mat4(1.0f), getCameraViewMatrix);
 		}
 
-		auto projectionMatrix = getCameraProjectionMatrix(asset.cameras[*cameraIndex]);
-
-		projectionMatrix[1][1] *= -1;
-		camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+		projectionMatrix = getCameraProjectionMatrix(asset.cameras[*cameraIndex]);
 	} else {
 		movement.velocity += (movement.accelerationVector * movement.speedMultiplier);
 		// Lerp the velocity to 0, adding deceleration.
 		movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
 		// Add the velocity into the position
 		movement.position += movement.velocity * deltaTime;
-		auto viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
+		viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
 
+		// glm::perspectiveRH_ZO is correct, see https://johannesugb.github.io/gpu-programming/setting-up-a-proper-vulkan-projection-matrix/
 		static constexpr auto zNear = 0.01f;
 		static constexpr auto zFar = 10000.0f;
 		static constexpr auto fov = glm::radians(75.0f);
 		const auto aspectRatio = static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height);
-		auto projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
-
-		// Invert the Y-Axis to use the same coordinate system as glTF.
-		projectionMatrix[1][1] *= -1;
-		camera.viewProjectionMatrix = projectionMatrix * viewMatrix;
+		projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
 	}
+
+	// We use reversed Z, see https://iolite-engine.com/blog_posts/reverse_z_cheatsheet
+	constexpr glm::mat4 reverseZ {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, -1.f, 0.0f,
+		0.0f, 0.0f, 1.0f, 1.0f
+	};
+	projectionMatrix[1][1] *= -1;
+	camera.viewProjectionMatrix = reverseZ * projectionMatrix * viewMatrix;
 
 	if (!freezeCameraFrustum) {
 		// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
@@ -2843,7 +2847,7 @@ int main(int argc, char* argv[]) {
 					.resolveMode = VK_RESOLVE_MODE_NONE,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-					.clearValue = {1.0f, 0.0f},
+					.clearValue = {0.0f, 0.0f},
 				};
 				const VkRenderingInfo renderingInfo {
 					.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
