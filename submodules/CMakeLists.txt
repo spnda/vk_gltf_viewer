@@ -138,3 +138,29 @@ if (EXISTS "${VKV_DEPS_DIR}/imgui")
 
     target_link_libraries(imgui PUBLIC glfw::glfw)
 endif()
+
+if (EXISTS "${VKV_DEPS_DIR}/ktx-software")
+    message(STATUS "vk_gltf_viewer: Found ktx-software")
+
+    # KTX-Software is probably the shittiest CMake library I have yet to encounter,
+    # and changes these CMake variables
+    set(TEMPORARY_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
+    set(TEMPORARY_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+    set(TEMPORARY_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+    # For some reason using option() doesn't work here?
+    set(KTX_FEATURE_TOOLS OFF CACHE BOOL "" FORCE)
+    set(KTX_FEATURE_TESTS OFF CACHE BOOL "" FORCE)
+    set(KTX_FEATURE_KTX1 ON CACHE BOOL "" FORCE)
+    set(KTX_FEATURE_KTX2 ON CACHE BOOL "" FORCE)
+    set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "" FORCE)
+    set(KTX_FEATURE_GL_UPLOAD OFF CACHE BOOL "" FORCE)
+    set(KTX_FEATURE_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+    add_subdirectory("${VKV_DEPS_DIR}/ktx-software")
+    add_library(ktx_read::ktx_read ALIAS ktx_read)
+
+    # Restore global variables
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${TEMPORARY_ARCHIVE_OUTPUT_DIRECTORY})
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${TEMPORARY_LIBRARY_OUTPUT_DIRECTORY})
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${TEMPORARY_RUNTIME_OUTPUT_DIRECTORY})
+endif()

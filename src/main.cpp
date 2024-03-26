@@ -4,11 +4,11 @@
 
 #include <TaskScheduler.h>
 
-#include <tracy/Tracy.hpp>
-
 #include <vulkan/vk.hpp>
 #include <VkBootstrap.h>
 #include <vulkan/vma.hpp>
+
+#include <tracy/Tracy.hpp>
 #include <tracy/TracyVulkan.hpp>
 
 #include <vulkan/pipeline_builder.hpp>
@@ -906,6 +906,7 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
 		| fastgltf::Extensions::KHR_lights_punctual
 		| fastgltf::Extensions::KHR_materials_variants
 		| fastgltf::Extensions::KHR_texture_transform
+		| fastgltf::Extensions::KHR_texture_basisu
 		| fastgltf::Extensions::EXT_meshopt_compression
 		| fastgltf::Extensions::MSFT_texture_dds;
 
@@ -1451,6 +1452,8 @@ void Viewer::uploadMeshlets(GlobalMeshData& data) {
 #define DDS_USE_STD_FILESYSTEM 1
 #include <dds.hpp>
 
+#include <ktx.h>
+
 template <>
 struct fmt::formatter<dds::ReadResult> : formatter<std::string_view> {
     template <typename FormatContext>
@@ -1529,7 +1532,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		};
 		auto result = vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
 					   &sampledImage.image, &sampledImage.allocation, nullptr);
-		vk::checkResult(result, "Failed to create Vulkan image from stbi: {}");
+		vk::checkResult(result, "Failed to create Vulkan image for stbi image: {}");
 
 		const VkImageViewCreateInfo imageViewInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1543,7 +1546,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			},
 		};
 		result = vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
-		vk::checkResult(result, "Failed to create Vulkan image view from stbi: {}");
+		vk::checkResult(result, "Failed to create Vulkan image view for stbi image: {}");
 
 		auto imageData = std::span(ptr, width * height * sizeof(std::uint8_t) * channels);
 		viewer->uploadImageToDevice(imageData.size_bytes(), [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
@@ -1763,35 +1766,35 @@ struct ImageLoadTask : public ExceptionTaskSet {
 				}
 			}
 
+			// Transition the image to TRANSFER_DST_OPTIMAL
+			VkImageMemoryBarrier2 imageBarrier {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+				.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+				.srcAccessMask = VK_ACCESS_2_NONE,
+				.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+				.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = sampledImage.image,
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = 0,
+					.levelCount = image.numMips,
+					.layerCount = 1,
+				},
+			};
+			const VkDependencyInfo dependencyInfo {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 1,
+				.pImageMemoryBarriers = &imageBarrier,
+			};
+			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
 			// For each mip, submit a command buffer copying the staging buffer to the device image
 			glm::u32vec2 extent(image.width, image.height);
 			for (std::uint32_t i = 0; i < image.numMips; ++i) {
-				// Transition the image to TRANSFER_DST_OPTIMAL
-				VkImageMemoryBarrier2 imageBarrier {
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-					.srcAccessMask = VK_ACCESS_2_NONE,
-					.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-					.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = sampledImage.image,
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.baseMipLevel = i,
-						.levelCount = 1,
-						.layerCount = 1,
-					},
-				};
-				const VkDependencyInfo dependencyInfo {
-					.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-					.imageMemoryBarrierCount = 1,
-					.pImageMemoryBarriers = &imageBarrier,
-				};
-				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
-
 				const VkBufferImageCopy copy {
 					.bufferOffset = offsets[i],
 					.bufferRowLength = 0,
@@ -1815,18 +1818,152 @@ struct ImageLoadTask : public ExceptionTaskSet {
 				vkCmdCopyBufferToImage(cmd, stagingBuffer, sampledImage.image,
 									   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
-				// Transition the image into the destinationLayout
-				imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-				imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-				imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-				imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
-				imageBarrier.oldLayout = imageBarrier.newLayout;
-				imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+				extent /= 2;
+			}
+
+			// Transition the image into SHADER_READ_ONLY_OPTIMAL
+			imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+			imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+			imageBarrier.oldLayout = imageBarrier.newLayout;
+			imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+		});
+	}
+
+	void loadKtx(std::uint32_t imageIdx, std::span<std::uint8_t> data) const {
+		ZoneScoped;
+		// The KTX library also has no idea what modern programming looks like apparently, and has an absolute abomination of an API.
+		// Well, we have to live with it as I'm not making my own transcoder for unsupported compressed formats.
+		ktxTexture2* texture = nullptr;
+		auto ktxError = ktxTexture2_CreateFromMemory(
+			data.data(),
+			data.size(),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+			&texture);
+		if (ktxError != KTX_SUCCESS) {
+			throw std::runtime_error(
+				fmt::format("Failed to create KTX2 texture: {}", fastgltf::to_underlying(ktxError)));
+		}
+
+		// Transcode the format if necessary. This will change the value of vkFormat.
+		// TODO: We always transcode to BC7_SRGB. Try and detect other possible formats?
+		auto imageFormat = static_cast<VkFormat>(texture->vkFormat);
+		if (ktxTexture2_NeedsTranscoding(texture)) {
+			ktxError = ktxTexture2_TranscodeBasis(texture, KTX_TTF_BC7_RGBA, KTX_TF_HIGH_QUALITY);
+			if (ktxError != KTX_SUCCESS) {
+				throw std::runtime_error(fmt::format("Failed to transcoe basisu from KTX2 texture: {}", fastgltf::to_underlying(ktxError)));
+			}
+
+			imageFormat = VK_FORMAT_BC7_SRGB_BLOCK;
+		}
+
+		auto& sampledImage = viewer->images[imageIdx];
+
+		const VkImageCreateInfo imageInfo {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = imageFormat,
+			.extent = {
+				.width = texture->baseWidth,
+				.height = texture->baseHeight,
+				.depth = texture->baseDepth,
+			},
+			.mipLevels = texture->numLevels,
+			.arrayLayers = 1,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+		const VmaAllocationCreateInfo allocationInfo {
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+		auto result = vmaCreateImage(viewer->allocator, &imageInfo, &allocationInfo,
+									 &sampledImage.image, &sampledImage.allocation, nullptr);
+		vk::checkResult(result, "Failed to create Vulkan image for KTX2 texture: {}");
+
+		const VkImageViewCreateInfo imageViewInfo {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = sampledImage.image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = imageFormat,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = texture->numLevels,
+				.layerCount = 1,
+			}
+		};
+		result = vkCreateImageView(viewer->device, &imageViewInfo, nullptr, &sampledImage.imageView);
+		vk::checkResult(result, "Failed to create Vulkan image view for KTX2 texture: {}");
+
+		viewer->uploadImageToDevice(texture->dataSize, [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
+			{
+				vk::ScopedMap map(viewer->allocator, stagingAllocation);
+				std::memcpy(map.get(), texture->pData, texture->dataSize);
+			}
+
+			// Transition the image to TRANSFER_DST_OPTIMAL
+			VkImageMemoryBarrier2 imageBarrier {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+				.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+				.srcAccessMask = VK_ACCESS_2_NONE,
+				.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+				.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = sampledImage.image,
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.levelCount = texture->numLevels,
+					.layerCount = 1,
+				},
+			};
+			const VkDependencyInfo dependencyInfo {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 1,
+				.pImageMemoryBarriers = &imageBarrier,
+			};
+			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+			glm::u32vec2 extent(texture->baseWidth, texture->baseHeight);
+			for (std::uint32_t i = 0; i < texture->numLevels; ++i) {
+				std::uint64_t offset = 0;
+				ktxTexture_GetImageOffset(ktxTexture(texture), i, 0, 0, &offset);
+				const VkBufferImageCopy copy {
+					.bufferOffset = offset,
+					.imageSubresource = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel = i,
+						.layerCount = 1,
+					},
+					.imageExtent = {
+						.width = extent.x,
+						.height = extent.y,
+						.depth = 1,
+					}
+				};
+				vkCmdCopyBufferToImage(cmd, stagingBuffer, sampledImage.image,
+									   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
 				extent /= 2;
 			}
+
+			// Transition the image into SHADER_READ_ONLY_OPTIMAL
+			imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+			imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+			imageBarrier.oldLayout = imageBarrier.newLayout;
+			imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 		});
+
+		ktxTexture_Destroy(ktxTexture(texture));
 	}
 
 	/** Sometimes, the mimeType field is unspecified. Here, we try and detect the mimeType if it's initially None */
@@ -1843,6 +1980,8 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			return fastgltf::MimeType::PNG;
 		} else if (*reinterpret_cast<std::uint32_t*>(data.data()) == dds::DdsMagicNumber::DDS) {
 			return fastgltf::MimeType::DDS;
+		} else if (data[0] == 0xAB && data[1] == 'K' && data[2] == 'T' && data[3] == 'X') {
+			return fastgltf::MimeType::KTX2;
 		} else {
 			throw std::runtime_error(
 				fmt::format("Failed to detect image mime type while loading. Header magic: {0:x}", *reinterpret_cast<std::uint32_t*>(data.data())));
@@ -1860,6 +1999,10 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			case fastgltf::MimeType::DDS: {
 				loadDds(imageIdx, data);
 				return;
+			}
+			case fastgltf::MimeType::KTX2: {
+				loadKtx(imageIdx, data);
+				break;
 			}
 			default: {
 				throw std::runtime_error(fmt::format("Unsupported mime type for loading images: {}", fastgltf::to_underlying(actualMime)));
@@ -2184,10 +2327,20 @@ void Viewer::loadGltfImages() {
 	for (std::size_t i = 0; i < asset.textures.size(); ++i) {
 		auto& texture = asset.textures[i];
 
+		// Get the image index for the "best" image. If we have compressed images available, we prefer those.
+		std::size_t imageViewIndex = 0;
+		if (texture.basisuImageIndex.has_value()) {
+			imageViewIndex = texture.basisuImageIndex.value() + numDefaultTextures;
+		} else if (texture.ddsImageIndex.has_value()) {
+			imageViewIndex = texture.ddsImageIndex.value() + numDefaultTextures;
+		} else if (texture.imageIndex.has_value()) {
+			imageViewIndex = texture.imageIndex.has_value() + numDefaultTextures;
+		}
+
 		// Well map a glTF texture to a single combined image sampler
 		infos.emplace_back(VkDescriptorImageInfo {
 			.sampler = samplers[texture.samplerIndex.has_value() ? *texture.samplerIndex + numDefaultSamplers : 0],
-			.imageView = images[texture.imageIndex.has_value() ? *texture.imageIndex + numDefaultTextures : 0].imageView,
+			.imageView = images[imageViewIndex].imageView,
 			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		});
 
@@ -2639,6 +2792,10 @@ void Viewer::renderUi() {
 		ImGui::EndDisabled();
 
 		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.1f, 0.5f, 50.0f, "%.2f");
+
+		ImGui::Separator();
+
+		ImGui::Text("Frametime: %.2f ms (%.2f FPS)", deltaTime * 1000, 1.f / deltaTime);
 
 		ImGui::Separator();
 

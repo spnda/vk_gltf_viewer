@@ -43,3 +43,6 @@
 [submodule "submodules/dds_image"]
 	path = submodules/dds_image
 	url = https://github.com/spnda/dds_image
+[submodule "submodules/ktx-software"]
+	path = submodules/ktx-software
+	url = https://github.com/KhronosGroup/KTX-Software/

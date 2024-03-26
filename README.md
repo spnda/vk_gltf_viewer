@@ -7,6 +7,8 @@ It still shares a lot of the codebase with the OpenGL example for fastgltf, but 
 
 - `KHR_mesh_quantization`
 - `KHR_materials_variants`
+- `KHR_texture_basisu`
+- `KHR_texture_transform`
 - `EXT_meshopt_compression`
 - `MSFT_texture_dds`
 

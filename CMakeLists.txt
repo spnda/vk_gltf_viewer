@@ -6,8 +6,8 @@ add_subdirectory(submodules)
 
 add_executable(vk_gltf_viewer EXCLUDE_FROM_ALL)
 target_compile_features(vk_gltf_viewer PUBLIC cxx_std_20)
-target_link_libraries(vk_gltf_viewer PRIVATE fastgltf glfw::glfw glm::glm stb meshoptimizer imgui::imgui dds_image)
-target_link_libraries(vk_gltf_viewer PRIVATE enkiTS::enkiTS fmt::fmt Tracy::Client)
+target_link_libraries(vk_gltf_viewer PRIVATE fastgltf stb dds_image ktx_read::ktx_read meshoptimizer)
+target_link_libraries(vk_gltf_viewer PRIVATE glfw::glfw imgui::imgui enkiTS::enkiTS Tracy::Client fmt::fmt glm::glm)
 target_link_libraries(vk_gltf_viewer PRIVATE Vulkan::Headers Vulkan::Utils volk::volk_headers vk-bootstrap::vk-bootstrap Vulkan::MemoryAllocator)
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src")
@@ -61,7 +61,7 @@ foreach(SHADER_FILE ${SHADER_FILES})
     cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
     add_custom_command(
         OUTPUT ${SHADER_TIMESTAMP_NAME}
-        COMMAND ${GLSLANG_EXECUTABLE} --target-env vulkan1.3 -o ${SHADER_FILENAME}.spv ${SHADER_FILE}
+        COMMAND ${GLSLANG_EXECUTABLE} -g --target-env vulkan1.3 -o ${SHADER_FILENAME}.spv ${SHADER_FILE}
         COMMAND ${CMAKE_COMMAND} -E touch ${SHADER_TIMESTAMP_NAME}
         DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
         WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
