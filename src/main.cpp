@@ -958,12 +958,15 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 
 		// Copy the positions and indices
 		auto& posAccessor = viewer->asset.accessors[positionIt->second];
-		std::vector<Vertex> vertices; vertices.reserve(posAccessor.count);
+		std::vector<glsl::Vertex> vertices; vertices.reserve(posAccessor.count);
 		fastgltf::iterateAccessor<glm::vec3>(viewer->asset, posAccessor, [&](glm::vec3 val) {
 			auto& vertex = vertices.emplace_back();
 			vertex.position = glm::vec4(val, 1.0f);
 			vertex.color = glm::vec4(1.0f);
-			vertex.uv = glm::vec2(0.0f);
+			vertex.uv = {
+				meshopt_quantizeHalf(0.0f),
+				meshopt_quantizeHalf(0.0f),
+			};
 		}, adapter);
 
 		auto& indicesAccessor = viewer->asset.accessors[gltfPrimitive.indicesAccessor.value()];
@@ -1000,8 +1003,8 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 
 		std::size_t maxMeshlets = meshopt_buildMeshletsBound(indicesAccessor.count, maxVertices, maxTriangles);
 		std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
-		std::vector<unsigned int> meshlet_vertices(maxMeshlets * maxVertices);
-		std::vector<unsigned char> meshlet_triangles(maxMeshlets * maxTriangles * 3);
+		std::vector<std::uint32_t> meshlet_vertices(maxMeshlets * maxVertices);
+		std::vector<std::uint8_t> meshlet_triangles(maxMeshlets * maxTriangles * 3);
 
 		// Generate the meshlets for this primitive
 		primitive.meshlet_count = meshopt_buildMeshlets(
@@ -1016,7 +1019,7 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 		meshlet_triangles.resize(((lastMeshlet.triangle_count * 3 + 3) & ~3) + lastMeshlet.triangle_offset);
 		meshlets.resize(primitive.meshlet_count);
 
-		std::vector<Meshlet> finalMeshlets; finalMeshlets.reserve(primitive.meshlet_count);
+		std::vector<glsl::Meshlet> finalMeshlets; finalMeshlets.reserve(primitive.meshlet_count);
 		for (auto& meshlet : meshlets) {
 			// Compute AABB bounds
 			auto& initialVertex = vertices[meshlet_vertices[meshlet.vertex_offset]];
@@ -1044,7 +1047,7 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 			assert(meshlet.vertex_count <= std::numeric_limits<std::uint8_t>::max());
 			assert(meshlet.triangle_count <= std::numeric_limits<std::uint8_t>::max());
 			glm::vec3 center = (min + max) * 0.5f;
-			finalMeshlets.emplace_back(Meshlet {
+			finalMeshlets.emplace_back(glsl::Meshlet {
 				.vertexOffset = meshlet.vertex_offset,
 				.triangleOffset = meshlet.triangle_offset,
 				.vertexCount = static_cast<std::uint8_t>(meshlet.vertex_count),
@@ -2260,7 +2263,7 @@ glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
 	return base;
 }
 
-void Viewer::drawNode(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix) {
+void Viewer::drawNode(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix) {
 	assert(asset.nodes.size() > nodeIndex);
 	ZoneScoped;
 
@@ -2276,7 +2279,7 @@ void Viewer::drawNode(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirec
 	}
 }
 
-void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix) {
+void Viewer::drawMesh(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix) {
 	assert(meshes.size() > meshIndex);
 	ZoneScoped;
 
@@ -2285,9 +2288,9 @@ void Viewer::drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirec
 	for (auto& primitive : mesh.primitives) {
 		auto& draw = cmd.emplace_back();
 
-		// Dispatch so many groups that we only have to use up to 128 16-bit indices in the shared payload.
+		// Dispatch so many groups that we only have to use up to maxMeshlets 16-bit indices in the shared payload.
 		const VkDrawMeshTasksIndirectCommandEXT indirectCommand {
-			.groupCountX = static_cast<std::uint32_t>((primitive.meshlet_count + 128 - 1) / 128),
+			.groupCountX = static_cast<std::uint32_t>((primitive.meshlet_count + glsl::maxMeshlets - 1) / glsl::maxMeshlets),
 			.groupCountY = 1,
 			.groupCountZ = 1,
 		};
@@ -2315,7 +2318,7 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 
 	auto& currentDrawBuffer = drawBuffers[currentFrame];
 
-	std::vector<PrimitiveDraw> draws;
+	std::vector<glsl::PrimitiveDraw> draws;
 	std::vector<VkDrawIndirectCommand> aabbDraws;
 
 	if (asset.scenes.empty() || sceneIndex >= asset.scenes.size())
@@ -2371,7 +2374,7 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	}
 
 	{
-		vk::ScopedMap<PrimitiveDraw> map(allocator, currentDrawBuffer.primitiveDrawAllocation);
+		vk::ScopedMap<glsl::PrimitiveDraw> map(allocator, currentDrawBuffer.primitiveDrawAllocation);
 		auto* data = map.get();
 		std::copy(draws.begin(), draws.end(), data);
 	}
@@ -2890,7 +2893,7 @@ int main(int argc, char* argv[]) {
 				vkCmdDrawMeshTasksIndirectEXT(cmd,
 											  viewer.drawBuffers[currentFrame].primitiveDrawHandle, 0,
 											  viewer.drawBuffers[currentFrame].drawCount,
-											  sizeof(PrimitiveDraw));
+											  sizeof(glsl::PrimitiveDraw));
 
 				if (viewer.enableAabbVisualization) {
 					// Visualize the AABBs. We don't need to rebind descriptor sets as we use the same pipeline layout as the mesh pipeline

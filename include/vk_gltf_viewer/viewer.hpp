@@ -68,23 +68,7 @@ struct CameraMovement {
 	float speedMultiplier = 2.0f;
 };
 
-struct Vertex {
-	glm::vec4 position;
-	glm::vec4 color;
-	// Quantized float16_t vec2
-	glm::u16vec2 uv;
-};
-
-struct Meshlet {
-	std::uint32_t vertexOffset;
-	std::uint32_t triangleOffset;
-
-	std::uint8_t vertexCount;
-	std::uint8_t triangleCount;
-
-	glm::vec3 aabbExtents;
-	glm::vec3 aabbCenter;
-};
+#include <mesh_common.glsl.h>
 
 struct Primitive {
 	std::uint32_t descOffset;
@@ -118,28 +102,11 @@ struct MeshBuffers {
 
 /** Temporary object used when generating all of the mesh data for a glTF */
 struct GlobalMeshData {
-	std::vector<Vertex> globalVertices;
-	std::vector<Meshlet> globalMeshlets;
-	std::vector<unsigned int> globalMeshletVertices;
-	std::vector<unsigned char> globalMeshletTriangles;
+	std::vector<glsl::Vertex> globalVertices;
+	std::vector<glsl::Meshlet> globalMeshlets;
+	std::vector<std::uint32_t> globalMeshletVertices;
+	std::vector<std::uint8_t> globalMeshletTriangles;
 	std::mutex lock;
-};
-
-struct PrimitiveDraw {
-	VkDrawMeshTasksIndirectCommandEXT command;
-
-	// The matrix from the glTF is technically per-mesh, but we define it for each primitive.
-	// We could optimise this slightly, but there's many models where each mesh has only one primitive.
-	glm::mat4x4 modelMatrix;
-
-	// TODO: Switch these to VkDeviceSize/uint64_t
-	std::uint32_t descOffset;
-	std::uint32_t vertexIndicesOffset;
-	std::uint32_t triangleIndicesOffset;
-	std::uint32_t verticesOffset;
-
-	std::uint32_t meshletCount;
-	std::uint32_t materialIndex;
 };
 
 struct FrameDrawCommandBuffers {
@@ -405,8 +372,8 @@ struct Viewer {
 	void updateCameraBuffer(std::size_t currentFrame);
 	void updateDrawBuffer(std::size_t currentFrame);
 
-	void drawNode(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix);
-	void drawMesh(std::vector<PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix);
+	void drawNode(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix);
+	void drawMesh(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix);
 
 	/** Fills the cameraNodes vector */
 	void updateCameraNodes(std::size_t nodeIndex);

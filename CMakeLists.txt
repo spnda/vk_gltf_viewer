@@ -17,6 +17,13 @@ add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vk_gltf_viewer")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vulkan")
 target_include_directories(vk_gltf_viewer PRIVATE "include")
 
+# Add the shaders directory as an include directory
+target_include_directories(vk_gltf_viewer PRIVATE "shaders")
+file (GLOB_RECURSE SHADER_HEADER_FILES "shaders/*.h" "shaders/**/*.h")
+foreach(HEADER_FILE ${SHADER_HEADER_FILES})
+    target_sources(vk_gltf_viewer PUBLIC ${HEADER_FILE})
+endforeach()
+
 # Try and search for glslangValidator, which we use to compile shaders
 find_program(GLSLANG_EXECUTABLE glslangValidator)
 if (NOT GLSLANG_EXECUTABLE)
@@ -47,7 +54,6 @@ foreach(SHADER_FILE ${SHADER_FILES})
             MATH(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
             string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
             set(INCLUDED_FILE "${SHADER_FOLDER}/${INCLUDED_FILE}")
-            message(STATUS "Found include: ${INCLUDED_FILE}")
             list(APPEND FILE_INCLUDES ${INCLUDED_FILE})
         endif()
     endforeach()

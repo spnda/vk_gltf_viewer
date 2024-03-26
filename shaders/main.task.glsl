@@ -27,7 +27,7 @@ layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
 };
 
 layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
-    Primitive primitives[];
+    PrimitiveDraw primitives[];
 };
 
 // This is essentially a replacement for gl_WorkGroupID.x, but one which can store any index
@@ -64,7 +64,7 @@ vec3 getWorldSpaceAabbExtent(in vec3 extent, in mat4 transform) {
 }
 
 void main() {
-    const Primitive primitive = primitives[gl_DrawID];
+    const PrimitiveDraw primitive = primitives[gl_DrawID];
 
     // Every task shader workgroup only gets 128 meshlets to handle. This calculates how many
     // this specific work group should handle, and sets the baseID accordingly.

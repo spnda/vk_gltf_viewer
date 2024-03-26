@@ -16,7 +16,7 @@ layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
 };
 
 layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
-    Primitive primitives[];
+    PrimitiveDraw primitives[];
 };
 
 // Vertices of a basic cube
@@ -49,7 +49,7 @@ const uint edges[12 * 2] = uint[12 * 2](
 
 // Simple shader to take meshlet AABBs and transform them into a visible cube using line topology.
 void main() {
-    Primitive primitive = primitives[gl_DrawID];
+    PrimitiveDraw primitive = primitives[gl_DrawID];
     Meshlet meshlet = meshlets[primitive.descOffset + gl_InstanceIndex];
 
     vec3 position = positions[edges[gl_VertexIndex]];

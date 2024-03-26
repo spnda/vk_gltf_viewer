@@ -37,7 +37,7 @@ layout(set = 1, binding = 3, scalar) readonly buffer VertexBuffer {
 };
 
 layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
-    Primitive primitives[];
+    PrimitiveDraw primitives[];
 };
 
 struct Task {
@@ -52,7 +52,7 @@ layout(location = 1) out vec2 uvs[];
 layout(location = 2) flat out uint materialIndex[];
 
 void main() {
-    const Primitive primitive = primitives[gl_DrawID];
+    const PrimitiveDraw primitive = primitives[gl_DrawID];
     uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
     const Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
 
