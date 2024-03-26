@@ -2245,37 +2245,26 @@ void Viewer::loadGltfMaterials() {
 
 glm::mat4 Viewer::getCameraProjectionMatrix(fastgltf::Camera& camera) const {
 	ZoneScoped;
-	// The following matrix math is for the projection matrices as defined by the glTF spec:
+	// The following projection matrices do not use the math defined by the glTF spec here:
 	// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#projection-matrices
+	// The reason is that Vulkan uses a different depth range to OpenGL, which has to be accounted.
+	// Therefore, we always use the appropriate _ZO glm functrions.
 	return std::visit(fastgltf::visitor {
 		[&](fastgltf::Camera::Perspective& perspective) {
-			glm::mat4x4 mat(0.0f);
-
 			assert(swapchain.extent.width != 0 && swapchain.extent.height != 0);
 			auto aspectRatio = perspective.aspectRatio.value_or(
 				static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height));
-			mat[0][0] = 1.f / (aspectRatio * tan(0.5f * perspective.yfov));
-			mat[1][1] = 1.f / (tan(0.5f * perspective.yfov));
-			mat[2][3] = -1;
 
 			if (perspective.zfar.has_value()) {
-				// Finite projection matrix
-				mat[2][2] = (*perspective.zfar + perspective.znear) / (perspective.znear - *perspective.zfar);
-				mat[3][2] = (2 * *perspective.zfar * perspective.znear) / (perspective.znear - *perspective.zfar);
+				return glm::perspectiveRH_ZO(perspective.yfov, aspectRatio, perspective.znear, *perspective.zfar);
 			} else {
-				// Infinite projection matrix
-				mat[2][2] = -1;
-				mat[3][2] = -2 * perspective.znear;
+				return glm::infinitePerspectiveRH_ZO(perspective.yfov, aspectRatio, perspective.znear);
 			}
-			return mat;
 		},
 		[&](fastgltf::Camera::Orthographic& orthographic) {
-			glm::mat4x4 mat(1.0f);
-			mat[0][0] = 1.f / orthographic.xmag;
-			mat[1][1] = 1.f / orthographic.ymag;
-			mat[2][2] = 2.f / (orthographic.znear - orthographic.zfar);
-			mat[3][2] = (orthographic.zfar + orthographic.znear) / (orthographic.znear - orthographic.zfar);
-			return mat;
+			return glm::orthoRH_ZO(-orthographic.xmag, orthographic.xmag,
+								   -orthographic.ymag, orthographic.ymag,
+								   orthographic.znear, orthographic.zfar);
 		},
 	}, camera.camera);
 }
@@ -2489,7 +2478,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		static constexpr auto zFar = 10000.0f;
 		static constexpr auto fov = glm::radians(75.0f);
 		const auto aspectRatio = static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height);
-		auto projectionMatrix = glm::perspective(fov, aspectRatio, zNear, zFar);
+		auto projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
 
 		// Invert the Y-Axis to use the same coordinate system as glTF.
 		projectionMatrix[1][1] *= -1;
