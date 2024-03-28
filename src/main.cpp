@@ -168,7 +168,7 @@ void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
 	void* ptr = glfwGetWindowUserPointer(window);
 	auto& movement = static_cast<Viewer*>(ptr)->movement;
 
-	int state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE);
+	int state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT);
 	if (state != GLFW_PRESS) {
 		movement.lastCursorPosition = { xpos, ypos };
 		return;
@@ -192,31 +192,6 @@ void cursorCallback(GLFWwindow* window, double xpos, double ypos) {
 	direction.y = sin(glm::radians(movement.pitch));
 	direction.z = sin(glm::radians(movement.yaw)) * cos(glm::radians(movement.pitch));
 	direction = glm::normalize(direction);
-}
-
-static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-
-void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-	void* ptr = glfwGetWindowUserPointer(window);
-	auto& movement = static_cast<Viewer*>(ptr)->movement;
-
-	auto& acceleration = movement.accelerationVector;
-	switch (key) {
-		case GLFW_KEY_W:
-			acceleration += movement.direction;
-			break;
-		case GLFW_KEY_S:
-			acceleration -= movement.direction;
-			break;
-		case GLFW_KEY_D:
-			acceleration += glm::normalize(glm::cross(movement.direction, cameraUp));
-			break;
-		case GLFW_KEY_A:
-			acceleration -= glm::normalize(glm::cross(movement.direction, cameraUp));
-			break;
-		default:
-			break;
-	}
 }
 
 VkBool32 vulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT          messageSeverity,
@@ -2663,7 +2638,37 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 
 		projectionMatrix = getCameraProjectionMatrix(asset.cameras[*cameraIndex]);
 	} else {
-		movement.velocity += (movement.accelerationVector * movement.speedMultiplier);
+		static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+		static constexpr auto cameraRight = glm::vec3(0.0f, 0.0f, 1.0f);
+
+		// Update the accelerationVector depending on states returned by glfwGetKey.
+		auto& acc = movement.accelerationVector;
+		acc = glm::vec3(0.0f);
+		if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+			acc += movement.direction;
+		}
+		if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+			acc -= movement.direction;
+		}
+		if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+			acc += glm::normalize(glm::cross(movement.direction, cameraUp));
+		}
+		if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+			acc -= glm::normalize(glm::cross(movement.direction, cameraUp));
+		}
+		if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
+			acc += cameraUp;
+		}
+		if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) {
+			acc -= cameraUp;
+		}
+
+		float speedMultiplier = movement.speedMultiplier;
+		if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
+			speedMultiplier *= 10.0f;
+		}
+
+		movement.velocity += (movement.accelerationVector * speedMultiplier);
 		// Lerp the velocity to 0, adding deceleration.
 		movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
 		// Add the velocity into the position
@@ -2791,7 +2796,7 @@ void Viewer::renderUi() {
 		}
 		ImGui::EndDisabled();
 
-		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.1f, 0.5f, 50.0f, "%.2f");
+		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.01f, 0.05f, 10.0f, "%.2f");
 
 		ImGui::Separator();
 
@@ -2864,7 +2869,6 @@ int main(int argc, char* argv[]) {
         glfwSetWindowUserPointer(viewer.window, &viewer);
         glfwSetWindowSizeCallback(viewer.window, glfwResizeCallback);
 
-		glfwSetKeyCallback(viewer.window, keyCallback);
 		glfwSetCursorPosCallback(viewer.window, cursorCallback);
 		// glfwSetInputMode(viewer.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
@@ -2940,9 +2944,6 @@ int main(int argc, char* argv[]) {
         std::size_t currentFrame = 0;
         while (glfwWindowShouldClose(viewer.window) != GLFW_TRUE) {
             if (!viewer.swapchainNeedsRebuild) {
-				// Reset the acceleration before updating it through input events
-				viewer.movement.accelerationVector = glm::vec3(0.0f);
-
                 glfwPollEvents();
             } else {
                 // This will wait until we get an event, like the resize event which will recreate the swapchain.

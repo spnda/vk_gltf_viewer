@@ -65,7 +65,7 @@ struct CameraMovement {
 	float pitch = 0.0f;
 	bool firstMouse = false;
 
-	float speedMultiplier = 2.0f;
+	float speedMultiplier = 0.05f;
 };
 
 #include <mesh_common.glsl.h>
