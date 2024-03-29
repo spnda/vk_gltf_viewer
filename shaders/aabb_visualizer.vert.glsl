@@ -5,11 +5,9 @@
 
 #include "mesh_common.glsl.h"
 
-layout(set = 0, binding = 0) uniform Camera {
-    mat4 viewProjection;
-
-    vec4 frustum[6];
-} camera;
+layout(set = 0, binding = 0) uniform CameraUniform {
+    Camera camera;
+};
 
 layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
     Meshlet meshlets[];

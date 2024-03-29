@@ -558,8 +558,7 @@ VkResult imgui::Renderer::init(Viewer* pViewer) {
 		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
 	};
 
-	auto builder = vk::GraphicsPipelineBuilder(viewer->device, nullptr)
-		.setPipelineCount(1)
+	auto builder = vk::GraphicsPipelineBuilder(viewer->device, 1)
 		.setPipelineLayout(0, pipelineLayout)
 		.addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
 		.addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)

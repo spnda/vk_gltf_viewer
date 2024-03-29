@@ -13,6 +13,13 @@ using namespace glm;
 #define GLSL_CONSTANT static constexpr
 #endif
 
+struct Camera {
+    mat4 viewProjection;
+
+    // We represent a plane using a single vec4, in the form of ax + by + cz + d = 0
+    vec4 frustum[6];
+};
+
 GLSL_CONSTANT uint maxVertices = 64;
 GLSL_CONSTANT uint maxPrimitives = 126;
 GLSL_CONSTANT uint maxMeshlets = 128;

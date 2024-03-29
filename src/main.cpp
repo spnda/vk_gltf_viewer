@@ -199,6 +199,11 @@ VkBool32 vulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT          mes
                              const VkDebugUtilsMessengerCallbackDataEXT*      pCallbackData,
                              void*                                            pUserData) {
 	fmt::print("{}\n", pCallbackData->pMessage);
+	fmt::print("\tObjects: {}\n", pCallbackData->objectCount);
+	for (std::size_t i = 0; i < pCallbackData->objectCount; ++i) {
+		auto& obj = pCallbackData->pObjects[i];
+		fmt::print("\t\t[{}] 0x{:x}, {}, {}\n", i, obj.objectHandle, obj.objectType, obj.pObjectName == nullptr ? "nullptr" : obj.pObjectName);
+	}
     return VK_FALSE; // Beware: VK_TRUE here and the layers will kill the app instantly.
 }
 
@@ -211,9 +216,7 @@ void checkResult(vkb::Result<T> result) noexcept(false) {
 
 void Viewer::setupVulkanInstance() {
 	ZoneScoped;
-    if (auto result = volkInitialize(); result != VK_SUCCESS) {
-        throw vulkan_error("No compatible Vulkan loader or driver found.", result);
-    }
+	vk::checkResult(volkInitialize(), "No compatible Vulkan loader or driver found: {}");
 
     auto version = volkGetInstanceVersion();
     if (version < VK_API_VERSION_1_1) {
@@ -434,6 +437,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
     auto swapchainResult = swapchainBuilder
             .set_old_swapchain(swapchain)
 			.set_desired_extent(width, height)
+			.set_desired_min_image_count(frameOverlap)
             .build();
     checkResult(swapchainResult);
 
@@ -593,7 +597,7 @@ void Viewer::buildCameraDescriptor() {
 		};
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(Camera),
+			.size = sizeof(glsl::Camera),
 			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		};
 		result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
@@ -694,24 +698,21 @@ void Viewer::buildMeshPipeline() {
 		.pData = &vulkan11Properties.subgroupSize,
 	};
 
-    auto builder = vk::GraphicsPipelineBuilder(device, nullptr)
-        .setPipelineCount(2);
-
-	// Create mesh pipeline
-	builder
+	// Create mesh and AABB visualizing pipeline
+    auto builder = vk::GraphicsPipelineBuilder(device, 2)
         .setPipelineLayout(0, meshPipelineLayout)
         .pushPNext(0, &renderingCreateInfo)
         .addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
         .addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
-        .setBlendAttachment(0, &blendAttachment)
+		.setBlendAttachment(0, &blendAttachment)
         .setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
         .setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER_OR_EQUAL)
         .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
         .setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
         .setScissorCount(0, 1U)
         .setViewportCount(0, 1U)
-        .addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, "main")
-        .addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule, "main")
+        .addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule)
+        .addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule)
 		.addShaderStage(0, VK_SHADER_STAGE_TASK_BIT_EXT, taskModule, "main", &taskSubgroupSizeSpecialization);
 
 	const VkPipelineRenderingCreateInfo aabbRenderingCreateInfo {
@@ -747,9 +748,9 @@ void Viewer::buildMeshPipeline() {
 
 	std::array<VkPipeline, 2> pipelines {};
     result = builder.build(pipelines.data());
-    if (result != VK_SUCCESS) {
-        throw vulkan_error("Failed to create mesh and aabb visualizing pipeline", result);
-    }
+	vk::checkResult(result, "Failed to create mesh and aabb visualizing pipeline: {}");
+	vk::setDebugUtilsName(device, meshPipeline, "Mesh pipeline");
+	vk::setDebugUtilsName(device, aabbVisualizingPipeline, "AABB Visualization pipeline");
 
 	meshPipeline = pipelines[0];
 	aabbVisualizingPipeline = pipelines[1];
@@ -1248,7 +1249,7 @@ void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bu
 	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
 }
 
-void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)> commands) {
+void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, const std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)>& commands) {
 	ZoneScoped;
 	// Create a host allocation to hold our image data.
 	const VmaAllocationCreateInfo allocationCreateInfo {
@@ -2133,7 +2134,7 @@ void Viewer::createDefaultImages() {
 			.layerCount = 1,
 		},
 	};
-	vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &defaultTexture.imageView);
+	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &defaultTexture.imageView);
 	vk::checkResult(result, "Failed to create default image view: {}");
 	vk::setDebugUtilsName(device, defaultTexture.imageView, "Default image view");
 }
@@ -2239,6 +2240,7 @@ void Viewer::loadGltfImages() {
 	};
 	result = vkAllocateDescriptorSets(device, &allocateInfo, &materialSet);
 	vk::checkResult(result, "Failed to allocate material descriptor set: {}");
+	vk::setDebugUtilsName(device, materialSet, "Material descriptor set");
 
 	// While we're here, also load the materials
 	loadGltfMaterials();
@@ -2259,6 +2261,7 @@ void Viewer::loadGltfImages() {
 		.maxLod = VK_LOD_CLAMP_NONE,
 	};
 	result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[0]);
+	vk::checkResult(result, "Failed to create default sampler: {}");
 
 	// Create the glTF samplers
 	for (auto i = 0; i < asset.samplers.size(); ++i) {
@@ -2271,6 +2274,7 @@ void Viewer::loadGltfImages() {
 		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
 		result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[numDefaultSamplers + i]);
+		vk::checkResult(result, "Failed to create sampler: {}");
 	}
 
 	// Finish all texture decode and upload tasks
@@ -2309,7 +2313,7 @@ void Viewer::loadGltfImages() {
 		} else if (texture.ddsImageIndex.has_value()) {
 			imageViewIndex = texture.ddsImageIndex.value() + numDefaultTextures;
 		} else if (texture.imageIndex.has_value()) {
-			imageViewIndex = texture.imageIndex.has_value() + numDefaultTextures;
+			imageViewIndex = texture.imageIndex.value() + numDefaultTextures;
 		}
 
 		// Well map a glTF texture to a single combined image sampler
@@ -2606,13 +2610,26 @@ glm::mat4 Viewer::getCameraProjectionMatrix(fastgltf::Camera& camera) const {
 	}, camera.camera);
 }
 
+glm::mat4 reverseDepth(glm::mat4 projection) {
+	// We use reversed Z, see https://iolite-engine.com/blog_posts/reverse_z_cheatsheet
+	constexpr glm::mat4 reverseZ {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, -1.f, 0.0f,
+		0.0f, 0.0f, 1.0f, 1.0f
+	};
+	return reverseZ * projection;
+}
+
 void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	assert(cameraBuffers.size() > currentFrame);
 	ZoneScoped;
+	static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+	static constexpr auto cameraRight = glm::vec3(0.0f, 0.0f, 1.0f);
 
 	// Calculate new camera matrices, upload to GPU
 	auto& cameraBuffer = cameraBuffers[currentFrame];
-	vk::ScopedMap<Camera> map(allocator, cameraBuffer.allocation);
+	vk::ScopedMap<glsl::Camera> map(allocator, cameraBuffer.allocation);
 	auto& camera = *map.get();
 
 	glm::mat4 viewMatrix(1.0f), projectionMatrix;
@@ -2638,9 +2655,6 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 
 		projectionMatrix = getCameraProjectionMatrix(asset.cameras[*cameraIndex]);
 	} else {
-		static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-		static constexpr auto cameraRight = glm::vec3(0.0f, 0.0f, 1.0f);
-
 		// Update the accelerationVector depending on states returned by glfwGetKey.
 		auto& acc = movement.accelerationVector;
 		acc = glm::vec3(0.0f);
@@ -2683,19 +2697,12 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
 	}
 
-	// We use reversed Z, see https://iolite-engine.com/blog_posts/reverse_z_cheatsheet
-	constexpr glm::mat4 reverseZ {
-		1.0f, 0.0f, 0.0f, 0.0f,
-		0.0f, 1.0f, 0.0f, 0.0f,
-		0.0f, 0.0f, -1.f, 0.0f,
-		0.0f, 0.0f, 1.0f, 1.0f
-	};
 	projectionMatrix[1][1] *= -1;
-	camera.viewProjectionMatrix = reverseZ * projectionMatrix * viewMatrix;
+	camera.viewProjection = reverseDepth(projectionMatrix) * viewMatrix;
 
 	if (!freezeCameraFrustum) {
 		// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
-		const auto& vp = camera.viewProjectionMatrix;
+		const auto& vp = camera.viewProjection;
 		auto& p = camera.frustum;
 		for (glm::length_t i = 0; i < 4; ++i) { p[0][i] = vp[i][3] + vp[i][0]; }
 		for (glm::length_t i = 0; i < 4; ++i) { p[1][i] = vp[i][3] - vp[i][0]; }
@@ -2878,9 +2885,7 @@ int main(int argc, char* argv[]) {
 
         // Create the Vulkan surface
         auto surfaceResult = glfwCreateWindowSurface(viewer.instance, viewer.window, nullptr, &viewer.surface);
-        if (surfaceResult != VK_SUCCESS) {
-            throw vulkan_error("Failed to create window surface", surfaceResult);
-        }
+		vk::checkResult(surfaceResult, "Failed to create window surface: {}");
         viewer.deletionQueue.push([&]() {
             vkDestroySurfaceKHR(viewer.instance, viewer.surface, nullptr);
         });
@@ -2993,9 +2998,7 @@ int main(int argc, char* argv[]) {
                 viewer.swapchainNeedsRebuild = true;
                 continue;
             }
-            if (acquireResult != VK_SUCCESS) {
-                throw vulkan_error("Failed to acquire swapchain image", acquireResult);
-            }
+			vk::checkResult(acquireResult, "Failed to acquire swapchain image: {}");
 
             // Begin the command buffer
             VkCommandBufferBeginInfo beginInfo = {
@@ -3201,9 +3204,7 @@ int main(int argc, char* argv[]) {
 				std::lock_guard lock(*viewer.graphicsQueue.lock);
 				auto submitResult = vkQueueSubmit2(viewer.graphicsQueue.handle, 1, &submitInfo,
 												   frameSyncData.presentFinished);
-				if (submitResult != VK_SUCCESS) {
-					throw vulkan_error("Failed to submit to queue", submitResult);
-				}
+				vk::checkResult(submitResult, "Failed to submit to queue: {}");
 
 				// Present the rendered image
 				const VkPresentInfoKHR presentInfo {
@@ -3219,9 +3220,7 @@ int main(int argc, char* argv[]) {
 					viewer.swapchainNeedsRebuild = true;
 					continue;
 				}
-				if (presentResult != VK_SUCCESS) {
-					throw vulkan_error("Failed to present to queue", presentResult);
-				}
+				vk::checkResult(presentResult, "Failed to present to queue: {}");
 			}
 
 			FrameMarkEnd("frame");

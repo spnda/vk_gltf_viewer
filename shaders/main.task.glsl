@@ -15,12 +15,9 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 #include "mesh_common.glsl.h"
 
-layout(set = 0, binding = 0) uniform Camera {
-    mat4 viewProjection;
-
-    // We represent a plane using a single vec4, in the form of ax + by + cz + d = 0
-    vec4 frustum[6];
-} camera;
+layout(set = 0, binding = 0) uniform CameraUniform {
+    Camera camera;
+};
 
 layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
     Meshlet meshlets[];

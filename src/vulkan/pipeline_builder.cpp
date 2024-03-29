@@ -29,8 +29,8 @@ VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, V
     return vkCreateShaderModule(device, &createInfo, VK_NULL_HANDLE, pShaderModule);
 }
 
-vk::PipelineBuilder::PipelineBuilder(VkDevice device, VkPhysicalDevice physicalDevice)
-        : device(device), physicalDevice(physicalDevice) {}
+vk::PipelineBuilder::PipelineBuilder(VkDevice device)
+        : device(device) {}
 
 
 vk::PipelineBuilder& vk::PipelineBuilder::setPipelineCache(VkPipelineCache cache) {
@@ -38,8 +38,15 @@ vk::PipelineBuilder& vk::PipelineBuilder::setPipelineCache(VkPipelineCache cache
     return *this;
 }
 
-vk::ComputePipelineBuilder::ComputePipelineBuilder(VkDevice device, VkPhysicalDevice physicalDevice)
-        : PipelineBuilder(device, physicalDevice) {}
+vk::ComputePipelineBuilder::ComputePipelineBuilder(VkDevice device, std::uint32_t count)
+        : PipelineBuilder(device) {
+	pipelineInfos.resize(count);
+    for (auto& pipelineInfo : pipelineInfos) {
+        pipelineInfo = {
+        	.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        };
+    }
+}
 
 VkResult vk::ComputePipelineBuilder::build(VkPipeline* pipeline) noexcept {
     ZoneScoped;
@@ -55,17 +62,6 @@ vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::pushPNext(std::uint32_t 
     assert(idx < pipelineInfos.size());
     ((VkBaseOutStructure*)pNext)->pNext = (VkBaseOutStructure*)pipelineInfos[idx].pNext;
     pipelineInfos[idx].pNext = pNext;
-    return *this;
-}
-
-vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::setPipelineCount(std::uint32_t count) {
-    ZoneScoped;
-    pipelineInfos.resize(count);
-    for (auto& pipelineInfo : pipelineInfos) {
-        pipelineInfo = {
-                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        };
-    }
     return *this;
 }
 
@@ -92,8 +88,37 @@ vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::setShaderStage(std::uint
     return *this;
 }
 
-vk::GraphicsPipelineBuilder::GraphicsPipelineBuilder(VkDevice device, VkPhysicalDevice physicalDevice)
-        : PipelineBuilder(device, physicalDevice) {}
+vk::GraphicsPipelineBuilder::GraphicsPipelineBuilder(VkDevice device, std::uint32_t count)
+        : PipelineBuilder(device) {
+	assert(count != 0);
+    const auto originalSize = static_cast<std::uint32_t>(pipelineInfos.size());
+    pipelineInfos.resize(static_cast<std::size_t>(count));
+    pipelineBuildInfos.resize(static_cast<std::size_t>(count));
+
+    for (std::uint32_t i = originalSize; i < static_cast<std::uint32_t>(pipelineInfos.size()); ++i) {
+        pipelineInfos[i] = {
+                .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        };
+        pipelineBuildInfos[i].blendStateInfo = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        };
+        pipelineBuildInfos[i].vertexInputState = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        };
+        pipelineBuildInfos[i].inputAssemblyState = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        };
+        pipelineBuildInfos[i].tessellationState = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+        };
+        pipelineBuildInfos[i].viewportState = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        };
+        pipelineBuildInfos[i].multisampleState = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        };
+    }
+}
 
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::addDynamicState(std::uint32_t idx, VkDynamicState state) {
     ZoneScoped;
@@ -217,40 +242,6 @@ vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setMultisampleCount(st
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setPipelineCache(VkPipelineCache cache) {
 	pipelineCache = cache;
 	return *this;
-}
-
-vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setPipelineCount(std::uint32_t count) {
-    ZoneScoped;
-    assert(count != 0);
-    const auto originalSize = static_cast<std::uint32_t>(pipelineInfos.size());
-    pipelineInfos.resize(static_cast<std::size_t>(count));
-    pipelineBuildInfos.resize(static_cast<std::size_t>(count));
-
-    for (std::uint32_t i = originalSize; i < static_cast<std::uint32_t>(pipelineInfos.size()); ++i) {
-        pipelineInfos[i] = {
-                .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        };
-        pipelineBuildInfos[i].blendStateInfo = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        };
-        pipelineBuildInfos[i].vertexInputState = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        };
-        pipelineBuildInfos[i].inputAssemblyState = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        };
-        pipelineBuildInfos[i].tessellationState = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
-        };
-        pipelineBuildInfos[i].viewportState = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        };
-        pipelineBuildInfos[i].multisampleState = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        };
-    }
-
-    return *this;
 }
 
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setPipelineLayout(std::uint32_t idx, VkPipelineLayout layout) {

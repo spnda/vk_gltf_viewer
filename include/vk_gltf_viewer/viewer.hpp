@@ -48,12 +48,6 @@ struct PerFrameCameraBuffer {
 	VkDescriptorSet cameraSet;
 };
 
-struct Camera {
-	glm::mat4 viewProjectionMatrix;
-
-	std::array<glm::vec4, 6> frustum;
-};
-
 struct CameraMovement {
 	glm::vec3 accelerationVector = glm::vec3(0.0f);
 	glm::vec3 velocity = glm::vec3(0.0f);
@@ -238,9 +232,9 @@ struct Viewer {
 
 	FencePool fencePool;
 
-	std::uint32_t graphicsQueueFamily;
+	std::uint32_t graphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;
     Queue graphicsQueue;
-	std::uint32_t transferQueueFamily;
+	std::uint32_t transferQueueFamily = VK_QUEUE_FAMILY_IGNORED;
 	std::vector<Queue> transferQueues;
 
 	Queue& getNextTransferQueueHandle() {
@@ -338,7 +332,7 @@ struct Viewer {
 	/** Uploads the data to a new storage buffer */
 	void uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* buffer, VmaAllocation* allocation);
 	/** Uploads image data to a image */
-	void uploadImageToDevice(std::size_t stagingBufferSize, std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)> commands);
+	void uploadImageToDevice(std::size_t stagingBufferSize, const std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)>& commands);
 
 	void uploadMeshlets(GlobalMeshData& globalMeshData);
 	/** Takes glTF meshes and uploads them to the GPU */

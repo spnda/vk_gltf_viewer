@@ -36,7 +36,7 @@ namespace vk {
 #pragma pack(pop)
 #endif
 
-        explicit PipelineBuilder(VkDevice device, VkPhysicalDevice physicalDevice);
+        explicit PipelineBuilder(VkDevice device);
 
         virtual VkResult build(VkPipeline* pipeline) noexcept = 0;
         virtual PipelineBuilder& pushPNext(std::uint32_t idx, const void* pNext) = 0;
@@ -45,7 +45,6 @@ namespace vk {
          * only accepts a single pipeline cache handle.
          */
         virtual PipelineBuilder& setPipelineCache(VkPipelineCache cache);
-        virtual PipelineBuilder& setPipelineCount(std::uint32_t count) = 0;
         virtual PipelineBuilder& setPipelineFlags(std::uint32_t idx, VkPipelineCreateFlags flags) = 0;
         virtual PipelineBuilder& setPipelineLayout(std::uint32_t idx, VkPipelineLayout layout) = 0;
     };
@@ -54,11 +53,10 @@ namespace vk {
         std::vector<VkComputePipelineCreateInfo> pipelineInfos;
 
     public:
-        explicit ComputePipelineBuilder(VkDevice device, VkPhysicalDevice physicalDevice);
+        explicit ComputePipelineBuilder(VkDevice device, std::uint32_t count);
 
         VkResult build(VkPipeline* pipeline) noexcept override;
         ComputePipelineBuilder& pushPNext(std::uint32_t idx, const void* pNext) override;
-        ComputePipelineBuilder& setPipelineCount(std::uint32_t count) override;
         ComputePipelineBuilder& setPipelineLayout(std::uint32_t idx, VkPipelineLayout layout) override;
         ComputePipelineBuilder& setPipelineFlags(std::uint32_t idx, VkPipelineCreateFlags flags) override;
         ComputePipelineBuilder& setShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name);
@@ -82,10 +80,10 @@ namespace vk {
         std::vector<PipelineBuildInfos> pipelineBuildInfos;
 
     public:
-        explicit GraphicsPipelineBuilder(VkDevice device, VkPhysicalDevice physicalDevice);
+        explicit GraphicsPipelineBuilder(VkDevice device, std::uint32_t count);
 
         GraphicsPipelineBuilder& addDynamicState(std::uint32_t idx, VkDynamicState state);
-        GraphicsPipelineBuilder& addShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name, const VkSpecializationInfo* specInfo = nullptr);
+        GraphicsPipelineBuilder& addShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name = "main", const VkSpecializationInfo* specInfo = nullptr);
         VkResult build(VkPipeline* pipeline) noexcept override;
         /**
          * This updates the pNext member of the VkGraphicsPipelineCreateInfo to point to the given
@@ -100,11 +98,6 @@ namespace vk {
                                                VkCompareOp depthCompareOp);
         GraphicsPipelineBuilder& setMultisampleCount(std::uint32_t idx, VkSampleCountFlagBits samples);
 		GraphicsPipelineBuilder& setPipelineCache(VkPipelineCache cache) override;
-        /**
-         * This creates everything needed to build the pipeline. Note that this is required to be
-         * called for every pipeline builder with a count of at least 1.
-         */
-        GraphicsPipelineBuilder& setPipelineCount(std::uint32_t count) override;
         GraphicsPipelineBuilder& setPipelineLayout(std::uint32_t idx, VkPipelineLayout layout) override;
         GraphicsPipelineBuilder& setPipelineFlags(std::uint32_t idx, VkPipelineCreateFlags flags) override;
         GraphicsPipelineBuilder& setRasterState(std::uint32_t idx, VkPolygonMode polygonMode, VkCullModeFlags cullMode, VkFrontFace frontFace,

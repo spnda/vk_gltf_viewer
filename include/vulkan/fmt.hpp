@@ -69,3 +69,11 @@ struct fmt::formatter<VkLayerProperties> {
         return fmt::format_to(ctx.out(), "{}:v{}", result.layerName, result.implementationVersion);
     }
 };
+
+template <>
+struct fmt::formatter<VkObjectType> : formatter<std::string_view> {
+    template <typename FormatContext>
+    inline auto format(VkObjectType const& result, FormatContext& ctx) const {
+		return formatter<string_view>::format(string_VkObjectType(result), ctx);
+    }
+};

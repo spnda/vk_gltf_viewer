@@ -14,11 +14,9 @@ layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(triangles, max_vertices = maxVertices, max_primitives = maxPrimitives) out;
 
-layout(set = 0, binding = 0) uniform Camera {
-    mat4 viewProjection;
-
-    vec4 frustum[6];
-} camera;
+layout(set = 0, binding = 0) uniform CameraUniform {
+    Camera camera;
+};
 
 layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
     Meshlet meshlets[];
