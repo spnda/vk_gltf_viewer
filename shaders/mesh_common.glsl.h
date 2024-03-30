@@ -16,6 +16,8 @@ using namespace glm;
 struct Camera {
     mat4 viewProjection;
 
+    mat4 lightSpaceMatrix;
+
     // We represent a plane using a single vec4, in the form of ax + by + cz + d = 0
     vec4 frustum[6];
 };

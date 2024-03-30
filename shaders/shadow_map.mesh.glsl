@@ -38,22 +38,10 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
-struct Task {
-    uint baseID;
-    uint8_t deltaIDs[128];
-};
-
-taskPayloadSharedEXT Task taskPayload;
-
-layout(location = 0) out vec4 colors[];
-layout(location = 1) out vec2 uvs[];
-layout(location = 2) flat out uint materialIndex[];
-layout(location = 3) out vec4 lightSpacePos[];
-
+/** This is essentially the same exact shader as main.mesh.glsl, but just with everything but positions striped */
 void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
-    uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
-    const Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
+    const Meshlet meshlet = meshlets[primitive.descOffset + gl_WorkGroupID.x];
 
     // This defines the array size of gl_MeshVerticesEXT
     if (gl_LocalInvocationID.x == 0) {
@@ -75,13 +63,7 @@ void main() {
         uint vertexIndex = vertexIndices[primitive.vertexIndicesOffset + meshlet.vertexOffset + vidx];
         Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
 
-        vec4 position = primitive.modelMatrix * vec4(vertex.position, 1.0f);
-        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * vec4(position.xyz, 1.0f);
-        lightSpacePos[vidx] = camera.lightSpaceMatrix * vec4(position.xyz, 1.0f);
-
-        colors[vidx] = vertex.color;
-        uvs[vidx] = vertex.uv;
-        materialIndex[vidx] = primitive.materialIndex;
+        gl_MeshVerticesEXT[vidx].gl_Position = camera.lightSpaceMatrix * primitive.modelMatrix * vec4(vertex.position, 1.0f);
     }
 
     const uint primitiveLoops = (meshlet.triangleCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;

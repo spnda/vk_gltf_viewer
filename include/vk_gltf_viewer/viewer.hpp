@@ -311,6 +311,16 @@ struct Viewer {
 	fastgltf::Optional<std::size_t> cameraIndex = std::nullopt;
 	std::vector<fastgltf::Node*> cameraNodes;
 
+	// Shadow maps
+	static constexpr auto shadowResolution = glm::u32vec2(2048.f, 2048.f);
+	VkImage shadowMapImage = VK_NULL_HANDLE;
+	VmaAllocation shadowMapAllocation = VK_NULL_HANDLE;
+	VkImageView shadowMapImageView = VK_NULL_HANDLE;
+	VkSampler shadowMapSampler = VK_NULL_HANDLE;
+	VkPipelineLayout shadowMapPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline shadowMapPipeline = VK_NULL_HANDLE;
+	glm::vec3 lightPosition = glm::vec3(-2.0f, 4.0f, -1.0f);
+
     DeletionQueue deletionQueue;
 	TimelineDeletionQueue timelineDeletionQueue;
 
@@ -370,4 +380,7 @@ struct Viewer {
 
 	/** Create UI using ImGui */
 	void renderUi();
+
+	/** Creates the shadow map and the necessary pipeline */
+	void createShadowMapAndPipeline();
 };

@@ -699,6 +699,9 @@ void Viewer::buildMeshPipeline() {
 	};
 
 	// Create mesh and AABB visualizing pipeline
+	// TODO: glTF does not necessarily have a CCW winding order. Specifically, the spec says this:
+	//       If the determinant of the transform is a negative value, the winding order of the mesh triangle faces should be reversed.
+	//       This supports negative scales for mirroring geometry.
     auto builder = vk::GraphicsPipelineBuilder(device, 2)
         .setPipelineLayout(0, meshPipelineLayout)
         .pushPNext(0, &renderingCreateInfo)
@@ -707,7 +710,7 @@ void Viewer::buildMeshPipeline() {
 		.setBlendAttachment(0, &blendAttachment)
         .setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
         .setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER_OR_EQUAL)
-        .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+        .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
         .setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
         .setScissorCount(0, 1U)
         .setViewportCount(0, 1U)
@@ -2194,7 +2197,7 @@ void Viewer::loadGltfImages() {
 	//       Using VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT we could change the descriptor size.
 	// TODO: We currently dont use UPDATE_AFTER_BIND, making us use either frameOverlap count of sets, or restricting
 	//       us to a fixed set of textures for rendering.
-	std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings = {{
+	std::array<VkDescriptorSetLayoutBinding, 3> layoutBindings = {{
 		{
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -2204,13 +2207,20 @@ void Viewer::loadGltfImages() {
 		{
 			.binding = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		},
+		{
+			.binding = 2,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			.descriptorCount = static_cast<std::uint32_t>(asset.textures.size() + numDefaultTextures),
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 		}
 	}};
-	std::array<VkDescriptorBindingFlags, layoutBindings.max_size()> layoutBindingFlags = {{
+	std::array<VkDescriptorBindingFlags, layoutBindings.size()> layoutBindingFlags = {{
 		0,
 		0, // VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
+		0,
 	}};
 	const VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -2295,7 +2305,7 @@ void Viewer::loadGltfImages() {
 	writes.emplace_back(VkWriteDescriptorSet {
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 		.dstSet = materialSet,
-		.dstBinding = 1,
+		.dstBinding = 2,
 		.dstArrayElement = 0U,
 		.descriptorCount = 1,
 		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2326,7 +2336,7 @@ void Viewer::loadGltfImages() {
 		writes.emplace_back(VkWriteDescriptorSet {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.dstSet = materialSet,
-			.dstBinding = 1,
+			.dstBinding = 2,
 			.dstArrayElement = static_cast<std::uint32_t>(i),
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2334,6 +2344,141 @@ void Viewer::loadGltfImages() {
 		});
 	}
 	vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
+}
+
+void Viewer::createShadowMapAndPipeline() {
+	ZoneScoped;
+	// We don't check if D32_SFLOAT supports SAMPLED_BIT as it's supported on effectively 100% of devices.
+	const VkImageCreateInfo shadowMapInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_D32_SFLOAT,
+		.extent = {
+			.width = shadowResolution.x,
+			.height = shadowResolution.y,
+			.depth = 1,
+		},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	const VmaAllocationCreateInfo allocationInfo {
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+	auto result = vmaCreateImage(allocator, &shadowMapInfo, &allocationInfo, &shadowMapImage, &shadowMapAllocation, nullptr);
+	vk::checkResult(result, "Failed to create shadow map image: {}");
+	vk::setDebugUtilsName(device, shadowMapImage, "Shadow map image");
+	vk::setAllocationName(allocator, shadowMapAllocation, "Shadow map image allocation");
+
+	const VkImageViewCreateInfo imageViewInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = shadowMapImage,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = shadowMapInfo.format,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		}
+	};
+	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &shadowMapImageView);
+	vk::checkResult(result, "Failed to create shadow map image view: {}");
+	vk::setDebugUtilsName(device, depthImageView, "Shadow map image view");
+
+	// Create the sampler for the shadow map
+	const VkSamplerCreateInfo samplerInfo {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_NEAREST,
+		.minFilter = VK_FILTER_NEAREST,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.maxAnisotropy = 1.0f,
+		.maxLod = 1.0f,
+		.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, // I think this should be 1.0f in all components?
+	};
+	result = vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler);
+	vk::checkResult(result, "Failed to create shadow map sampler: {}");
+
+	deletionQueue.push([this]() {
+		vkDestroySampler(device, shadowMapSampler, nullptr);
+		vkDestroyImageView(device, shadowMapImageView, nullptr);
+		vmaDestroyImage(allocator, shadowMapImage, shadowMapAllocation);
+	});
+
+	// Update the material descriptor with the shadowMap
+	const VkDescriptorImageInfo imageInfo {
+		.sampler = shadowMapSampler,
+		.imageView = shadowMapImageView,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	const VkWriteDescriptorSet write {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = materialSet,
+		.dstBinding = 1,
+		.dstArrayElement = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &imageInfo,
+	};
+	vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+	// Build the shadow map pipeline layout
+	std::array<VkDescriptorSetLayout, 2> layouts {{ cameraSetLayout, meshletSetLayout }};
+	const VkPipelineLayoutCreateInfo layoutCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
+		.pSetLayouts = layouts.data(),
+		.pushConstantRangeCount = 0,
+	};
+	result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &shadowMapPipelineLayout);
+	vk::checkResult(result, "Failed to create shadow map pipeline layout: {}");
+	vk::setDebugUtilsName(device, meshPipelineLayout, "Shadow map pipeline layout");
+
+	// Load shaders
+	VkShaderModule meshModule, fragModule;
+	vk::loadShaderModule("shadow_map.mesh.glsl.spv", device, &meshModule);
+	vk::loadShaderModule("shadow_map.frag.glsl.spv", device, &fragModule);
+
+	const auto depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+	const VkPipelineRenderingCreateInfo renderingCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+		.colorAttachmentCount = 0,
+		.depthAttachmentFormat = depthAttachmentFormat,
+	};
+
+	auto builder = vk::GraphicsPipelineBuilder(device, 1)
+		.setPipelineLayout(0, shadowMapPipelineLayout)
+		.pushPNext(0, &renderingCreateInfo)
+		.addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
+		.addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
+		.setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		.setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
+		// We're using CULL_MODE_FRONT to avoid peter panning
+		.setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+		.setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
+		.setScissorCount(0, 1U)
+		.setViewportCount(0, 1U)
+		.addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule)
+		.addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule);
+
+	result = builder.build(&shadowMapPipeline);
+	vk::checkResult(result, "Failed to create shadow map pipeline: {}");
+	vk::setDebugUtilsName(device, shadowMapPipeline, "Shadow map pipeline");
+
+	vkDestroyShaderModule(device, fragModule, nullptr);
+	vkDestroyShaderModule(device, meshModule, nullptr);
+
+	deletionQueue.push([this]() {
+		vkDestroyPipeline(device, shadowMapPipeline, nullptr);
+		vkDestroyPipelineLayout(device, shadowMapPipelineLayout, nullptr);
+	});
 }
 
 void Viewer::loadGltfMaterials() {
@@ -2687,7 +2832,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
 		// Add the velocity into the position
 		movement.position += movement.velocity * deltaTime;
-		viewMatrix = glm::lookAt(movement.position, movement.position + movement.direction, cameraUp);
+		viewMatrix = glm::lookAtRH(movement.position, movement.position + movement.direction, cameraUp);
 
 		// glm::perspectiveRH_ZO is correct, see https://johannesugb.github.io/gpu-programming/setting-up-a-proper-vulkan-projection-matrix/
 		static constexpr auto zNear = 0.01f;
@@ -2715,6 +2860,16 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 			plane.w = -plane.w;
 		}
 	}
+
+	// Set the sun light matrix
+	glm::mat4 lightProjection = glm::orthoRH_ZO(-10.0f, 10.0f,
+												-10.0f, 10.0f,
+												0.01f, 100.0f);
+	glm::mat4 lightView = glm::lookAtRH(lightPosition,
+									  glm::vec3(0.0f, 0, 0),
+									  cameraUp);
+	lightProjection[1][1] *= -1;
+	camera.lightSpaceMatrix = lightProjection * lightView;
 }
 
 void Viewer::updateCameraNodes(std::size_t nodeIndex) {
@@ -2804,6 +2959,9 @@ void Viewer::renderUi() {
 		ImGui::EndDisabled();
 
 		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.01f, 0.05f, 10.0f, "%.2f");
+
+		ImGui::Text("Camera position: %.2f %.2f %.2f", movement.position.x, movement.position.y, movement.position.z);
+		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition));
 
 		ImGui::Separator();
 
@@ -2911,6 +3069,9 @@ int main(int argc, char* argv[]) {
 		// Build the mesh pipeline
         viewer.buildMeshPipeline();
 
+		// Build the shadow map pipeline
+		viewer.createShadowMapAndPipeline();
+
 		// Resize the drawBuffers vector
 		viewer.drawBuffers.resize(frameOverlap);
 
@@ -3007,12 +3168,97 @@ int main(int argc, char* argv[]) {
             };
             vkBeginCommandBuffer(cmd, &beginInfo);
 
+			{
+				TracyVkZone(viewer.tracyCtx, cmd, "Shadow map generation");
+
+				// Transition the shadow map image from UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL
+				const VkImageMemoryBarrier2 imageBarrier {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+					.srcAccessMask = VK_ACCESS_2_NONE,
+					.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+					.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = viewer.shadowMapImage,
+					.subresourceRange = {
+						.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+						.levelCount = 1,
+						.layerCount = 1,
+					},
+				};
+				const VkDependencyInfo dependencyInfo {
+					.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+					.imageMemoryBarrierCount = 1,
+					.pImageMemoryBarriers = &imageBarrier,
+				};
+				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+				const VkRenderingAttachmentInfo depthAttachment {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = viewer.shadowMapImageView,
+					.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+					.resolveMode = VK_RESOLVE_MODE_NONE,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {1.0f, 0.0f},
+				};
+				const VkRenderingInfo renderingInfo {
+					.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+					.renderArea = {
+						.offset = {},
+						.extent = {
+							.width = Viewer::shadowResolution.x,
+							.height = Viewer::shadowResolution.y,
+						},
+					},
+					.layerCount = 1,
+					.colorAttachmentCount = 0,
+					.pDepthAttachment = &depthAttachment,
+				};
+				vkCmdBeginRendering(cmd, &renderingInfo);
+
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.shadowMapPipeline);
+
+				std::array<VkDescriptorSet, 2> descriptorBinds {{
+					viewer.cameraBuffers[currentFrame].cameraSet, // Set 0
+					viewer.globalMeshBuffers.descriptors[currentFrame], // Set 1
+				}};
+				// Bind the camera descriptor set
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewer.shadowMapPipelineLayout,
+										0, static_cast<std::uint32_t>(descriptorBinds.size()), descriptorBinds.data(),
+										0, nullptr);
+
+				const VkViewport viewport = {
+					.x = 0.0F,
+					.y = 0.0F,
+					.width = static_cast<float>(renderingInfo.renderArea.extent.width),
+					.height = static_cast<float>(renderingInfo.renderArea.extent.height),
+					.minDepth = 0.0F,
+					.maxDepth = 1.0F,
+				};
+				vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+				const VkRect2D scissor = renderingInfo.renderArea;
+				vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+				vkCmdDrawMeshTasksIndirectEXT(cmd,
+							  viewer.drawBuffers[currentFrame].primitiveDrawHandle, 0,
+							  viewer.drawBuffers[currentFrame].drawCount,
+							  sizeof(glsl::PrimitiveDraw));
+
+				vkCmdEndRendering(cmd);
+			}
+
             {
 				TracyVkZone(viewer.tracyCtx, cmd, "Mesh shading");
 
 				// Transition the swapchain image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL for rendering
 				// Transition the depth image from UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL
-				std::array<VkImageMemoryBarrier2, 2> imageBarriers = {{
+				// Transition the shadow map image from DEPTH_STENCIL_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+				std::array<VkImageMemoryBarrier2, 3> imageBarriers = {{
 					{
 						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 						.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
@@ -3041,6 +3287,23 @@ int main(int argc, char* argv[]) {
 						.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 						.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 						.image = viewer.depthImage,
+						.subresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+							.levelCount = 1,
+							.layerCount = 1,
+						},
+					},
+					{
+						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+						.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+						.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+						.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+						.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+						.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+						.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+						.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+						.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+						.image = viewer.shadowMapImage,
 						.subresourceRange = {
 							.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
 							.levelCount = 1,
