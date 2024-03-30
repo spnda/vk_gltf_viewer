@@ -267,6 +267,7 @@ void Viewer::setupVulkanDevice() {
 		.shaderFloat16 = VK_TRUE,
 		.shaderInt8 = VK_TRUE,
 		.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+		.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
 		.descriptorBindingPartiallyBound = VK_TRUE,
 		.runtimeDescriptorArray = VK_TRUE,
 		.scalarBlockLayout = VK_TRUE,
@@ -2971,6 +2972,10 @@ void Viewer::renderUi() {
 
 		ImGui::Checkbox("Enable AABB visualization", &enableAabbVisualization);
 		ImGui::Checkbox("Freeze Camera frustum", &freezeCameraFrustum);
+
+		ImGui::Separator();
+
+		ImGui::Image(shadowMapImageView, ImVec2(256.f, 256.f));
 	}
 	ImGui::End();
 

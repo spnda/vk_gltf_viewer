@@ -13,13 +13,9 @@
 
 struct Viewer;
 
-namespace imgui {
-	struct PushConstants {
-		glm::fvec2 scale = {};
-		glm::fvec2 translate = {};
-		VkDeviceAddress vertexBufferAddress = 0;
-	};
+#include <ui/ui.glsl.h>
 
+namespace imgui {
 	struct PerFrameBuffers {
 		VkBuffer vertexBuffer = VK_NULL_HANDLE;
 		VmaAllocation vertexAllocation = VK_NULL_HANDLE;
@@ -36,7 +32,7 @@ namespace imgui {
 
 		Viewer* viewer = nullptr;
 
-		PushConstants pushConstants = {};
+		glsl::PushConstants pushConstants = {};
 		std::vector<PerFrameBuffers> buffers;
 
 		VkBuffer fontAtlasStagingBuffer = VK_NULL_HANDLE;
@@ -56,6 +52,15 @@ namespace imgui {
 		VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 		VkShaderModule fragmentShader = VK_NULL_HANDLE;
 		VkShaderModule vertexShader = VK_NULL_HANDLE;
+
+		/**
+		 * The maximum amount of unique bindless images used with ImGui::Image calls, per frame.
+		 */
+		static constexpr auto maxBindlessImages = 256;
+
+		/** Maps each ImTextureID (or VkImageView) to a descriptor binding index */
+		std::unordered_map<ImTextureID, std::uint32_t> imageDescriptorIndices;
+		void addTextureToDescriptorSet(ImTextureID textureId);
 
 		VkResult createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize);
 

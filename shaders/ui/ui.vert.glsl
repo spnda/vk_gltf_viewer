@@ -1,26 +1,13 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
-#extension GL_EXT_buffer_reference : require
-#extension GL_EXT_scalar_block_layout : require
 
 #include "ui.glsl.h"
 
-struct ImDrawVert {
-    vec2 pos;
-    vec2 uv;
-    // The color is always in sRGB currently with ImGui.
-    uint col;
-};
-
-layout(buffer_reference, scalar) readonly buffer Vertices { ImDrawVert v[]; };
-
 layout(location = 0) out FragmentInput outp;
 
-layout(push_constant) uniform constants {
-    vec2 scale;
-    vec2 translate;
-    Vertices vertices;
-} pushConstants;
+layout(push_constant) uniform Constants {
+    PushConstants pushConstants;
+};
 
 // Converts a color from sRGB gamma to linear light gamma
 vec4 toLinear(vec4 sRGB) {

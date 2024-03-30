@@ -167,22 +167,6 @@ void imgui::Renderer::createFontAtlas() {
 		imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 	});
-
-	// Update the descriptor set.
-	const VkDescriptorImageInfo textureInfo {
-		.imageView = fontAtlasView,
-		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, // We transition to this layout when uploading
-	};
-	const VkWriteDescriptorSet write {
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = descriptorSet,
-			.dstBinding = 0,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.pImageInfo = &textureInfo,
-	};
-	vkUpdateDescriptorSets(viewer->device, 1, &write, 0, nullptr);
 }
 
 void imgui::Renderer::destroy() {
@@ -281,8 +265,37 @@ VkResult imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize 
 	return result;
 }
 
+void imgui::Renderer::addTextureToDescriptorSet(ImTextureID textureId) {
+	if (imageDescriptorIndices.contains(textureId)) {
+		return;
+	}
+
+	// Set a descriptor index for the given texture
+	auto idx = imageDescriptorIndices[textureId] = imageDescriptorIndices.size();
+
+	// Update the descriptor set
+	const VkDescriptorImageInfo textureInfo {
+		.imageView = static_cast<VkImageView>(textureId),
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	const VkWriteDescriptorSet write {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = descriptorSet,
+		.dstBinding = 0,
+		.dstArrayElement = idx,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &textureInfo,
+	};
+	vkUpdateDescriptorSets(viewer->device, 1, &write, 0, nullptr);
+}
+
 void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainImageView, glm::u32vec2 framebufferSize, std::size_t currentFrame) {
 	ZoneScoped;
+	// Reset the indices. This effectively clears the descriptor set, and we overwrite it later throughout the draw process.
+	// TODO: Is resetting every frame the most efficient way? This implies a full update of the descriptor set.
+	imageDescriptorIndices.clear();
+
 	auto* drawData = ImGui::GetDrawData();
 
 	// Copy all vertex and index buffers into the proper buffers. Because of Vulkan, we cannot copy
@@ -352,13 +365,11 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 		vkCmdPipelineBarrier2(commandBuffer, &geometryBufferDependency);
 	}
 
-	// TODO: Set attachment image view
 	const VkRenderingAttachmentInfo colorAttachmentInfo = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		.imageView = swapchainImageView,
 		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		.resolveMode = VK_RESOLVE_MODE_NONE,
-		//.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 		.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 		.clearValue = { 0.0F, 0.0F, 0.0F, 0.0F },
@@ -434,8 +445,18 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 			};
 			vkCmdSetScissor(commandBuffer, 0, 1, &rect);
 
+			if (cmd.GetTexID() == nullptr) {
+				// If no texture ID was specified, we default to the font atlas.
+				pushConstants.imageIndex = imageDescriptorIndices[fontAtlasView];
+			} else {
+				// Write the texture used for this draw command into the descriptor set.
+				addTextureToDescriptorSet(cmd.GetTexID());
+
+				pushConstants.imageIndex = imageDescriptorIndices[cmd.GetTexID()];
+			}
 			pushConstants.vertexBufferAddress = frameBuffers.vertexBufferAddress + (vertexOffset + cmd.VtxOffset) * sizeof(ImDrawVert);
-			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushConstants);
+			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+							   0, sizeof(glsl::PushConstants), &pushConstants);
 
 			vkCmdBindIndexBuffer(commandBuffer, frameBuffers.indexBuffer,
 								 (cmd.IdxOffset + static_cast<std::uint32_t>(indexOffset)) * sizeof(ImDrawIdx),
@@ -481,36 +502,46 @@ VkResult imgui::Renderer::init(Viewer* pViewer) {
 	vk::setDebugUtilsName(viewer->device, fontAtlasSampler, "ImGui font-atlas sampler");
 
 	// Create the descriptor layout
-	std::array<VkDescriptorSetLayoutBinding, 1> descriptorBindings = {{
-		{
-			.binding = 0,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = &fontAtlasSampler,
-		}
-	}};
+	std::vector<VkSampler> immutableSamplers(maxBindlessImages, fontAtlasSampler); // TODO: Perhaps we don't need immutable samplers?
+	const VkDescriptorSetLayoutBinding binding = {
+		.binding = 0,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.descriptorCount = maxBindlessImages, // Is this a sane max value for displayed images?
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		.pImmutableSamplers = immutableSamplers.data(),
+	};
+	const VkDescriptorBindingFlags bindingFlags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+	const VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+		.bindingCount = 1,
+		.pBindingFlags = &bindingFlags,
+	};
 	const VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = static_cast<std::uint32_t>(descriptorBindings.size()),
-		.pBindings = descriptorBindings.data(),
+		.pNext = &bindingFlagsInfo,
+		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+		.bindingCount = 1,
+		.pBindings = &binding,
 	};
 	auto descriptorLayoutResult = vkCreateDescriptorSetLayout(viewer->device, &descriptorLayoutInfo, nullptr, &descriptorLayout);
-	vk::checkResult(descriptorLayoutResult, "Failed to create ImGui font atlas descriptor set layout");
+	vk::checkResult(descriptorLayoutResult, "Failed to create ImGui font atlas descriptor set layout: {}");
 
-	// Create the descriptor pool to hold a single set
-	std::array<VkDescriptorPoolSize, 1> descriptorPoolSizes = { { {
-		.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.descriptorCount = 1,
-	} } };
+	// Create the descriptor pool to hold exactly the amount of descriptors the backend supports.
+	std::array<VkDescriptorPoolSize, 1> descriptorPoolSizes = {{
+		{
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = maxBindlessImages,
+		}
+	}};
 	const VkDescriptorPoolCreateInfo descriptorPoolInfo = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
 		.maxSets = 1,
 		.poolSizeCount = static_cast<std::uint32_t>(descriptorPoolSizes.size()),
 		.pPoolSizes = descriptorPoolSizes.data(),
 	};
 	auto descriptorPoolResult = vkCreateDescriptorPool(viewer->device, &descriptorPoolInfo, nullptr, &descriptorPool);
-	vk::checkResult(descriptorPoolResult, "Failed to create ImGui descriptor pool");
+	vk::checkResult(descriptorPoolResult, "Failed to create ImGui descriptor pool: {}");
 
 	// Create the single descriptor set
 	const VkDescriptorSetAllocateInfo descriptorSetInfo = {
@@ -519,13 +550,14 @@ VkResult imgui::Renderer::init(Viewer* pViewer) {
 		.descriptorSetCount = 1,
 		.pSetLayouts = &descriptorLayout,
 	};
-	vkAllocateDescriptorSets(viewer->device, &descriptorSetInfo, &descriptorSet);
+	auto allocateResult = vkAllocateDescriptorSets(viewer->device, &descriptorSetInfo, &descriptorSet);
+	vk::checkResult(allocateResult, "Failed to create ImGui frame descriptor sets: {}");
 
 	// Create the pipeline layout
 	const VkPushConstantRange pushConstantRange = {
-		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		.offset = 0,
-		.size = sizeof(PushConstants),
+		.size = sizeof(glsl::PushConstants),
 	};
 	const VkPipelineLayoutCreateInfo layoutCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
