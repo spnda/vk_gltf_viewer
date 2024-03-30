@@ -1586,6 +1586,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		stbi_image_free(imageData.data());
 
 		// Generate mipmaps
+		// TODO: Avoid the fence here, and use a semaphore to sync these two submits?
 		auto cmd = viewer->graphicsCommandPools[taskScheduler.GetThreadNum()].buffer;
 		vkResetCommandBuffer(cmd, 0);
 		auto fence = viewer->fencePool.acquire();
@@ -1625,7 +1626,9 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			barrier.subresourceRange.baseMipLevel = i - 1;
 			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
 			barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
 			vkCmdPipelineBarrier2(cmd,&dependencyInfo);
 
@@ -1656,12 +1659,14 @@ struct ImageLoadTask : public ExceptionTaskSet {
 						   sampledImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 						   1, &blit, VK_FILTER_LINEAR);
 
-			// Transition mip i to TRANSFER_SRC_OPTIMAL
+			// Transition mip i - 1 (the one we just copied from) to SHADER_READ_ONLY_OPTIMAL
 			barrier.subresourceRange.baseMipLevel = i - 1;
 			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+			barrier.dstAccessMask = VK_ACCESS_2_NONE;
 			vkCmdPipelineBarrier2(cmd,&dependencyInfo);
 
 			if (mipWidth > 1) mipWidth /= 2;
@@ -1673,8 +1678,8 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-		barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+		barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+		barrier.dstAccessMask = VK_ACCESS_2_NONE;
 		vkCmdPipelineBarrier2(cmd,&dependencyInfo);
 
 		vkEndCommandBuffer(cmd);
@@ -1749,7 +1754,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			// Transition the image to TRANSFER_DST_OPTIMAL
 			VkImageMemoryBarrier2 imageBarrier {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+				.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 				.srcAccessMask = VK_ACCESS_2_NONE,
 				.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
 				.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -1804,7 +1809,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			// Transition the image into SHADER_READ_ONLY_OPTIMAL
 			imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
 			imageBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-			imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
 			imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
 			imageBarrier.oldLayout = imageBarrier.newLayout;
 			imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2865,7 +2870,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	// Set the sun light matrix
 	glm::mat4 lightProjection = glm::orthoRH_ZO(-10.0f, 10.0f,
 												-10.0f, 10.0f,
-												0.01f, 100.0f);
+												-100.0f, 100.0f);
 	glm::mat4 lightView = glm::lookAtRH(lightPosition,
 									  glm::vec3(0.0f, 0, 0),
 									  cameraUp);
@@ -3300,7 +3305,7 @@ int main(int argc, char* argv[]) {
 					},
 					{
 						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-						.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+						.srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
 						.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 						.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
 						.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -3399,6 +3404,21 @@ int main(int argc, char* argv[]) {
 			{
 				TracyVkZone(viewer.tracyCtx, cmd, "ImGui rendering");
 
+				// Insert a barrier to protect against any hazard reads from ImGui textures we might be using as render targets.
+				const VkMemoryBarrier2 memoryBarrier {
+					.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+					.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+					.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+					.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+				};
+				const VkDependencyInfo dependency {
+					.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+					.memoryBarrierCount = 1,
+					.pMemoryBarriers = &memoryBarrier,
+				};
+				vkCmdPipelineBarrier2(cmd, &dependency);
+
 				auto extent = glm::u32vec2(viewer.swapchain.extent.width, viewer.swapchain.extent.height);
 				viewer.imgui.draw(cmd, viewer.swapchainImageViews[swapchainImageIndex], extent, currentFrame);
 			}
@@ -3408,7 +3428,7 @@ int main(int argc, char* argv[]) {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 				.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
 				.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
 				.dstAccessMask = VK_ACCESS_2_NONE,
 				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 				.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
