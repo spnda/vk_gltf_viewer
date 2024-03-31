@@ -550,7 +550,7 @@ void Viewer::buildCameraDescriptor() {
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
+			.stageFlags = VK_SHADER_STAGE_ALL,
 		},
 	}};
 	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo {
@@ -2448,7 +2448,8 @@ void Viewer::createShadowMapAndPipeline() {
 	vk::setDebugUtilsName(device, meshPipelineLayout, "Shadow map pipeline layout");
 
 	// Load shaders
-	VkShaderModule meshModule, fragModule;
+	VkShaderModule taskModule, meshModule, fragModule;
+	vk::loadShaderModule("shadow_map.task.glsl.spv", device, &taskModule);
 	vk::loadShaderModule("shadow_map.mesh.glsl.spv", device, &meshModule);
 	vk::loadShaderModule("shadow_map.frag.glsl.spv", device, &fragModule);
 
@@ -2472,7 +2473,8 @@ void Viewer::createShadowMapAndPipeline() {
 		.setScissorCount(0, 1U)
 		.setViewportCount(0, 1U)
 		.addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragModule)
-		.addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule);
+		.addShaderStage(0, VK_SHADER_STAGE_MESH_BIT_EXT, meshModule)
+		.addShaderStage(0, VK_SHADER_STAGE_TASK_BIT_EXT, taskModule);
 
 	result = builder.build(&shadowMapPipeline);
 	vk::checkResult(result, "Failed to create shadow map pipeline: {}");
@@ -2480,6 +2482,7 @@ void Viewer::createShadowMapAndPipeline() {
 
 	vkDestroyShaderModule(device, fragModule, nullptr);
 	vkDestroyShaderModule(device, meshModule, nullptr);
+	vkDestroyShaderModule(device, taskModule, nullptr);
 
 	deletionQueue.push([this]() {
 		vkDestroyPipeline(device, shadowMapPipeline, nullptr);
@@ -2868,11 +2871,11 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	}
 
 	// Set the sun light matrix
-	glm::mat4 lightProjection = glm::orthoRH_ZO(-10.0f, 10.0f,
-												-10.0f, 10.0f,
-												-100.0f, 100.0f);
+	glm::mat4 lightProjection = glm::orthoRH_ZO(-20.0f, 20.0f,
+												-20.0f, 20.0f,
+												1.0f, 75.0f);
 	glm::mat4 lightView = glm::lookAtRH(lightPosition,
-									  glm::vec3(0.0f, 0, 0),
+									  glm::vec3(0.0f),
 									  cameraUp);
 	lightProjection[1][1] *= -1;
 	camera.lightSpaceMatrix = lightProjection * lightView;
@@ -2967,7 +2970,7 @@ void Viewer::renderUi() {
 		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.01f, 0.05f, 10.0f, "%.2f");
 
 		ImGui::Text("Camera position: %.2f %.2f %.2f", movement.position.x, movement.position.y, movement.position.z);
-		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition));
+		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition), 0.01f);
 
 		ImGui::Separator();
 

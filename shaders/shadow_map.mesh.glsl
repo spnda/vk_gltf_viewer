@@ -38,10 +38,18 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
+struct Task {
+    uint baseID;
+    uint8_t deltaIDs[128];
+};
+
+taskPayloadSharedEXT Task taskPayload;
+
 /** This is essentially the same exact shader as main.mesh.glsl, but just with everything but positions striped */
 void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
-    const Meshlet meshlet = meshlets[primitive.descOffset + gl_WorkGroupID.x];
+    uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
+    const Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
 
     // This defines the array size of gl_MeshVerticesEXT
     if (gl_LocalInvocationID.x == 0) {

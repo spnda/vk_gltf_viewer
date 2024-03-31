@@ -312,14 +312,14 @@ struct Viewer {
 	std::vector<fastgltf::Node*> cameraNodes;
 
 	// Shadow maps
-	static constexpr auto shadowResolution = glm::u32vec2(2048.f, 2048.f);
+	static constexpr auto shadowResolution = glm::u32vec2(4096.f, 4096.f);
 	VkImage shadowMapImage = VK_NULL_HANDLE;
 	VmaAllocation shadowMapAllocation = VK_NULL_HANDLE;
 	VkImageView shadowMapImageView = VK_NULL_HANDLE;
 	VkSampler shadowMapSampler = VK_NULL_HANDLE;
 	VkPipelineLayout shadowMapPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowMapPipeline = VK_NULL_HANDLE;
-	glm::vec3 lightPosition = glm::vec3(-2.0f, 4.0f, -1.0f);
+	glm::vec3 lightPosition = glm::vec3(-5.0f, 17.5f, 3.75f);
 
     DeletionQueue deletionQueue;
 	TimelineDeletionQueue timelineDeletionQueue;
