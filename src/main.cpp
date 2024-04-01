@@ -482,7 +482,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 		.arrayLayers = 1,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
@@ -1488,6 +1488,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		}
 
 		auto& sampledImage = viewer->images[imageIdx];
+		sampledImage.size = { static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height) };
 
 		auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
 		const VkImageCreateInfo imageInfo {
@@ -1495,8 +1496,8 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			.imageType = VK_IMAGE_TYPE_2D,
 			.format = imageFormat,
 			.extent = {
-				.width = static_cast<std::uint32_t>(width),
-				.height = static_cast<std::uint32_t>(height),
+				.width = sampledImage.size.width,
+				.height = sampledImage.size.height,
 				.depth = 1,
 			},
 			.mipLevels = mipLevels,
@@ -1714,6 +1715,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		}
 
 		auto& sampledImage = viewer->images[imageIdx];
+		sampledImage.size = {image.width, image.height};
 
 		// Create the Vulkan image
 		auto vkFormat = dds::getVulkanFormat(image.format, image.supportsAlpha);
@@ -1845,6 +1847,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		}
 
 		auto& sampledImage = viewer->images[imageIdx];
+		sampledImage.size = { texture->baseWidth, texture->baseHeight };
 
 		const VkImageCreateInfo imageInfo {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -2493,7 +2496,8 @@ void Viewer::createShadowMapAndPipeline() {
 void Viewer::loadGltfMaterials() {
 	ZoneScoped;
 	// Create the material buffer data
-	std::vector<glsl::Material> materials; materials.reserve(asset.materials.size());
+	materialCount = asset.materials.size() + numDefaultMaterials;
+	std::vector<glsl::Material> materials; materials.reserve(materialCount);
 
 	// Add the default material
 	materials.emplace_back(glsl::Material {
@@ -2902,6 +2906,8 @@ void Viewer::updateCameraNodes(std::size_t nodeIndex) {
 
 void Viewer::renderUi() {
 	ZoneScoped;
+	static bool showDataInspector = false;
+
 	if (ImGui::Begin("vk_gltf_viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
 		ImGui::BeginDisabled(asset.scenes.size() <= 1);
 		auto& sceneName = asset.scenes[sceneIndex].name;
@@ -2967,6 +2973,14 @@ void Viewer::renderUi() {
 		}
 		ImGui::EndDisabled();
 
+		ImGui::Separator();
+
+		if (ImGui::Button("Inspector")) {
+			showDataInspector = true;
+		}
+
+		ImGui::Separator();
+
 		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.01f, 0.05f, 10.0f, "%.2f");
 
 		ImGui::Text("Camera position: %.2f %.2f %.2f", movement.position.x, movement.position.y, movement.position.z);
@@ -2986,6 +3000,102 @@ void Viewer::renderUi() {
 		ImGui::Image(shadowMapImageView, ImVec2(256.f, 256.f));
 	}
 	ImGui::End();
+
+	if (showDataInspector) {
+		ImGui::SetNextWindowSize(ImVec2(550, 300), ImGuiCond_FirstUseEver);
+		if (ImGui::Begin("Inspector", &showDataInspector)) {
+			enum OpenTab { Images, Materials };
+			if (ImGui::BeginTabBar("Inspector Tabs")) {
+				if (ImGui::BeginTabItem("Images")) {
+					// We use a pointer to a VkImageView as we consider the images vector and the Viewer object stable.
+					// Otherwise, due to for example resizing, the image view handles might be destroyed and not properly updated here.
+					// TODO: For future proofing, perhaps a ref counted image/image view could make sense here?
+					//       Especially when the images vector is not stable anymore.
+					static VkImageView* selection = nullptr;
+					if (selection == VK_NULL_HANDLE) {
+						ImGui::Dummy(ImVec2(256.f, 256.f));
+					} else {
+						ImGui::Image(*selection, ImVec2(256.f, 256.f));
+					}
+
+					ImGui::SameLine();
+					if (ImGui::BeginTable("Image table", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+						ImGui::TableSetupColumn("Idx", ImGuiTableColumnFlags_WidthFixed);
+						ImGui::TableSetupColumn("Size");
+						ImGui::TableHeadersRow();
+
+						// Show depth and shadow map info
+						{
+							ImGui::TableNextRow();
+							ImGui::TableNextColumn();
+							if (ImGui::Selectable("Depth", selection == &depthImageView, ImGuiSelectableFlags_SpanAllColumns)) {
+								selection = &depthImageView;
+							}
+							ImGui::TableNextColumn();
+							ImGui::Text("(%u, %u)", swapchain.extent.width, swapchain.extent.height);
+
+							ImGui::TableNextRow();
+							ImGui::TableNextColumn();
+							if (ImGui::Selectable("Shadow map", selection == &shadowMapImageView, ImGuiSelectableFlags_SpanAllColumns)) {
+								selection = &shadowMapImageView;
+							}
+							ImGui::TableNextColumn();
+							ImGui::Text("(%u, %u)", shadowResolution.x, shadowResolution.y);
+						}
+
+						// Show the glTF images
+						for (std::size_t i = 0; auto& image: images) {
+							ImGui::TableNextRow();
+							ImGui::TableNextColumn();
+							auto selectableLabel = fmt::format("{}", i++);
+							if (ImGui::Selectable(selectableLabel.c_str(), selection == &image.imageView, ImGuiSelectableFlags_SpanAllColumns)) {
+								selection = &image.imageView;
+							}
+							ImGui::TableNextColumn();
+							ImGui::Text("(%u, %u)", image.size.width, image.size.height);
+						}
+						ImGui::EndTable();
+					}
+					ImGui::EndTabItem();
+				}
+
+				if (ImGui::BeginTabItem("Materials")) {
+					if (ImGui::BeginTable("Material table", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+						ImGui::TableSetupColumn("Idx", ImGuiTableColumnFlags_WidthFixed);
+						ImGui::TableSetupColumn("Base Albedo Color");
+						ImGui::TableSetupColumn("Albedo texture");
+						ImGui::TableHeadersRow();
+
+						// We'll just map the Vulkan buffer here for simplicity, as we don't want/need a copy of the materials in host memory.
+						vk::ScopedMap<glsl::Material> map(allocator, materialAllocation);
+						for (std::size_t i = 0; auto& material : std::span(map.get(), materialCount)) {
+							ImGui::TableNextRow();
+							ImGui::TableNextColumn();
+							ImGui::Text("%zu", i++);
+
+							ImGui::TableNextColumn();
+							ImGui::ColorEdit4("##picker", glm::value_ptr(material.albedoFactor), ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_Float);
+							ImGui::SameLine();
+							ImGui::Text("(%.1f, %.1f, %.1f, %.1f)", material.albedoFactor.x, material.albedoFactor.y, material.albedoFactor.z, material.albedoFactor.w);
+
+							ImGui::TableNextColumn();
+							ImGui::Text("%u", material.albedoIndex);
+							if (ImGui::IsItemHovered()) {
+								if (ImGui::BeginTooltip()) {
+									ImGui::Image(images[material.albedoIndex].imageView, ImVec2(512.f, 512.f));
+									ImGui::EndTooltip();
+								}
+							}
+						}
+						ImGui::EndTable();
+					}
+					ImGui::EndTabItem();
+				}
+				ImGui::EndTabBar();
+			}
+		}
+		ImGui::End();
+	}
 
 	ImGui::Render();
 }
@@ -3476,7 +3586,7 @@ int main(int argc, char* argv[]) {
 				{
 					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 					.semaphore = viewer.timelineDeletionQueue.getSemaphoreHandle(),
-					.value = viewer.timelineDeletionQueue.getSemaphoreCounter(),
+					.value = viewer.timelineDeletionQueue.nextValue(),
 					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 				},
 			}};

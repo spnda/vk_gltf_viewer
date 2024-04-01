@@ -119,6 +119,8 @@ struct SampledImage {
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	VkImageView imageView = VK_NULL_HANDLE;
+
+	VkExtent2D size = {0, 0};
 };
 
 /** Deletion queue, as used by vkguide.dev to ensure proper destruction order of global Vulkan objects */
@@ -184,21 +186,20 @@ public:
 		return timelineSemaphore;
 	}
 
-	[[nodiscard]] std::uint64_t getSemaphoreCounter() const noexcept {
-		return hostValue;
-	}
-
 	void push(std::function<void()>&& function) {
 		deletors.emplace_back(hostValue, std::move(function));
+	}
+
+	[[nodiscard]] std::uint64_t nextValue() {
+		return ++hostValue;
 	}
 
 	/** Function to be called at the start of every frame, which deletes objects if they're old enough */
 	void check() {
 		ZoneScoped;
-		hostValue++;
-
 		std::uint64_t currentValue;
-		vkGetSemaphoreCounterValue(device, timelineSemaphore, &currentValue);
+		auto result = vkGetSemaphoreCounterValue(device, timelineSemaphore, &currentValue);
+		vk::checkResult(result, "Failed to get timeline semaphore counter value: {}");
 		for (auto it = deletors.begin(); it != deletors.end();) {
 			auto& [timelineValue, deletion] = *it;
 			if (timelineValue < currentValue) {
@@ -299,6 +300,7 @@ struct Viewer {
 	VkDescriptorSet materialSet = VK_NULL_HANDLE;
 	std::vector<VkSampler> samplers;
 	std::vector<SampledImage> images;
+	std::size_t materialCount = 0;
 	VkBuffer materialBuffer = VK_NULL_HANDLE;
 	VmaAllocation materialAllocation = VK_NULL_HANDLE;
 
