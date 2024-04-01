@@ -289,8 +289,8 @@ struct Viewer {
 	std::vector<Mesh> meshes;
 	MeshBuffers globalMeshBuffers;
 
-	// TODO: Differentiate between numDefaultTextures and numDefaultImages?
 	static constexpr std::size_t numDefaultTextures = 1;
+	static constexpr std::size_t numDefaultImages = 1;
 	static constexpr std::size_t numDefaultMaterials = 1;
 	static constexpr std::size_t numDefaultSamplers = 1;
 

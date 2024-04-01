@@ -2325,11 +2325,11 @@ void Viewer::loadGltfImages() {
 		// Get the image index for the "best" image. If we have compressed images available, we prefer those.
 		std::size_t imageViewIndex = 0;
 		if (texture.basisuImageIndex.has_value()) {
-			imageViewIndex = texture.basisuImageIndex.value() + numDefaultTextures;
+			imageViewIndex = texture.basisuImageIndex.value() + numDefaultImages;
 		} else if (texture.ddsImageIndex.has_value()) {
-			imageViewIndex = texture.ddsImageIndex.value() + numDefaultTextures;
+			imageViewIndex = texture.ddsImageIndex.value() + numDefaultImages;
 		} else if (texture.imageIndex.has_value()) {
-			imageViewIndex = texture.imageIndex.value() + numDefaultTextures;
+			imageViewIndex = texture.imageIndex.value() + numDefaultImages;
 		}
 
 		// Well map a glTF texture to a single combined image sampler
@@ -2343,7 +2343,7 @@ void Viewer::loadGltfImages() {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.dstSet = materialSet,
 			.dstBinding = 2,
-			.dstArrayElement = static_cast<std::uint32_t>(i),
+			.dstArrayElement = static_cast<std::uint32_t>(i + numDefaultTextures),
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			.pImageInfo = &infos.back(),
@@ -2511,7 +2511,7 @@ void Viewer::loadGltfMaterials() {
 
 		if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
 			auto& albedoTex = gltfMaterial.pbrData.baseColorTexture.value();
-			mat.albedoIndex = albedoTex.textureIndex;
+			mat.albedoIndex = albedoTex.textureIndex + numDefaultTextures;
 			if (albedoTex.transform) {
 				mat.uvOffset = glm::make_vec2(albedoTex.transform->uvOffset.data());
 				mat.uvScale = glm::make_vec2(albedoTex.transform->uvScale.data());
