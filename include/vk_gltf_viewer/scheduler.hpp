@@ -2,8 +2,7 @@
 
 #include <TaskScheduler.h>
 
-// See main.cpp for the declaration
-extern enki::TaskScheduler taskScheduler;
+inline enki::TaskScheduler taskScheduler;
 
 /** Simple wrapper around another TaskSet that catches any exceptions in the ExecuteRange function. */
 struct ExceptionTaskSet : public enki::ITaskSet {

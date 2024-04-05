@@ -11,6 +11,7 @@
 
 #include <TaskScheduler.h>
 
+#include <tracy/Tracy.hpp>
 #include <tracy/TracyVulkan.hpp>
 
 #include <meshoptimizer.h>
@@ -23,8 +24,6 @@
 
 #include <vk_gltf_viewer/imgui_renderer.hpp>
 #include <vk_gltf_viewer/fence_pool.hpp>
-
-extern enki::TaskScheduler taskScheduler;
 
 struct FrameSyncData {
     VkSemaphore imageAvailable;
@@ -385,4 +384,8 @@ struct Viewer {
 
 	/** Creates the shadow map and the necessary pipeline */
 	void createShadowMapAndPipeline();
+
+	/** Runs the application and the render loop */
+	void run();
+	void destroy() noexcept;
 };

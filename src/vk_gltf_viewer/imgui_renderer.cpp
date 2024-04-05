@@ -9,9 +9,11 @@
 #include <imgui_impl_glfw.h>
 #include <tracy/Tracy.hpp>
 
+#include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/util.hpp>
 #include <vk_gltf_viewer/viewer.hpp>
 #include <vk_gltf_viewer/imgui_renderer.hpp>
+
 #include <vulkan/vk.hpp>
 #include <vulkan/debug_utils.hpp>
 #include <vulkan/fmt.hpp>

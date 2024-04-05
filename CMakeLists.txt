@@ -11,6 +11,7 @@ target_link_libraries(vk_gltf_viewer PRIVATE glfw::glfw imgui::imgui enkiTS::enk
 target_link_libraries(vk_gltf_viewer PRIVATE Vulkan::Headers Vulkan::Utils volk::volk_headers vk-bootstrap::vk-bootstrap Vulkan::MemoryAllocator)
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src")
+add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vk_gltf_viewer")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vulkan")
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vk_gltf_viewer")
