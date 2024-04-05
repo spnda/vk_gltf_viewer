@@ -38,12 +38,7 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
-struct Task {
-    uint baseID;
-    uint8_t deltaIDs[128];
-};
-
-taskPayloadSharedEXT Task taskPayload;
+taskPayloadSharedEXT TaskPayload taskPayload;
 
 /** This is essentially the same exact shader as main.mesh.glsl, but just with everything but positions striped */
 void main() {

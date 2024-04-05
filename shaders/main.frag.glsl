@@ -45,7 +45,7 @@ float shadow(vec4 lightSpacePos) {
     // Prevent oversampling when fragment is behind the far plane of the light matrix
     if (coords.z > 1.0f)
         return 0.0f;
-    return currentDepth - 0.005f > closestDepth ? 0.5f : 0.0f;
+    return currentDepth > closestDepth ? 0.5f : 0.0f;
 }
 
 void main() {

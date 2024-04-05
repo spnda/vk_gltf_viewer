@@ -37,5 +37,5 @@ struct FragmentInput {
 };
 
 #if defined(__cplusplus)
-} // namespace shaders
+} // namespace glsl
 #endif

@@ -27,14 +27,7 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
-// This is essentially a replacement for gl_WorkGroupID.x, but one which can store any index
-// between 0..256 instead of the linear requirement of the work group ID.
-struct Task {
-    uint baseID;
-    uint8_t deltaIDs[maxMeshlets];
-};
-
-taskPayloadSharedEXT Task taskPayload;
+taskPayloadSharedEXT TaskPayload taskPayload;
 
 // Frustum culling using 6 planes on an AABB
 bool isMeshletVisibleAabb(in vec3 center, in vec3 extents) {

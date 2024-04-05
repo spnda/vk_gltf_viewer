@@ -38,12 +38,7 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
-struct Task {
-    uint baseID;
-    uint8_t deltaIDs[128];
-};
-
-taskPayloadSharedEXT Task taskPayload;
+taskPayloadSharedEXT TaskPayload taskPayload;
 
 layout(location = 0) out vec4 colors[];
 layout(location = 1) out vec2 uvs[];
