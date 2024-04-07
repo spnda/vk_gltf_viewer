@@ -1,5 +1,6 @@
 #include <functional>
 #include <numbers>
+#include <numeric>
 #include <iostream>
 #include <string_view>
 
@@ -265,6 +266,7 @@ void Viewer::setupVulkanDevice() {
 #endif
 		.timelineSemaphore = VK_TRUE,
         .bufferDeviceAddress = VK_TRUE,
+		.shaderOutputLayer = VK_TRUE,
     };
 
 	const VkPhysicalDeviceVulkan13Features vulkan13Features {
@@ -939,7 +941,7 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 
 		auto& primitive = mesh.primitives.emplace_back();
 		if (gltfPrimitive.materialIndex.has_value()) {
-			primitive.materialIndex = gltfPrimitive.materialIndex.value();
+			primitive.materialIndex = static_cast<std::uint32_t>(gltfPrimitive.materialIndex.value());
 		}
 
 		// Copy the positions and indices
@@ -989,21 +991,21 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 		}
 
 		// TODO: These are the optimal values for NVIDIA. What about the others?
-		const std::size_t maxVertices = 64;
-		const std::size_t maxTriangles = 124; // NVIDIA wants 126 but meshopt only allows 124 for alignment reasons.
+		const std::size_t maxVertices = glsl::maxVertices;
+		const std::size_t maxPrimitives = fastgltf::alignDown(glsl::maxPrimitives, 4U); // meshopt requires the primitive count to be aligned to 4.
 		const float coneWeight = 0.0f; // We leave this as 0 because we're not using cluster cone culling.
 
-		std::size_t maxMeshlets = meshopt_buildMeshletsBound(indicesAccessor.count, maxVertices, maxTriangles);
+		std::size_t maxMeshlets = meshopt_buildMeshletsBound(indicesAccessor.count, maxVertices, maxPrimitives);
 		std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
 		std::vector<std::uint32_t> meshlet_vertices(maxMeshlets * maxVertices);
-		std::vector<std::uint8_t> meshlet_triangles(maxMeshlets * maxTriangles * 3);
+		std::vector<std::uint8_t> meshlet_triangles(maxMeshlets * maxPrimitives * 3);
 
 		// Generate the meshlets for this primitive
 		primitive.meshlet_count = meshopt_buildMeshlets(
 			meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(),
 			indices.data(), indices.size(),
 			&vertices[0].position.x, vertices.size(), sizeof(decltype(vertices)::value_type),
-			maxVertices, maxTriangles, coneWeight);
+			maxVertices, maxPrimitives, coneWeight);
 
 		// Trim the buffers
 		const auto& lastMeshlet = meshlets[primitive.meshlet_count - 1];
@@ -2400,7 +2402,7 @@ void Viewer::createShadowMapAndPipeline() {
 			.depth = 1,
 		},
 		.mipLevels = 1,
-		.arrayLayers = 1,
+		.arrayLayers = glsl::shadowMapCount,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -2418,19 +2420,19 @@ void Viewer::createShadowMapAndPipeline() {
 	const VkImageViewCreateInfo imageViewInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = shadowMapImage,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
 		.format = shadowMapInfo.format,
 		.subresourceRange = {
 			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
 			.baseMipLevel = 0,
 			.levelCount = 1,
 			.baseArrayLayer = 0,
-			.layerCount = 1,
+			.layerCount = glsl::shadowMapCount,
 		}
 	};
 	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &shadowMapImageView);
 	vk::checkResult(result, "Failed to create shadow map image view: {}");
-	vk::setDebugUtilsName(device, depthImageView, "Shadow map image view");
+	vk::setDebugUtilsName(device, shadowMapImageView, "Shadow map image view");
 
 	// Create the sampler for the shadow map
 	const VkSamplerCreateInfo samplerInfo {
@@ -2472,11 +2474,17 @@ void Viewer::createShadowMapAndPipeline() {
 
 	// Build the shadow map pipeline layout
 	std::array<VkDescriptorSetLayout, 2> layouts {{ cameraSetLayout, meshletSetLayout }};
+	const VkPushConstantRange pushConstantRange = {
+		.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		.offset = 0,
+		.size = sizeof(std::uint32_t),
+	};
 	const VkPipelineLayoutCreateInfo layoutCreateInfo {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
 		.pSetLayouts = layouts.data(),
-		.pushConstantRangeCount = 0,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &pushConstantRange,
 	};
 	result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &shadowMapPipelineLayout);
 	vk::checkResult(result, "Failed to create shadow map pipeline layout: {}");
@@ -2823,6 +2831,7 @@ glm::mat4 Viewer::getCameraProjectionMatrix(fastgltf::Camera& camera) const {
 
 glm::mat4 reverseDepth(glm::mat4 projection) {
 	// We use reversed Z, see https://iolite-engine.com/blog_posts/reverse_z_cheatsheet
+	// This converts any projection matrix into using reversed Z.
 	constexpr glm::mat4 reverseZ {
 		1.0f, 0.0f, 0.0f, 0.0f,
 		0.0f, 1.0f, 0.0f, 0.0f,
@@ -2830,6 +2839,26 @@ glm::mat4 reverseDepth(glm::mat4 projection) {
 		0.0f, 0.0f, 1.0f, 1.0f
 	};
 	return reverseZ * projection;
+}
+
+std::array<glm::vec3, 8> getFrustumCorners(glm::mat4 viewProjection) {
+	const auto inv = glm::inverse(viewProjection);
+
+	// The inner loop is the z coordinate, as we want the first 4 elements to be the near plane,
+	// and the last 4 elements the far plane.
+	std::array<glm::vec3, 8> corners {};
+	std::size_t i = 0;
+	for (std::uint32_t z = 0; z < 2; ++z) {
+		for (std::uint32_t y = 0; y < 2; ++y) {
+			for (std::uint32_t x = 0; x < 2; ++x) {
+				const auto pos = glm::fvec3(x, y, z);
+				const auto pt = inv * glm::vec4(
+					2.f * pos - 1.0f, 1.0f);
+				corners[i++] = glm::vec3(pt) / pt.w;
+			}
+		}
+	}
+	return corners;
 }
 
 void Viewer::updateCameraBuffer(std::size_t currentFrame) {
@@ -2892,14 +2921,15 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 
 		// glm::perspectiveRH_ZO is correct, see https://johannesugb.github.io/gpu-programming/setting-up-a-proper-vulkan-projection-matrix/
 		static constexpr auto zNear = 0.01f;
-		static constexpr auto zFar = 10000.0f;
+		static constexpr auto zFar = 1000.0f;
 		static constexpr auto fov = glm::radians(75.0f);
 		const auto aspectRatio = static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height);
 		projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
 	}
 
 	projectionMatrix[1][1] *= -1;
-	camera.viewProjection = reverseDepth(projectionMatrix) * viewMatrix;
+	camera.view = viewMatrix;
+	camera.viewProjection = reverseDepth(projectionMatrix) * camera.view;
 
 	if (!freezeCameraFrustum) {
 		// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
@@ -2917,15 +2947,53 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		}
 	}
 
-	// Set the sun light matrix
-	glm::mat4 lightProjection = glm::orthoRH_ZO(-20.0f, 20.0f,
-												-20.0f, 20.0f,
-												-75.0f, 75.0f);
-	glm::mat4 lightView = glm::lookAtRH(lightPosition,
-									  glm::vec3(0.0f),
-									  cameraUp);
-	lightProjection[1][1] *= -1;
-	camera.lightSpaceMatrix = lightProjection * lightView;
+	// Basic power of four split distances.
+	// TODO: Use a dynamic algorithm such as from PSSM
+	for (std::uint32_t i = 0; i < glsl::shadowMapCount; ++i) {
+		camera.splitDistances[i] = pow(4.0f, i + 1);
+	}
+	const float clipRange = 1000.0f - 0.01f; // zFar - zNear
+
+	// Divide the view frustum up into N subfrusta, whose depth lengths are defined by the above distance calculation.
+	// The getFrustumCorners returns the far plane corners as the last 4 elements.
+	auto corners = getFrustumCorners(projectionMatrix * viewMatrix);
+	for (std::size_t i = 0; auto& matrix : camera.lightSpaceMatrix) {
+		float splitDist = camera.splitDistances[i] / clipRange;
+		float lastDist = i == 0 ? 0.0f : camera.splitDistances[i - 1] / clipRange;
+
+		// Compute the frustum corners for this subfrustum by using vectors along the frustum edges,
+		// and adhering to the distances defined above.
+		std::array<glm::vec3, 8> subcorners = corners;
+		for (std::uint32_t j = 0; j < 4; ++j) {
+			glm::vec3 dist = subcorners[j + 4] - subcorners[j];
+			subcorners[j + 4] = subcorners[j] + dist * splitDist;
+			subcorners[j] = subcorners[j] + dist * lastDist;
+		}
+
+		// Compute the subfrustum center
+		auto center = std::accumulate(subcorners.begin(), subcorners.end(),
+									  glm::vec3(0.0f), std::plus<>()) / static_cast<float>(subcorners.size());
+
+		// Compute a bounding sphere
+		float radius = 0.0f;
+		for (uint32_t j = 0; j < 8; j++) {
+			float distance = glm::length(subcorners[j] - center);
+			radius = glm::max(radius, distance);
+		}
+		radius = std::ceil(radius * 16.0f) / 16.0f;
+
+		auto maxExtents = glm::vec3(radius);
+		auto minExtents = -maxExtents;
+
+		// Compute light view projection
+		glm::vec3 lightDir = normalize(-lightPosition);
+		glm::mat4 lightView = glm::lookAtRH(center - lightDir * -minExtents.z, center, glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::mat4 lightProjection = glm::orthoRH_ZO(minExtents.x, maxExtents.x, minExtents.y, maxExtents.y, -(maxExtents.z - minExtents.z), maxExtents.z - minExtents.z);
+
+		lightProjection[1][1] *= -1;
+		matrix = lightProjection * lightView;
+		++i;
+	}
 	camera.shadowMapBias = shadowMapBias;
 }
 
@@ -3372,7 +3440,7 @@ void Viewer::run() {
 				.subresourceRange = {
 					.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
 					.levelCount = 1,
-					.layerCount = 1,
+					.layerCount = glsl::shadowMapCount,
 				},
 			};
 			const VkDependencyInfo dependencyInfo {
@@ -3400,7 +3468,7 @@ void Viewer::run() {
 						.height = Viewer::shadowResolution.y,
 					},
 				},
-				.layerCount = 1,
+				.layerCount = glsl::shadowMapCount,
 				.colorAttachmentCount = 0,
 				.pDepthAttachment = &depthAttachment,
 			};
@@ -3430,10 +3498,13 @@ void Viewer::run() {
 			const VkRect2D scissor = renderingInfo.renderArea;
 			vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-			vkCmdDrawMeshTasksIndirectEXT(cmd,
-						  drawBuffers[currentFrame].primitiveDrawHandle, 0,
-						  drawBuffers[currentFrame].drawCount,
-						  sizeof(glsl::PrimitiveDraw));
+			for (std::uint32_t i = 0; i < glsl::shadowMapCount; ++i) {
+				vkCmdPushConstants(cmd, shadowMapPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT, 0, sizeof(std::uint32_t), &i);
+				vkCmdDrawMeshTasksIndirectEXT(cmd,
+											  drawBuffers[currentFrame].primitiveDrawHandle, 0,
+											  drawBuffers[currentFrame].drawCount,
+											  sizeof(glsl::PrimitiveDraw));
+			}
 
 			vkCmdEndRendering(cmd);
 		}
@@ -3493,7 +3564,7 @@ void Viewer::run() {
 					.subresourceRange = {
 						.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
 						.levelCount = 1,
-						.layerCount = 1,
+						.layerCount = glsl::shadowMapCount,
 					},
 				}
 			}};

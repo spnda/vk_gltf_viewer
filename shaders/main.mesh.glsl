@@ -46,8 +46,8 @@ taskPayloadSharedEXT TaskPayload taskPayload;
 
 layout(location = 0) out vec4 colors[];
 layout(location = 1) out vec2 uvs[];
-layout(location = 2) perprimitiveEXT flat out uint materialIndex[];
-layout(location = 3) out vec4 lightSpacePos[];
+layout(location = 2) out vec3 worldSpacePos[];
+layout(location = 3) perprimitiveEXT flat out uint materialIndex[];
 
 shared vec3 clipVertices[maxPrimitives];
 
@@ -64,7 +64,6 @@ void main() {
     }
 
     mat4 mvp = camera.viewProjection * primitive.modelMatrix;
-    mat4 lightMvp = camera.lightSpaceMatrix * primitive.modelMatrix;
 
     // The max_vertices does not match the local workgroup size.
     // Therefore, we'll have this loop that will run over all possible vertices.
@@ -83,7 +82,7 @@ void main() {
 
         vec4 pos = mvp * vec4(vertex.position, 1.0f);
         gl_MeshVerticesEXT[vidx].gl_Position = pos;
-        lightSpacePos[vidx] = lightMvp * vec4(vertex.position, 1.0f);
+        worldSpacePos[vidx] = (primitive.modelMatrix * vec4(vertex.position, 1.0f)).xyz;
         clipVertices[vidx] = pos.xyw;
 
         colors[vidx] = vertex.color;

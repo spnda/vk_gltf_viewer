@@ -38,9 +38,12 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
+layout(push_constant) uniform Constants {
+    uint layerIndex;
+};
+
 taskPayloadSharedEXT TaskPayload taskPayload;
 
-/** This is essentially the same exact shader as main.mesh.glsl, but just with everything but positions striped */
 void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
     uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
@@ -66,7 +69,7 @@ void main() {
         uint vertexIndex = vertexIndices[primitive.vertexIndicesOffset + meshlet.vertexOffset + vidx];
         Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
 
-        gl_MeshVerticesEXT[vidx].gl_Position = camera.lightSpaceMatrix * primitive.modelMatrix * vec4(vertex.position, 1.0f);
+        gl_MeshVerticesEXT[vidx].gl_Position = camera.lightSpaceMatrix[layerIndex] * primitive.modelMatrix * vec4(vertex.position, 1.0f);
     }
 
     const uint primitiveLoops = (meshlet.triangleCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;
@@ -80,5 +83,6 @@ void main() {
                               primitiveIndices[primitive.triangleIndicesOffset + meshlet.triangleOffset + pidx * 3 + 2]);
 
         gl_PrimitiveTriangleIndicesEXT[pidx] = indices;
+        gl_MeshPrimitivesEXT[pidx].gl_Layer = int(layerIndex);
     }
 }
