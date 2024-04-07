@@ -45,6 +45,8 @@ layout(location = 1) out vec2 uvs[];
 layout(location = 2) flat out uint materialIndex[];
 layout(location = 3) out vec4 lightSpacePos[];
 
+shared vec3 clipVertices[maxPrimitives];
+
 void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
     uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
@@ -54,6 +56,9 @@ void main() {
     if (gl_LocalInvocationID.x == 0) {
         SetMeshOutputsEXT(meshlet.vertexCount, meshlet.triangleCount);
     }
+
+    mat4 mvp = camera.viewProjection * primitive.modelMatrix;
+    mat4 lightMvp = camera.lightSpaceMatrix * primitive.modelMatrix;
 
     // The max_vertices does not match the local workgroup size.
     // Therefore, we'll have this loop that will run over all possible vertices.
@@ -70,15 +75,17 @@ void main() {
         uint vertexIndex = vertexIndices[primitive.vertexIndicesOffset + meshlet.vertexOffset + vidx];
         Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
 
-        vec4 position = primitive.modelMatrix * vec4(vertex.position, 1.0f);
-        gl_MeshVerticesEXT[vidx].gl_Position = camera.viewProjection * vec4(position.xyz, 1.0f);
-        lightSpacePos[vidx] = camera.lightSpaceMatrix * vec4(position.xyz, 1.0f);
+        vec4 pos = mvp * vec4(vertex.position, 1.0f);
+        gl_MeshVerticesEXT[vidx].gl_Position = pos;
+        lightSpacePos[vidx] = lightMvp * vec4(vertex.position, 1.0f);
+        clipVertices[vidx] = pos.xyw;
 
         colors[vidx] = vertex.color;
         uvs[vidx] = vertex.uv;
         materialIndex[vidx] = primitive.materialIndex;
     }
 
+    const float transformDet = determinant(primitive.modelMatrix);
     const uint primitiveLoops = (meshlet.triangleCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;
     [[unroll]] for (uint i = 0; i < primitiveLoops; ++i) {
         uint pidx = gl_LocalInvocationIndex.x + i * gl_WorkGroupSize.x;
@@ -90,5 +97,18 @@ void main() {
                               primitiveIndices[primitive.triangleIndicesOffset + meshlet.triangleOffset + pidx * 3 + 2]);
 
         gl_PrimitiveTriangleIndicesEXT[pidx] = indices;
+
+        // The glTF spec says:
+        // If the determinant of the transform is a negative value, the winding order of the mesh triangle faces should be reversed.
+        // This supports negative scales for mirroring geometry.
+        const vec3 v0 = clipVertices[indices.x];
+        const vec3 v1 = clipVertices[indices.y];
+        const vec3 v2 = clipVertices[indices.z];
+        const float det = determinant(mat3(v0, v1, v2));
+        if (transformDet < 0.0f) {
+            gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det < 0.0f; // Front face culling
+        } else {
+            gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det > 0.0f; // Back face culling
+        }
     }
 }

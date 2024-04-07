@@ -16,9 +16,8 @@ namespace vk {
     class PipelineBuilder {
     protected:
         VkDevice device;
-        VkPhysicalDevice physicalDevice;
 
-        VkPipelineCache pipelineCache = nullptr;
+        VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 
 #ifdef _MSC_VER
 #pragma pack (push, 1)

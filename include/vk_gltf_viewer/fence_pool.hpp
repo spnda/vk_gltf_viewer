@@ -52,6 +52,7 @@ public:
 		}
 	}
 
+	/** This will reset the passed shared_ptr, as this is a reference. Only call this after having waited on the fence */
 	void free(std::shared_ptr<Fence>& fence) {
 		std::lock_guard lock(fenceMutex);
 		availableFences.emplace_back(std::move(fence));

@@ -688,9 +688,6 @@ void Viewer::buildMeshPipeline() {
 	};
 
 	// Create mesh and AABB visualizing pipeline
-	// TODO: glTF does not necessarily have a CCW winding order. Specifically, the spec says this:
-	//       If the determinant of the transform is a negative value, the winding order of the mesh triangle faces should be reversed.
-	//       This supports negative scales for mirroring geometry.
     auto builder = vk::GraphicsPipelineBuilder(device, 2)
         .setPipelineLayout(0, meshPipelineLayout)
         .pushPNext(0, &renderingCreateInfo)
@@ -699,7 +696,8 @@ void Viewer::buildMeshPipeline() {
 		.setBlendAttachment(0, &blendAttachment)
         .setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
         .setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER_OR_EQUAL)
-        .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+		// We cull primitives in the mesh shaders
+        .setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
         .setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
         .setScissorCount(0, 1U)
         .setViewportCount(0, 1U)
@@ -2657,8 +2655,9 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	auto byteSize = currentDrawBuffer.drawCount * sizeof(decltype(draws)::value_type);
 	if (currentDrawBuffer.primitiveDrawBufferSize < byteSize) {
 		if (currentDrawBuffer.primitiveDrawHandle != VK_NULL_HANDLE) {
-			vmaDestroyBuffer(allocator, currentDrawBuffer.primitiveDrawHandle,
-							 currentDrawBuffer.primitiveDrawAllocation);
+			timelineDeletionQueue.push([this, handle = currentDrawBuffer.primitiveDrawHandle, allocation = currentDrawBuffer.primitiveDrawAllocation] {
+				vmaDestroyBuffer(allocator, handle, allocation);
+			});
 		}
 
 		const VmaAllocationCreateInfo allocationCreateInfo {
@@ -2704,7 +2703,9 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	auto aabbByteSize = currentDrawBuffer.drawCount * sizeof(decltype(aabbDraws)::value_type);
 	if (currentDrawBuffer.aabbDrawBufferSize < aabbByteSize) {
 		if (currentDrawBuffer.aabbDrawHandle != VK_NULL_HANDLE) {
-			vmaDestroyBuffer(allocator, currentDrawBuffer.aabbDrawHandle, currentDrawBuffer.aabbDrawAllocation);
+			timelineDeletionQueue.push([this, handle = currentDrawBuffer.aabbDrawHandle, allocation = currentDrawBuffer.aabbDrawAllocation] {
+				vmaDestroyBuffer(allocator, handle, allocation);
+			});
 		}
 
 		const VmaAllocationCreateInfo allocationCreateInfo {
@@ -2971,21 +2972,21 @@ void Viewer::renderUi() {
 
 		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.01f, 0.05f, 10.0f, "%.2f");
 
-		ImGui::Text("Camera position: %.2f %.2f %.2f", movement.position.x, movement.position.y, movement.position.z);
+		ImGui::BeginDisabled(true);
+		ImGui::DragFloat3("Camera position", glm::value_ptr(movement.position), 0.01f);
+		ImGui::EndDisabled();
 		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition), 0.01f);
 
 		ImGui::Separator();
 
-		ImGui::Text("Frametime: %.2f ms (%.2f FPS)", deltaTime * 1000, 1.f / deltaTime);
+		ImGui::Text("Frametime: %.2f ms", deltaTime * 1000);
+		ImGui::Text("FPS: %.2f", 1.f / deltaTime);
+		ImGui::Text("AFPS: %.2f rad/s", 2 * std::numbers::pi_v<float> / deltaTime); // Angular FPS
 
 		ImGui::Separator();
 
 		ImGui::Checkbox("Enable AABB visualization", &enableAabbVisualization);
 		ImGui::Checkbox("Freeze Camera frustum", &freezeCameraFrustum);
-
-		ImGui::Separator();
-
-		ImGui::Image(shadowMapImageView, ImVec2(256.f, 256.f));
 	}
 	ImGui::End();
 
