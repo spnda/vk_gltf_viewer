@@ -893,7 +893,7 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
         throw std::runtime_error(std::string("Failed to load glTF: ") + std::string(message));
     }
 
-    assets.emplace_back(std::move(expected.get()), filePath.string());
+    assets.emplace_back(std::move(expected.get()), filePath.filename().string());
 
     // We'll always do additional validation
     if (auto validation = fastgltf::validate(assets.back().asset); validation != fastgltf::Error::None) {
@@ -2229,7 +2229,7 @@ void Viewer::loadGltfImages() {
 			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_MESH_BIT_EXT,
 		},
 		{
 			.binding = 1,
@@ -2503,7 +2503,7 @@ void Viewer::createShadowMapAndPipeline() {
 		.setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
 		.setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
 		// We're using CULL_MODE_FRONT to avoid peter panning
-		.setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_FRONT_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+		.setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
 		.setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
 		.setScissorCount(0, 1U)
 		.setViewportCount(0, 1U)
@@ -2920,12 +2920,13 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	// Set the sun light matrix
 	glm::mat4 lightProjection = glm::orthoRH_ZO(-20.0f, 20.0f,
 												-20.0f, 20.0f,
-												1.0f, 75.0f);
+												-75.0f, 75.0f);
 	glm::mat4 lightView = glm::lookAtRH(lightPosition,
 									  glm::vec3(0.0f),
 									  cameraUp);
 	lightProjection[1][1] *= -1;
 	camera.lightSpaceMatrix = lightProjection * lightView;
+	camera.shadowMapBias = shadowMapBias;
 }
 
 void Viewer::updateCameraNodes(Gltf& gltf, std::size_t nodeIndex) {
@@ -3051,6 +3052,7 @@ void Viewer::renderUi() {
 		ImGui::DragFloat3("Camera position", glm::value_ptr(movement.position), 0.01f);
 		ImGui::EndDisabled();
 		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition), 0.01f);
+		ImGui::DragFloat("Shadow map bias", &shadowMapBias, 0.0001f);
 
 		ImGui::Separator();
 

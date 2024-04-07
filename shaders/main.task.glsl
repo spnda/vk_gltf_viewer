@@ -15,7 +15,7 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 #include "mesh_common.glsl.h"
 
-layout(set = 0, binding = 0) uniform CameraUniform {
+layout(set = 0, binding = 0, scalar) uniform CameraUniform {
     Camera camera;
 };
 

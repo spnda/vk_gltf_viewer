@@ -286,6 +286,7 @@ struct Viewer {
 	float lastFrame = 0.0f;
 	float deltaTime = 0.0f;
 	CameraMovement movement;
+	float shadowMapBias = 0.002f; // TODO: Move this somewhere else?
 
 	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
 	VkDescriptorSetLayout cameraSetLayout = VK_NULL_HANDLE;

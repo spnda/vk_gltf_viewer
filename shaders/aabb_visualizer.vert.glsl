@@ -5,7 +5,7 @@
 
 #include "mesh_common.glsl.h"
 
-layout(set = 0, binding = 0) uniform CameraUniform {
+layout(set = 0, binding = 0, scalar) uniform CameraUniform {
     Camera camera;
 };
 

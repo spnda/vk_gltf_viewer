@@ -13,6 +13,10 @@ layout(location = 3) in vec4 lightSpacePos;
 
 layout(location = 0) out vec4 fragColor;
 
+layout(set = 0, binding = 0, scalar) uniform CameraUniform {
+    Camera camera;
+};
+
 layout(set = 2, binding = 0, scalar) readonly buffer Materials {
     Material materials[];
 };
@@ -37,15 +41,26 @@ float shadow(vec4 lightSpacePos) {
     // so we only need to transform X and Y.
     coords.xy = coords.xy * 0.5 + 0.5;
 
-    // Sample from the shadow map and determine if we are the closest fragment for the light
-    // We, also, use reversed Z for the shadow maps
-    float closestDepth = texture(shadowMap, coords.xy).r;
-    float currentDepth = coords.z;
-
     // Prevent oversampling when fragment is behind the far plane of the light matrix
     if (coords.z > 1.0f)
         return 0.0f;
-    return currentDepth > closestDepth ? 0.5f : 0.0f;
+
+    // Basic PCSS (PCF with soft shadows), additionally sampling 8 texels
+    // Compute a kernel size, depending on the distance from the light blocker as described here:
+    // https://developer.download.nvidia.com/shaderlibrary/docs/shadow_PCSS.pdf
+    const float receiverDepth = coords.z;
+    const float depthBlocker = texture(shadowMap, coords.xy).r;
+    int kernelSize = clamp(int((receiverDepth - depthBlocker) * 50.f / depthBlocker), 1, 3); // Clamp between 1 and 3
+    vec2 texelSize = 1.f / textureSize(shadowMap, 0);
+    float shadow = 0.0f;
+    for (int x = -kernelSize; x <= kernelSize; ++x) {
+        for (int y = -kernelSize; y <= kernelSize; ++y) {
+            // Sample from the shadow map with an offset and determine if we are the closest fragment for the light
+            float pcfDepth = texture(shadowMap, coords.xy + vec2(x, y) * texelSize).r;
+            shadow += receiverDepth > pcfDepth + camera.shadowMapBias ? 0.5f : 0.0f;
+        }
+    }
+    return shadow / pow(2 * kernelSize + 1, 2);
 }
 
 void main() {
