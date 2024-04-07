@@ -38,8 +38,6 @@ struct FrameCommandPools {
 
 static constexpr const std::size_t frameOverlap = 2;
 
-class FileLoadTask;
-
 struct PerFrameCameraBuffer {
 	VkBuffer handle;
 	VmaAllocation allocation;
@@ -224,6 +222,25 @@ struct Queue {
 	std::unique_ptr<std::mutex> lock; // Can't hold the object in a vector otherwise.
 };
 
+struct Gltf {
+	fastgltf::Asset asset;
+	std::string name;
+
+	glm::vec3 translation = glm::vec3(0.0f);
+
+	std::size_t sceneIndex = 0;
+	std::size_t materialVariant = 0;
+
+	fastgltf::Optional<std::size_t> cameraIndex = std::nullopt;
+	std::vector<fastgltf::Node*> cameraNodes;
+
+	std::size_t baseMeshOffset = 0;
+	std::size_t baseImageOffset = 0;
+	std::size_t baseSamplerOffset = 0;
+	std::size_t baseTextureOffset = 0;
+	std::size_t baseMaterialOffset = 0;
+};
+
 struct Viewer {
     vkb::Instance instance;
     vkb::Device device;
@@ -280,9 +297,6 @@ struct Viewer {
 	bool enableAabbVisualization = false;
 	bool freezeCameraFrustum = false;
 
-    fastgltf::Asset asset {};
-    std::vector<std::shared_ptr<FileLoadTask>> fileLoadTasks;
-
 	// The mesh data required for rendering the meshlets
 	std::vector<FrameDrawCommandBuffers> drawBuffers;
 	VkDescriptorSetLayout meshletSetLayout = VK_NULL_HANDLE;
@@ -306,11 +320,8 @@ struct Viewer {
 	// ImGUI / UI objects
 	imgui::Renderer imgui;
 
-	// glTF data and options
-	std::size_t sceneIndex = 0;
-	std::size_t materialVariant = 0;
-	fastgltf::Optional<std::size_t> cameraIndex = std::nullopt;
-	std::vector<fastgltf::Node*> cameraNodes;
+	// The list of loaded Assets
+	std::vector<Gltf> assets;
 
 	// Shadow maps
 	static constexpr auto shadowResolution = glm::u32vec2(4096.f, 4096.f);
@@ -372,11 +383,8 @@ struct Viewer {
 	void updateCameraBuffer(std::size_t currentFrame);
 	void updateDrawBuffer(std::size_t currentFrame);
 
-	void drawNode(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix);
-	void drawMesh(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix);
-
 	/** Fills the cameraNodes vector */
-	void updateCameraNodes(std::size_t nodeIndex);
+	void updateCameraNodes(Gltf& gltf, std::size_t nodeIndex);
 	auto getCameraProjectionMatrix(fastgltf::Camera& camera) const -> glm::mat4;
 
 	/** Create UI using ImGui */

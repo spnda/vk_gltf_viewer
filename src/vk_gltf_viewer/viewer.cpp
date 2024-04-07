@@ -1,4 +1,5 @@
 #include <functional>
+#include <numbers>
 #include <iostream>
 #include <string_view>
 
@@ -892,10 +893,10 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
         throw std::runtime_error(std::string("Failed to load glTF: ") + std::string(message));
     }
 
-    asset = std::move(expected.get());
+    assets.emplace_back(std::move(expected.get()), filePath.string());
 
     // We'll always do additional validation
-    if (auto validation = fastgltf::validate(asset); validation != fastgltf::Error::None) {
+    if (auto validation = fastgltf::validate(assets.back().asset); validation != fastgltf::Error::None) {
         auto message = fastgltf::getErrorMessage(validation);
         throw std::runtime_error(std::string("Asset failed validation") + std::string(message));
     }
@@ -904,11 +905,13 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
 /** Processes the primitives of every mesh and generates meshlet data */
 struct PrimitiveProcessingTask : enki::ITaskSet {
 	Viewer* viewer;
+	fastgltf::Asset& asset;
 	GlobalMeshData& meshData;
 	CompressedBufferDataAdapter& adapter;
+	std::size_t offset;
 
-	explicit PrimitiveProcessingTask(Viewer* viewer, GlobalMeshData& data, CompressedBufferDataAdapter& adapter) : viewer(viewer), meshData(data), adapter(adapter) {
-		m_SetSize = viewer->asset.meshes.size();
+	explicit PrimitiveProcessingTask(Viewer* viewer, fastgltf::Asset& asset, GlobalMeshData& data, CompressedBufferDataAdapter& adapter, std::size_t meshOffset) : viewer(viewer), asset(asset), meshData(data), adapter(adapter), offset(meshOffset) {
+		m_SetSize = asset.meshes.size();
 	}
 
 	glm::vec3 getMinMax(decltype(fastgltf::Accessor::min)& values) {
@@ -936,13 +939,13 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 
 		auto& primitive = mesh.primitives.emplace_back();
 		if (gltfPrimitive.materialIndex.has_value()) {
-			primitive.materialIndex = gltfPrimitive.materialIndex.value() + Viewer::numDefaultMaterials;
+			primitive.materialIndex = gltfPrimitive.materialIndex.value();
 		} else {
-			gltfPrimitive.materialIndex = 0;
+			primitive.materialIndex = 0;
 		}
 
 		// Copy the positions and indices
-		auto& posAccessor = viewer->asset.accessors[positionIt->second];
+		auto& posAccessor = asset.accessors[positionIt->second];
 
 		// Get AABB for the entire primitive to quantize positions
 		auto primitiveMin = getMinMax(posAccessor.min);
@@ -950,7 +953,7 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 
 		// Read vertices.
 		std::vector<glsl::Vertex> vertices; vertices.reserve(posAccessor.count);
-		fastgltf::iterateAccessor<glm::vec3>(viewer->asset, posAccessor, [&](glm::vec3 val) {
+		fastgltf::iterateAccessor<glm::vec3>(asset, posAccessor, [&](glm::vec3 val) {
 			auto& vertex = vertices.emplace_back();
 			vertex.position = val;
 			vertex.color = glm::vec4(1.0f);
@@ -960,26 +963,26 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 			};
 		}, adapter);
 
-		auto& indicesAccessor = viewer->asset.accessors[gltfPrimitive.indicesAccessor.value()];
+		auto& indicesAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
 		std::vector<std::uint32_t> indices(indicesAccessor.count);
-		fastgltf::copyFromAccessor<std::uint32_t>(viewer->asset, indicesAccessor, indices.data(), adapter);
+		fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data(), adapter);
 
 		if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
 			// The glTF spec allows VEC3 and VEC4 for COLOR_n, with VEC3 data having to be extended with 1.0f for the fourth component.
-			auto& colorAccessor = viewer->asset.accessors[colorAttribute->second];
+			auto& colorAccessor = asset.accessors[colorAttribute->second];
 			if (colorAccessor.type == fastgltf::AccessorType::Vec4) {
-				fastgltf::iterateAccessorWithIndex<glm::vec4>(viewer->asset, viewer->asset.accessors[colorAttribute->second], [&](glm::vec4 val, std::size_t idx) {
+				fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, asset.accessors[colorAttribute->second], [&](glm::vec4 val, std::size_t idx) {
 					vertices[idx].color = val;
 				}, adapter);
 			} else if (colorAccessor.type == fastgltf::AccessorType::Vec3) {
-				fastgltf::iterateAccessorWithIndex<glm::vec3>(viewer->asset, viewer->asset.accessors[colorAttribute->second], [&](glm::vec3 val, std::size_t idx) {
+				fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[colorAttribute->second], [&](glm::vec3 val, std::size_t idx) {
 					vertices[idx].color = glm::vec4(val, 1.0f);
 				}, adapter);
 			}
 		}
 
 		if (auto* uvAttribute = gltfPrimitive.findAttribute("TEXCOORD_0"); uvAttribute != gltfPrimitive.attributes.end()) {
-			fastgltf::iterateAccessorWithIndex<glm::vec2>(viewer->asset, viewer->asset.accessors[uvAttribute->second], [&](glm::vec2 val, std::size_t idx) {
+			fastgltf::iterateAccessorWithIndex<glm::vec2>(asset, asset.accessors[uvAttribute->second], [&](glm::vec2 val, std::size_t idx) {
 				vertices[idx].uv = {
 					meshopt_quantizeHalf(val.x),
 					meshopt_quantizeHalf(val.y),
@@ -1067,8 +1070,8 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
 		ZoneScoped;
 		for (auto i = range.start; i < range.end; ++i) {
-			auto& gltfMesh = viewer->asset.meshes[i];
-			auto& mesh = viewer->meshes[i];
+			auto& gltfMesh = asset.meshes[i];
+			auto& mesh = viewer->meshes[i + offset];
 
 			mesh.primitives.reserve(gltfMesh.primitives.size());
 			for (auto& gltfPrimitive : gltfMesh.primitives) {
@@ -1132,18 +1135,30 @@ void Viewer::loadGltfMeshes() {
 		vkDestroyDescriptorSetLayout(device, meshletSetLayout, nullptr);
 	});
 
+	for (auto& gltf : assets) {
+		meshes.resize(meshes.size() + gltf.asset.meshes.size());
+	}
+
 	GlobalMeshData globalMeshData;
+	std::vector<CompressedBufferDataAdapter> adapters; adapters.reserve(assets.size());
+	std::vector<std::unique_ptr<PrimitiveProcessingTask>> tasks; tasks.resize(assets.size());
+	for (std::size_t i = 0, offset = 0; auto& gltf : assets) {
+		// Create the compressed adapter, which decompresses all buffer views using EXT_meshopt_compression.
+		// All other data is passed along as usual.
+		auto& adapter = adapters.emplace_back();
+		if (!adapter.decompress(gltf.asset))
+			throw std::runtime_error("Failed to decompress all glTF buffers");
 
-	// Create the compressed adapter, which decompresses all buffer views using EXT_meshopt_compression.
-	// All other data is passed along as usual.
-	CompressedBufferDataAdapter adapter;
-	if (!adapter.decompress(asset))
-		throw std::runtime_error("Failed to decompress all glTF buffers");
+		tasks[i] = std::make_unique<PrimitiveProcessingTask>(this, gltf.asset, globalMeshData, adapter, offset);
+		taskScheduler.AddTaskSetToPipe(tasks[i].get());
+		gltf.baseMeshOffset = offset;
+		offset += gltf.asset.meshes.size();
+		i++;
+	}
 
-	meshes.resize(asset.meshes.size());
-	PrimitiveProcessingTask task(this, globalMeshData, adapter);
-	taskScheduler.AddTaskSetToPipe(&task);
-	taskScheduler.WaitforTask(&task);
+	for (auto& task : tasks) {
+		taskScheduler.WaitforTask(task.get());
+	}
 
 	uploadMeshlets(globalMeshData);
 }
@@ -1453,10 +1468,13 @@ struct fmt::formatter<dds::ReadResult> : formatter<std::string_view> {
 
 struct ImageLoadTask : public ExceptionTaskSet {
 	Viewer* viewer;
+	fastgltf::Asset& asset;
+	std::size_t imageOffset;
+	SharedTaskDeleter<ImageLoadTask> taskDeleter;
 
-	explicit ImageLoadTask(Viewer* viewer) noexcept : viewer(viewer) {
+	explicit ImageLoadTask(Viewer* viewer, fastgltf::Asset& asset, std::size_t imageOffset) noexcept : viewer(viewer), asset(asset), imageOffset(imageOffset) {
 		// We load the default images elsewhere.
-		m_SetSize = viewer->images.size() - Viewer::numDefaultTextures;
+		m_SetSize = asset.images.size();
 	}
 
 	void loadWithStb(std::uint32_t imageIdx, std::span<std::uint8_t> encodedImageData) const {
@@ -1473,7 +1491,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			throw std::runtime_error("Failed to load image using stbi from memory");
 		}
 
-		auto& sampledImage = viewer->images[imageIdx];
+		auto& sampledImage = viewer->images[imageOffset + imageIdx];
 		sampledImage.size = { static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height) };
 
 		auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
@@ -1700,7 +1718,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			throw std::runtime_error(fmt::format("Failed to read DDS image: {}", ddsResult));
 		}
 
-		auto& sampledImage = viewer->images[imageIdx];
+		auto& sampledImage = viewer->images[imageOffset + imageIdx];
 		sampledImage.size = {image.width, image.height};
 
 		// Create the Vulkan image
@@ -1832,7 +1850,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			imageFormat = VK_FORMAT_BC7_SRGB_BLOCK;
 		}
 
-		auto& sampledImage = viewer->images[imageIdx];
+		auto& sampledImage = viewer->images[imageOffset + imageIdx];
 		sampledImage.size = { texture->baseWidth, texture->baseHeight };
 
 		const VkImageCreateInfo imageInfo {
@@ -1988,9 +2006,9 @@ struct ImageLoadTask : public ExceptionTaskSet {
 	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override {
 		ZoneScoped;
 		for (auto i = range.start; i < range.end; ++i) {
-			auto& image = viewer->asset.images[i];
+			auto& image = asset.images[i];
 
-			auto imageIdx = i + Viewer::numDefaultTextures;
+			auto imageIdx = i;
 			std::visit(fastgltf::visitor{
 				[](auto& arg) {
 					throw std::runtime_error("Got an unexpected image data source. Can't load image.");
@@ -2000,8 +2018,8 @@ struct ImageLoadTask : public ExceptionTaskSet {
 					load(imageIdx, std::span(array.bytes.data(), array.bytes.size()), array.mimeType);
 				},
 				[&](fastgltf::sources::BufferView& bufferView) {
-					auto& view = viewer->asset.bufferViews[bufferView.bufferViewIndex];
-					auto& buffer = viewer->asset.buffers[view.bufferIndex];
+					auto& view = asset.bufferViews[bufferView.bufferViewIndex];
+					auto& buffer = asset.buffers[view.bufferIndex];
 					std::visit(fastgltf::visitor{
 						[](auto& arg) {
 							throw std::runtime_error("Got an unexpected image data source. Can't load image.");
@@ -2018,7 +2036,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 				image.name = fmt::format("Image {}", i);
 			}
 
-			auto& sampledImage = viewer->images[imageIdx];
+			auto& sampledImage = viewer->images[imageOffset + imageIdx];
 			vk::setDebugUtilsName(viewer->device, sampledImage.image, image.name.c_str());
 			vk::setDebugUtilsName(viewer->device, sampledImage.imageView, fmt::format("View of {}", image.name));
 			vk::setAllocationName(viewer->allocator, sampledImage.allocation,
@@ -2179,13 +2197,29 @@ VkSamplerAddressMode getVulkanAddressMode(fastgltf::Wrap wrap) {
 void Viewer::loadGltfImages() {
 	ZoneScoped;
 	// Schedule image loading first
-	// TODO: When anything throws while these tasks are running, the task will be destroyed and the ~enki::ICompletable
-	//       destructor will assert, as the task has not completed yet.
-	images.resize(numDefaultTextures + asset.images.size());
-	ImageLoadTask loadTask(this);
-	taskScheduler.AddTaskSetToPipe(&loadTask);
+	std::size_t imageCount = numDefaultImages;
+	for (auto& gltf: assets) {
+		gltf.baseImageOffset = imageCount;
+		imageCount += gltf.asset.images.size();
+	}
+	images.resize(imageCount);
+
+	// ImageLoadTask uses a SharedTaskDeleter which automatically destroys the task upon completion,
+	// or when this scope ends (perhaps also due to an exception). This guarantees that the object stays
+	// alive in all possible cases for the duration it needs to.
+	std::vector<std::shared_ptr<ImageLoadTask>> loadTasks(assets.size());
+	for (std::size_t i = 0; auto& gltf : assets) {
+		auto& task = loadTasks[i++] = std::make_shared<ImageLoadTask>(this, gltf.asset, gltf.baseImageOffset);
+		task->taskDeleter.use(task); // We can't get a copy of the shared_ptr from the constructor of ImageLoadTask.
+		taskScheduler.AddTaskSetToPipe(task.get());
+	}
 
 	createDefaultImages();
+
+	// Count textures to set descriptor size and descriptor write counts
+	std::size_t textureCount = numDefaultTextures;
+	for (auto& gltf : assets)
+		textureCount += gltf.asset.textures.size();
 
 	// Create the material descriptor layout
 	// TODO: We currently use a fixed size for the descriptorCount of the image samplers.
@@ -2208,7 +2242,7 @@ void Viewer::loadGltfImages() {
 		{
 			.binding = 2,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = static_cast<std::uint32_t>(asset.textures.size() + numDefaultTextures),
+			.descriptorCount = static_cast<std::uint32_t>(textureCount),
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 		}
 	}};
@@ -2247,10 +2281,11 @@ void Viewer::loadGltfImages() {
 	vk::checkResult(result, "Failed to allocate material descriptor set: {}");
 	vk::setDebugUtilsName(device, materialSet, "Material descriptor set");
 
-	// While we're here, also load the materials
-	loadGltfMaterials();
-
-	samplers.resize(asset.samplers.size() + numDefaultSamplers);
+	std::size_t samplerCount = numDefaultSamplers;
+	for (auto& gltf : assets) {
+		samplerCount += gltf.asset.samplers.size();
+	}
+	samplers.resize(samplerCount);
 	// Create the default sampler
 	VkSamplerCreateInfo samplerInfo {
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -2267,29 +2302,36 @@ void Viewer::loadGltfImages() {
 	};
 	result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[0]);
 	vk::checkResult(result, "Failed to create default sampler: {}");
+	vk::setDebugUtilsName(device, samplers[0], "Default sampler");
 
 	// Create the glTF samplers
-	for (auto i = 0; i < asset.samplers.size(); ++i) {
-		auto& sampler = asset.samplers[i];
-		samplerInfo.magFilter = getVulkanFilter(sampler.magFilter.value_or(fastgltf::Filter::Nearest));
-		samplerInfo.minFilter = getVulkanFilter(sampler.minFilter.value_or(fastgltf::Filter::Nearest));
-		samplerInfo.mipmapMode = getVulkanMipmapMode(sampler.minFilter.value_or(fastgltf::Filter::Nearest));
-		samplerInfo.addressModeU = getVulkanAddressMode(sampler.wrapS);
-		samplerInfo.addressModeV = getVulkanAddressMode(sampler.wrapT);
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
-		result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[numDefaultSamplers + i]);
-		vk::checkResult(result, "Failed to create sampler: {}");
+	std::size_t samplerOffset = numDefaultSamplers;
+	for (auto& gltf : assets) {
+		gltf.baseSamplerOffset = samplerOffset;
+		for (std::size_t i = 0; auto& sampler : gltf.asset.samplers) {
+			samplerInfo.magFilter = getVulkanFilter(sampler.magFilter.value_or(fastgltf::Filter::Nearest));
+			samplerInfo.minFilter = getVulkanFilter(sampler.minFilter.value_or(fastgltf::Filter::Nearest));
+			samplerInfo.mipmapMode = getVulkanMipmapMode(sampler.minFilter.value_or(fastgltf::Filter::Nearest));
+			samplerInfo.addressModeU = getVulkanAddressMode(sampler.wrapS);
+			samplerInfo.addressModeV = getVulkanAddressMode(sampler.wrapT);
+			samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+			result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[gltf.baseSamplerOffset + i++]);
+			vk::checkResult(result, "Failed to create sampler: {}");
+		}
+		samplerOffset += gltf.asset.samplers.size();
 	}
 
 	// Finish all texture decode and upload tasks
-	taskScheduler.WaitforTask(&loadTask);
-	if (loadTask.exception)
-		std::rethrow_exception(loadTask.exception);
+	for (auto& task : loadTasks) {
+		taskScheduler.WaitforTask(task.get());
+		if (task->exception)
+			std::rethrow_exception(task->exception);
+	}
 
 	// Update the texture descriptor
-	std::vector<VkWriteDescriptorSet> writes; writes.reserve(asset.textures.size() + numDefaultTextures);
-	std::vector<VkDescriptorImageInfo> infos; infos.reserve(writes.capacity());
+	std::vector<VkWriteDescriptorSet> writes; writes.reserve(textureCount);
+	std::vector<VkDescriptorImageInfo> infos; infos.reserve(textureCount);
 
 	// Write the default texture
 	infos.emplace_back(VkDescriptorImageInfo {
@@ -2307,38 +2349,44 @@ void Viewer::loadGltfImages() {
 		.pImageInfo = &infos.back(),
 	});
 
-	// Write the glTF textures
-	for (std::size_t i = 0; i < asset.textures.size(); ++i) {
-		auto& texture = asset.textures[i];
+	// Write the glTF
+	std::size_t offset = numDefaultTextures;
+	for (auto& gltf : assets) {
+		gltf.baseTextureOffset = offset;
+		for (std::size_t i = 0; auto& texture : gltf.asset.textures) {
+			// Get the image index for the "best" image. If we have compressed images available, we prefer those.
+			std::size_t imageViewIndex = 0;
+			if (texture.basisuImageIndex.has_value()) {
+				imageViewIndex = texture.basisuImageIndex.value();
+			} else if (texture.ddsImageIndex.has_value()) {
+				imageViewIndex = texture.ddsImageIndex.value();
+			} else if (texture.imageIndex.has_value()) {
+				imageViewIndex = texture.imageIndex.value();
+			}
 
-		// Get the image index for the "best" image. If we have compressed images available, we prefer those.
-		std::size_t imageViewIndex = 0;
-		if (texture.basisuImageIndex.has_value()) {
-			imageViewIndex = texture.basisuImageIndex.value() + numDefaultImages;
-		} else if (texture.ddsImageIndex.has_value()) {
-			imageViewIndex = texture.ddsImageIndex.value() + numDefaultImages;
-		} else if (texture.imageIndex.has_value()) {
-			imageViewIndex = texture.imageIndex.value() + numDefaultImages;
+			// Well map a glTF texture to a single combined image sampler
+			infos.emplace_back(VkDescriptorImageInfo{
+				.sampler = samplers[texture.samplerIndex.has_value() ? gltf.baseSamplerOffset + *texture.samplerIndex : 0],
+				.imageView = images[gltf.baseImageOffset + imageViewIndex].imageView,
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			});
+
+			writes.emplace_back(VkWriteDescriptorSet{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = materialSet,
+				.dstBinding = 2,
+				.dstArrayElement = static_cast<std::uint32_t>(gltf.baseTextureOffset + i++),
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &infos.back(),
+			});
 		}
-
-		// Well map a glTF texture to a single combined image sampler
-		infos.emplace_back(VkDescriptorImageInfo {
-			.sampler = samplers[texture.samplerIndex.has_value() ? *texture.samplerIndex + numDefaultSamplers : 0],
-			.imageView = images[imageViewIndex].imageView,
-			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		});
-
-		writes.emplace_back(VkWriteDescriptorSet {
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = materialSet,
-			.dstBinding = 2,
-			.dstArrayElement = static_cast<std::uint32_t>(i + numDefaultTextures),
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.pImageInfo = &infos.back(),
-		});
+		offset += gltf.asset.textures.size();
 	}
 	vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
+
+	// We have to load the materials after the textures due to tex
+	loadGltfMaterials();
 }
 
 void Viewer::createShadowMapAndPipeline() {
@@ -2482,7 +2530,10 @@ void Viewer::createShadowMapAndPipeline() {
 void Viewer::loadGltfMaterials() {
 	ZoneScoped;
 	// Create the material buffer data
-	materialCount = asset.materials.size() + numDefaultMaterials;
+	for (auto& gltf : assets) {
+		materialCount += gltf.asset.materials.size();
+	}
+	materialCount += numDefaultMaterials;
 	std::vector<glsl::Material> materials; materials.reserve(materialCount);
 
 	// Add the default material
@@ -2492,25 +2543,30 @@ void Viewer::loadGltfMaterials() {
 		.alphaCutoff = 0.5f,
 	});
 
-	for (auto& gltfMaterial : asset.materials) {
-		auto& mat = materials.emplace_back();
-		mat.albedoFactor = glm::make_vec4(gltfMaterial.pbrData.baseColorFactor.data());
-		mat.uvOffset = glm::vec2(0);
-		mat.uvScale = glm::vec2(1.0f);
-		mat.uvRotation = 0.0f;
+	std::size_t offset = numDefaultMaterials;
+	for (auto& gltf : assets) {
+		gltf.baseMaterialOffset = offset;
+		for (auto& gltfMaterial : gltf.asset.materials) {
+			auto& mat = materials.emplace_back();
+			mat.albedoFactor = glm::make_vec4(gltfMaterial.pbrData.baseColorFactor.data());
+			mat.uvOffset = glm::vec2(0);
+			mat.uvScale = glm::vec2(1.0f);
+			mat.uvRotation = 0.0f;
 
-		if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
-			auto& albedoTex = gltfMaterial.pbrData.baseColorTexture.value();
-			mat.albedoIndex = albedoTex.textureIndex + numDefaultTextures;
-			if (albedoTex.transform) {
-				mat.uvOffset = glm::make_vec2(albedoTex.transform->uvOffset.data());
-				mat.uvScale = glm::make_vec2(albedoTex.transform->uvScale.data());
-				mat.uvRotation = albedoTex.transform->rotation;
+			if (gltfMaterial.pbrData.baseColorTexture.has_value()) {
+				auto& albedoTex = gltfMaterial.pbrData.baseColorTexture.value();
+				mat.albedoIndex = albedoTex.textureIndex + gltf.baseTextureOffset;
+				if (albedoTex.transform) {
+					mat.uvOffset = glm::make_vec2(albedoTex.transform->uvOffset.data());
+					mat.uvScale = glm::make_vec2(albedoTex.transform->uvScale.data());
+					mat.uvRotation = albedoTex.transform->rotation;
+				}
+			} else {
+				mat.albedoIndex = 0;
 			}
-		} else {
-			mat.albedoIndex = 0;
+			mat.alphaCutoff = gltfMaterial.alphaCutoff;
 		}
-		mat.alphaCutoff = gltfMaterial.alphaCutoff;
+		offset += gltf.asset.materials.size();
 	}
 
 	// Create the material buffer
@@ -2573,61 +2629,27 @@ glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
 	return base;
 }
 
-void Viewer::drawNode(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t nodeIndex, glm::mat4 matrix) {
-	assert(asset.nodes.size() > nodeIndex);
-	ZoneScoped;
+/**
+ * Generic function for iterating through the node hierarchy of a scene.
+ * TODO: Add to fastgltf.
+ * */
+void iterateSceneNodes(Gltf& gltf, std::size_t sceneIndex, glm::mat4 matrix, std::function<void(fastgltf::Node&, glm::mat4 matrix)> callback) {
+	auto& scene = gltf.asset.scenes[sceneIndex];
 
-	auto& node = asset.nodes[nodeIndex];
-	matrix = getTransformMatrix(node, matrix);
+	auto function = [&](std::size_t nodeIndex, glm::mat4 nodeMatrix, auto& self) -> void {
+		assert(gltf.asset.nodes.size() > nodeIndex);
+		auto& node = gltf.asset.nodes[nodeIndex];
+		nodeMatrix = getTransformMatrix(node, nodeMatrix);
 
-	if (node.meshIndex.has_value()) {
-		drawMesh(cmd, aabbCmd, node.meshIndex.value(), matrix);
-	}
+		callback(node, nodeMatrix);
 
-	for (auto& child : node.children) {
-		drawNode(cmd, aabbCmd, child, matrix);
-	}
-}
-
-void Viewer::drawMesh(std::vector<glsl::PrimitiveDraw>& cmd, std::vector<VkDrawIndirectCommand>& aabbCmd, std::size_t meshIndex, glm::mat4 matrix) {
-	assert(meshes.size() > meshIndex);
-	ZoneScoped;
-
-	auto& mesh = meshes[meshIndex];
-
-	for (std::size_t i = 0; auto& primitive : mesh.primitives) {
-		auto& draw = cmd.emplace_back();
-
-		// Get the appropriate material variant, if any.
-		std::uint32_t materialIndex;
-		auto& mappings = asset.meshes[meshIndex].primitives[i++].mappings;
-		if (!mappings.empty() && mappings[materialVariant].has_value()) {
-			materialIndex = mappings[materialVariant].value() + numDefaultMaterials; // Adjust for default material
-		} else {
-			materialIndex = primitive.materialIndex;
+		for (auto& child : node.children) {
+			self(child, nodeMatrix, self);
 		}
+	};
 
-		// Dispatch so many groups that we only have to use up to maxMeshlets 16-bit indices in the shared payload.
-		const VkDrawMeshTasksIndirectCommandEXT indirectCommand {
-			.groupCountX = static_cast<std::uint32_t>((primitive.meshlet_count + glsl::maxMeshlets - 1) / glsl::maxMeshlets),
-			.groupCountY = 1,
-			.groupCountZ = 1,
-		};
-		draw.command = indirectCommand;
-		draw.modelMatrix = matrix;
-		draw.descOffset = primitive.descOffset;
-		draw.vertexIndicesOffset = primitive.vertexIndicesOffset;
-		draw.triangleIndicesOffset = primitive.triangleIndicesOffset;
-		draw.verticesOffset = primitive.verticesOffset;
-		draw.meshletCount = static_cast<std::uint32_t>(primitive.meshlet_count);
-		draw.materialIndex = materialIndex;
-
-		// Create the AABB draw command
-		auto& aabb = aabbCmd.emplace_back();
-		aabb.vertexCount = 12 * 2; // 12 edges with each 2 vertices
-		aabb.instanceCount = draw.meshletCount;
-		aabb.firstVertex = 0;
-		aabb.firstInstance = 0;
+	for (auto& sceneNode : scene.nodeIndices) {
+		function(sceneNode, matrix, function);
 	}
 }
 
@@ -2640,12 +2662,56 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	std::vector<glsl::PrimitiveDraw> draws;
 	std::vector<VkDrawIndirectCommand> aabbDraws;
 
-	if (asset.scenes.empty() || sceneIndex >= asset.scenes.size())
-		return;
+	// TODO: Do we want to thread this by chance? Also, do we perhaps want a separate indirect draw call per asset?
+	for (auto& gltf : assets) {
+		if (gltf.asset.scenes.empty() || gltf.sceneIndex >= gltf.asset.scenes.size())
+			return;
 
-	auto& scene = asset.scenes[sceneIndex];
-	for (auto& nodeIdx : scene.nodeIndices) {
-		drawNode(draws, aabbDraws, nodeIdx, glm::mat4(1.0f));
+		auto& scene = gltf.asset.scenes[gltf.sceneIndex];
+		iterateSceneNodes(gltf, gltf.sceneIndex, glm::translate(glm::mat4(1.0f), gltf.translation), [&](fastgltf::Node& node, glm::mat4 matrix) {
+			if (!node.meshIndex.has_value())
+				return;
+
+			assert(meshes.size() > node.meshIndex.value());
+			auto& mesh = meshes[node.meshIndex.value() + gltf.baseMeshOffset];
+
+			for (std::size_t i = 0; auto& primitive : mesh.primitives) {
+				auto& draw = draws.emplace_back();
+
+				// Get the appropriate material variant, if any.
+				std::uint32_t materialIndex;
+				auto& mappings = gltf.asset.meshes[node.meshIndex.value()].primitives[i++].mappings;
+				if (!mappings.empty() && mappings[gltf.materialVariant].has_value()) {
+					materialIndex = mappings[gltf.materialVariant].value() + gltf.baseMaterialOffset; // Adjust for default material
+				} else if (primitive.materialIndex >= numDefaultMaterials) {
+					materialIndex = primitive.materialIndex + gltf.baseMaterialOffset;
+				} else {
+					materialIndex = 0;
+				}
+
+				// Dispatch so many groups that we only have to use up to maxMeshlets 16-bit indices in the shared payload.
+				const VkDrawMeshTasksIndirectCommandEXT indirectCommand {
+					.groupCountX = static_cast<std::uint32_t>((primitive.meshlet_count + glsl::maxMeshlets - 1) / glsl::maxMeshlets),
+					.groupCountY = 1,
+					.groupCountZ = 1,
+				};
+				draw.command = indirectCommand;
+				draw.modelMatrix = matrix;
+				draw.descOffset = primitive.descOffset;
+				draw.vertexIndicesOffset = primitive.vertexIndicesOffset;
+				draw.triangleIndicesOffset = primitive.triangleIndicesOffset;
+				draw.verticesOffset = primitive.verticesOffset;
+				draw.meshletCount = static_cast<std::uint32_t>(primitive.meshlet_count);
+				draw.materialIndex = materialIndex;
+
+				// Create the AABB draw command
+				auto& aabb = aabbDraws.emplace_back();
+				aabb.vertexCount = 12 * 2; // 12 edges with each 2 vertices
+				aabb.instanceCount = draw.meshletCount;
+				aabb.firstVertex = 0;
+				aabb.firstInstance = 0;
+			}
+		});
 	}
 
 	// TODO: This limits our primitive count to 4.2 billion. Can we set this limit somewhere else,
@@ -2780,27 +2846,17 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	auto& camera = *map.get();
 
 	glm::mat4 viewMatrix(1.0f), projectionMatrix;
-	if (cameraIndex.has_value()) {
-		auto& scene = asset.scenes[sceneIndex];
-
-		// Get the view matrix by traversing the node tree and finding the selected cameraNode
-		auto getCameraViewMatrix = [this, &viewMatrix](std::size_t nodeIndex, glm::mat4 matrix, auto& self) -> void {
-			auto& node = asset.nodes[nodeIndex];
-			matrix = getTransformMatrix(node, matrix);
-
-			if (node.cameraIndex.has_value() && &node == cameraNodes[*cameraIndex]) {
+	if (auto& firstGltf = assets.front(); firstGltf.cameraIndex.has_value()) {
+		// TODO: How do we want to handle cameras from multiple loaded assets? Currently,
+		//       we only support the cameras from the first asset.
+		iterateSceneNodes(firstGltf, firstGltf.sceneIndex, glm::translate(glm::mat4(1.0f), firstGltf.translation),
+						  [&](fastgltf::Node& node, glm::mat4 matrix) {
+			if (node.cameraIndex.has_value() && &node == firstGltf.cameraNodes[*firstGltf.cameraIndex]) {
 				viewMatrix = glm::affineInverse(matrix);
 			}
+		});
 
-			for (auto& child : node.children) {
-				self(child, matrix, self);
-			}
-		};
-		for (auto& sceneNode : scene.nodeIndices) {
-			getCameraViewMatrix(sceneNode, glm::mat4(1.0f), getCameraViewMatrix);
-		}
-
-		projectionMatrix = getCameraProjectionMatrix(asset.cameras[*cameraIndex]);
+		projectionMatrix = getCameraProjectionMatrix(firstGltf.asset.cameras[*firstGltf.cameraIndex]);
 	} else {
 		// Update the accelerationVector depending on states returned by glfwGetKey.
 		auto& acc = movement.accelerationVector;
@@ -2874,22 +2930,22 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	camera.lightSpaceMatrix = lightProjection * lightView;
 }
 
-void Viewer::updateCameraNodes(std::size_t nodeIndex) {
+void Viewer::updateCameraNodes(Gltf& gltf, std::size_t nodeIndex) {
 	ZoneScoped;
 	// This function recursively traverses the node hierarchy starting with the node at nodeIndex
 	// to find any nodes holding cameras.
-	auto& node = asset.nodes[nodeIndex];
+	auto& node = gltf.asset.nodes[nodeIndex];
 
 	if (node.cameraIndex.has_value()) {
 		if (node.name.empty()) {
 			// Always have a non-empty string for the ImGui UI
-			node.name = std::string("Camera ") + std::to_string(cameraNodes.size());
+			node.name = std::string("Camera ") + std::to_string(gltf.cameraNodes.size());
 		}
-		cameraNodes.emplace_back(&node);
+		gltf.cameraNodes.emplace_back(&node);
 	}
 
 	for (auto& child : node.children) {
-		updateCameraNodes(child);
+		updateCameraNodes(gltf, child);
 	}
 }
 
@@ -2898,69 +2954,90 @@ void Viewer::renderUi() {
 	static bool showDataInspector = false;
 
 	if (ImGui::Begin("vk_gltf_viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-		ImGui::BeginDisabled(asset.scenes.size() <= 1);
-		auto& sceneName = asset.scenes[sceneIndex].name;
-		if (ImGui::BeginCombo("Scene", sceneName.c_str(), ImGuiComboFlags_None)) {
-			for (std::size_t i = 0; i < asset.scenes.size(); ++i) {
-				const bool isSelected = i == sceneIndex;
-				if (ImGui::Selectable(asset.scenes[i].name.c_str(), isSelected)) {
-					sceneIndex = i;
+		for (std::int32_t i = 0; auto& gltf : assets) {
+			// We don't want to show the section headers when there's only one asset loaded.
+			if (assets.size() > 1) {
+				// CollapsingHeader doesn't pop/push to the ID stack, so we just have to provide unique labels.
+				auto label = fmt::format("{}: {}", i, gltf.name);
+				if (!ImGui::CollapsingHeader(label.c_str())) {
+					++i;
+					continue;
+				}
+			}
 
-					cameraNodes.clear();
-					auto& scene = asset.scenes[sceneIndex];
-					for (auto& node: scene.nodeIndices) {
-						updateCameraNodes(node);
+			ImGui::PushID(i);
+			ImGui::DragFloat3("Base asset translation", glm::value_ptr(gltf.translation), 0.1f);
+			ImGui::PopID();
+
+			ImGui::BeginDisabled(gltf.asset.scenes.size() <= 1);
+			auto& sceneName = gltf.asset.scenes[gltf.sceneIndex].name;
+			if (ImGui::BeginCombo("Scene", sceneName.c_str(), ImGuiComboFlags_None)) {
+				for (std::size_t s = 0; s < gltf.asset.scenes.size(); ++s) {
+					const bool isSelected = s == gltf.sceneIndex;
+					if (ImGui::Selectable(gltf.asset.scenes[s].name.c_str(), isSelected)) {
+						gltf.sceneIndex = s;
+
+						gltf.cameraNodes.clear();
+						auto& scene = gltf.asset.scenes[gltf.sceneIndex];
+						for (auto& node: scene.nodeIndices) {
+							updateCameraNodes(gltf, node);
+						}
 					}
+					if (isSelected)
+						ImGui::SetItemDefaultFocus();
 				}
-				if (isSelected)
-					ImGui::SetItemDefaultFocus();
+
+				ImGui::EndCombo();
 			}
+			ImGui::EndDisabled();
 
-			ImGui::EndCombo();
-		}
-		ImGui::EndDisabled();
+			// We currently only support the cameras from the first asset, so don't display the selector for other assets.
+			if (i == 0) {
+				ImGui::BeginDisabled(gltf.cameraNodes.empty());
+				auto cameraName = gltf.cameraIndex.has_value() ? gltf.cameraNodes[*gltf.cameraIndex]->name.c_str()
+															   : "Default";
+				if (ImGui::BeginCombo("Camera", cameraName, ImGuiComboFlags_None)) {
+					// Default camera
+					{
+						const bool isSelected = !gltf.cameraIndex.has_value();
+						if (ImGui::Selectable("Default", isSelected)) {
+							gltf.cameraIndex.reset();
+						}
+						if (isSelected)
+							ImGui::SetItemDefaultFocus();
+					}
 
-		ImGui::BeginDisabled(cameraNodes.empty());
-		auto cameraName = cameraIndex.has_value() ? cameraNodes[*cameraIndex]->name.c_str() : "Default";
-		if (ImGui::BeginCombo("Camera", cameraName, ImGuiComboFlags_None)) {
-			// Default camera
-			{
-				const bool isSelected = !cameraIndex.has_value();
-				if (ImGui::Selectable("Default", isSelected)) {
-					cameraIndex.reset();
+					for (std::size_t n = 0; n < gltf.cameraNodes.size(); ++n) {
+						const bool isSelected = gltf.cameraIndex.has_value() && n == gltf.cameraIndex.value();
+						if (ImGui::Selectable(gltf.cameraNodes[n]->name.c_str(), isSelected)) {
+							gltf.cameraIndex = n;
+						}
+						if (isSelected)
+							ImGui::SetItemDefaultFocus();
+					}
+
+					ImGui::EndCombo();
 				}
-				if (isSelected)
-					ImGui::SetItemDefaultFocus();
+				ImGui::EndDisabled();
 			}
 
-			for (std::size_t i = 0; i < cameraNodes.size(); ++i) {
-				const bool isSelected = cameraIndex.has_value() && i == cameraIndex.value();
-				if (ImGui::Selectable(cameraNodes[i]->name.c_str(), isSelected)) {
-					cameraIndex = i;
+			ImGui::BeginDisabled(gltf.asset.materialVariants.empty());
+			const auto currentVariantName = gltf.asset.materialVariants.empty()
+											? "N/A"
+											: gltf.asset.materialVariants[gltf.materialVariant].c_str();
+			if (ImGui::BeginCombo("Variant", currentVariantName, ImGuiComboFlags_None)) {
+				for (std::size_t v = 0; v < gltf.asset.materialVariants.size(); ++v) {
+					const bool isSelected = v == gltf.materialVariant;
+					if (ImGui::Selectable(gltf.asset.materialVariants[v].c_str(), isSelected))
+						gltf.materialVariant = v;
+					if (isSelected)
+						ImGui::SetItemDefaultFocus();
 				}
-				if (isSelected)
-					ImGui::SetItemDefaultFocus();
+				ImGui::EndCombo();
 			}
-
-			ImGui::EndCombo();
+			ImGui::EndDisabled();
+			++i;
 		}
-		ImGui::EndDisabled();
-
-		ImGui::BeginDisabled(asset.materialVariants.empty());
-		const auto currentVariantName = asset.materialVariants.empty()
-			? "N/A"
-			: asset.materialVariants[materialVariant].c_str();
-		if (ImGui::BeginCombo("Variant", currentVariantName, ImGuiComboFlags_None)) {
-			for (std::size_t i = 0; i < asset.materialVariants.size(); ++i) {
-				const bool isSelected = i == materialVariant;
-				if (ImGui::Selectable(asset.materialVariants[i].c_str(), isSelected))
-					materialVariant = i;
-				if (isSelected)
-					ImGui::SetItemDefaultFocus();
-			}
-			ImGui::EndCombo();
-		}
-		ImGui::EndDisabled();
 
 		ImGui::Separator();
 
@@ -2993,8 +3070,31 @@ void Viewer::renderUi() {
 	if (showDataInspector) {
 		ImGui::SetNextWindowSize(ImVec2(550, 300), ImGuiCond_FirstUseEver);
 		if (ImGui::Begin("Inspector", &showDataInspector)) {
-			enum OpenTab { Images, Materials };
 			if (ImGui::BeginTabBar("Inspector Tabs")) {
+				if (ImGui::BeginTabItem("Assets")) {
+					if (ImGui::BeginTable("Asset table", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+						ImGui::TableSetupColumn("Idx", ImGuiTableColumnFlags_WidthFixed);
+						ImGui::TableSetupColumn("Name");
+						ImGui::TableSetupColumn("Translation");
+
+						for (std::size_t i = 0; auto& gltf : assets) {
+							ImGui::TableNextRow();
+							ImGui::TableNextColumn();
+							ImGui::Text("%zu", i++);
+
+							ImGui::TableNextColumn();
+							ImGui::Text("%s", gltf.name.c_str());
+
+							ImGui::TableNextColumn();
+							ImGui::Text("(%.2f, %.2f, %.2f)", gltf.translation.x, gltf.translation.y, gltf.translation.z);
+						}
+
+						ImGui::EndTable();
+					}
+
+					ImGui::EndTabItem();
+				}
+
 				if (ImGui::BeginTabItem("Images")) {
 					// We use a pointer to a VkImageView as we consider the images vector and the Viewer object stable.
 					// Otherwise, due to for example resizing, the image view handles might be destroyed and not properly updated here.
@@ -3177,17 +3277,19 @@ void Viewer::run() {
 	createFrameData();
 
 	// Set scene defaults and give every object a readable name, if required and empty.
-	sceneIndex = asset.defaultScene.value_or(0);
-	for (std::size_t i = 0; auto& scene : asset.scenes) {
-		if (!scene.name.empty())
-			continue;
-		scene.name = std::string("Scene ") + std::to_string(i++);
-	}
+	for (auto& gltf : assets) {
+		gltf.sceneIndex = gltf.asset.defaultScene.value_or(0);
+		for (std::size_t i = 0; auto& scene : gltf.asset.scenes) {
+			if (!scene.name.empty())
+				continue;
+			scene.name = std::string("Scene ") + std::to_string(i++);
+		}
 
-	// Initialize the glTF cameras array
-	auto& scene = asset.scenes[sceneIndex];
-	for (auto& node : scene.nodeIndices) {
-		updateCameraNodes(node);
+		// Initialize the glTF cameras array
+		auto& scene = gltf.asset.scenes[gltf.sceneIndex];
+		for (auto& node : scene.nodeIndices) {
+			updateCameraNodes(gltf, node);
+		}
 	}
 
 	// The render loop
