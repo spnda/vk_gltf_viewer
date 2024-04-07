@@ -940,8 +940,6 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 		auto& primitive = mesh.primitives.emplace_back();
 		if (gltfPrimitive.materialIndex.has_value()) {
 			primitive.materialIndex = gltfPrimitive.materialIndex.value();
-		} else {
-			primitive.materialIndex = 0;
 		}
 
 		// Copy the positions and indices
@@ -2683,8 +2681,8 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 				auto& mappings = gltf.asset.meshes[node.meshIndex.value()].primitives[i++].mappings;
 				if (!mappings.empty() && mappings[gltf.materialVariant].has_value()) {
 					materialIndex = mappings[gltf.materialVariant].value() + gltf.baseMaterialOffset; // Adjust for default material
-				} else if (primitive.materialIndex >= numDefaultMaterials) {
-					materialIndex = primitive.materialIndex + gltf.baseMaterialOffset;
+				} else if (primitive.materialIndex.has_value()) {
+					materialIndex = primitive.materialIndex.value() + gltf.baseMaterialOffset;
 				} else {
 					materialIndex = 0;
 				}

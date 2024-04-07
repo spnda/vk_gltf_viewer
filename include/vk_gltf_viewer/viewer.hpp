@@ -68,7 +68,7 @@ struct Primitive {
 	std::uint32_t verticesOffset;
 
 	std::size_t meshlet_count;
-	std::uint32_t materialIndex;
+	fastgltf::Optional<std::uint32_t> materialIndex;
 };
 
 struct Mesh {

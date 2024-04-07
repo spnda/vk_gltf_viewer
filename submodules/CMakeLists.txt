@@ -156,6 +156,7 @@ if (EXISTS "${VKV_DEPS_DIR}/ktx-software")
     set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "" FORCE)
     set(KTX_FEATURE_GL_UPLOAD OFF CACHE BOOL "" FORCE)
     set(KTX_FEATURE_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+    set(KTX_FEATURE_LOADTEST_APPS "" CACHE BOOL "" FORCE)
     add_subdirectory("${VKV_DEPS_DIR}/ktx-software")
     add_library(ktx_read::ktx_read ALIAS ktx_read)
 

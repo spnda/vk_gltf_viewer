@@ -38,11 +38,15 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
+layout(set = 2, binding = 0, scalar) readonly buffer Materials {
+    Material materials[];
+};
+
 taskPayloadSharedEXT TaskPayload taskPayload;
 
 layout(location = 0) out vec4 colors[];
 layout(location = 1) out vec2 uvs[];
-layout(location = 2) flat out uint materialIndex[];
+layout(location = 2) perprimitiveEXT flat out uint materialIndex[];
 layout(location = 3) out vec4 lightSpacePos[];
 
 shared vec3 clipVertices[maxPrimitives];
@@ -51,6 +55,8 @@ void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
     uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
     const Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
+
+    const Material material = materials[primitive.materialIndex];
 
     // This defines the array size of gl_MeshVerticesEXT
     if (gl_LocalInvocationID.x == 0) {
@@ -82,7 +88,6 @@ void main() {
 
         colors[vidx] = vertex.color;
         uvs[vidx] = vertex.uv;
-        materialIndex[vidx] = primitive.materialIndex;
     }
 
     const float transformDet = determinant(primitive.modelMatrix);
@@ -97,18 +102,21 @@ void main() {
                               primitiveIndices[primitive.triangleIndicesOffset + meshlet.triangleOffset + pidx * 3 + 2]);
 
         gl_PrimitiveTriangleIndicesEXT[pidx] = indices;
+        materialIndex[pidx] = primitive.materialIndex;
 
-        // The glTF spec says:
-        // If the determinant of the transform is a negative value, the winding order of the mesh triangle faces should be reversed.
-        // This supports negative scales for mirroring geometry.
-        const vec3 v0 = clipVertices[indices.x];
-        const vec3 v1 = clipVertices[indices.y];
-        const vec3 v2 = clipVertices[indices.z];
-        const float det = determinant(mat3(v0, v1, v2));
-        if (transformDet < 0.0f) {
-            gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det < 0.0f; // Front face culling
-        } else {
-            gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det > 0.0f; // Back face culling
+        if (!material.doubleSided) {
+            // The glTF spec says:
+            // If the determinant of the transform is a negative value, the winding order of the mesh triangle faces should be reversed.
+            // This supports negative scales for mirroring geometry.
+            const vec3 v0 = clipVertices[indices.x];
+            const vec3 v1 = clipVertices[indices.y];
+            const vec3 v2 = clipVertices[indices.z];
+            const float det = determinant(mat3(v0, v1, v2));
+            if (transformDet < 0.0f) {
+                gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det < 0.0f; // Front face culling
+            } else {
+                gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det > 0.0f; // Back face culling
+            }
         }
     }
 }

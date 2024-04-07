@@ -92,6 +92,7 @@ struct Material {
     float uvRotation;
 
     float alphaCutoff;
+    bool doubleSided;
 };
 
 #if defined(__cplusplus)
