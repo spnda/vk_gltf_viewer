@@ -521,6 +521,7 @@ void Viewer::createDescriptorPool() {
 	}};
 	const VkDescriptorPoolCreateInfo poolCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
 		.maxSets = 50, // TODO ?
 		.poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
 		.pPoolSizes = sizes.data(),
@@ -2275,7 +2276,7 @@ void Viewer::loadGltfImages() {
 	}};
 	std::array<VkDescriptorBindingFlags, layoutBindings.size()> layoutBindingFlags = {{
 		0,
-		0, // VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // The shadow map image size is configurable, so the handle might change.
 		0,
 	}};
 	const VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo {
@@ -2286,6 +2287,7 @@ void Viewer::loadGltfImages() {
 	const VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.pNext = &bindingFlagsInfo,
+		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
 		.bindingCount = static_cast<std::uint32_t>(layoutBindings.size()),
 		.pBindings = layoutBindings.data(),
 	};
@@ -2416,7 +2418,7 @@ void Viewer::loadGltfImages() {
 	loadGltfMaterials();
 }
 
-void Viewer::createShadowMapAndPipeline() {
+void Viewer::createShadowMap() {
 	ZoneScoped;
 	// We don't check if D32_SFLOAT supports SAMPLED_BIT as it's supported on effectively 100% of devices.
 	const VkImageCreateInfo shadowMapInfo {
@@ -2424,8 +2426,8 @@ void Viewer::createShadowMapAndPipeline() {
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = VK_FORMAT_D32_SFLOAT,
 		.extent = {
-			.width = shadowResolution.x,
-			.height = shadowResolution.y,
+			.width = shadowResolution,
+			.height = shadowResolution,
 			.depth = 1,
 		},
 		.mipLevels = 1,
@@ -2439,12 +2441,13 @@ void Viewer::createShadowMapAndPipeline() {
 	const VmaAllocationCreateInfo allocationInfo {
 		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 	};
-	auto result = vmaCreateImage(allocator, &shadowMapInfo, &allocationInfo, &shadowMapImage, &shadowMapAllocation, nullptr);
+	auto result = vmaCreateImage(allocator, &shadowMapInfo, &allocationInfo, &shadowMapImage, &shadowMapAllocation,
+								 nullptr);
 	vk::checkResult(result, "Failed to create shadow map image: {}");
 	vk::setDebugUtilsName(device, shadowMapImage, "Shadow map image");
 	vk::setAllocationName(allocator, shadowMapAllocation, "Shadow map image allocation");
 
-	const VkImageViewCreateInfo imageViewInfo {
+	const VkImageViewCreateInfo imageViewInfo{
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = shadowMapImage,
 		.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
@@ -2461,8 +2464,27 @@ void Viewer::createShadowMapAndPipeline() {
 	vk::checkResult(result, "Failed to create shadow map image view: {}");
 	vk::setDebugUtilsName(device, shadowMapImageView, "Shadow map image view");
 
+	// Update the material descriptor with the shadowMap
+	const VkDescriptorImageInfo imageInfo{
+		.sampler = shadowMapSampler,
+		.imageView = shadowMapImageView,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	const VkWriteDescriptorSet write{
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = materialSet,
+		.dstBinding = 1,
+		.dstArrayElement = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &imageInfo,
+	};
+	vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+}
+
+void Viewer::createShadowMapPipeline() {
 	// Create the sampler for the shadow map
-	const VkSamplerCreateInfo samplerInfo {
+	const VkSamplerCreateInfo samplerInfo{
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 		.magFilter = VK_FILTER_NEAREST,
 		.minFilter = VK_FILTER_NEAREST,
@@ -2473,31 +2495,18 @@ void Viewer::createShadowMapAndPipeline() {
 		.maxLod = 1.0f,
 		.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, // I think this should be 1.0f in all components?
 	};
-	result = vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler);
+	auto result = vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler);
 	vk::checkResult(result, "Failed to create shadow map sampler: {}");
+	vk::setDebugUtilsName(device, shadowMapSampler, "Shadow map sampler");
 
-	deletionQueue.push([this]() {
+	// Create the initial shadow map
+	createShadowMap();
+
+	deletionQueue.push([&]() {
 		vkDestroySampler(device, shadowMapSampler, nullptr);
 		vkDestroyImageView(device, shadowMapImageView, nullptr);
 		vmaDestroyImage(allocator, shadowMapImage, shadowMapAllocation);
 	});
-
-	// Update the material descriptor with the shadowMap
-	const VkDescriptorImageInfo imageInfo {
-		.sampler = shadowMapSampler,
-		.imageView = shadowMapImageView,
-		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-	};
-	const VkWriteDescriptorSet write {
-		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = materialSet,
-		.dstBinding = 1,
-		.dstArrayElement = 0,
-		.descriptorCount = 1,
-		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.pImageInfo = &imageInfo,
-	};
-	vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
 	// Build the shadow map pipeline layout
 	std::array<VkDescriptorSetLayout, 2> layouts {{ cameraSetLayout, meshletSetLayout }};
@@ -3158,6 +3167,21 @@ void Viewer::renderUi() {
 		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition), 0.01f);
 		ImGui::DragFloat("Shadow map bias", &shadowMapBias, 0.0001f);
 
+		// See https://github.com/ocornut/imgui/issues/1815#issuecomment-1851196300
+		const std::uint32_t resolutionStepSize = 1024;
+		const std::uint32_t minRes = 1024 / resolutionStepSize, maxRes = (8096 + resolutionStepSize) / resolutionStepSize;
+		std::uint32_t shadowResolutionSliderValue = shadowResolution / resolutionStepSize;
+		if (ImGui::SliderScalar("Shadow map resolution", ImGuiDataType_U32, &shadowResolutionSliderValue,
+							&minRes, &maxRes, fmt::format("{}", shadowResolution).c_str())) {
+			shadowResolution = shadowResolutionSliderValue * resolutionStepSize;
+			timelineDeletionQueue.push([this, image = shadowMapImage, allocation = shadowMapAllocation, view = shadowMapImageView]() {
+				vkDestroyImageView(device, view, nullptr);
+				vmaDestroyImage(allocator, image, allocation);
+			});
+
+			createShadowMap();
+		}
+
 		ImGui::Separator();
 
 		ImGui::Text("Frametime: %.2f ms", deltaTime * 1000);
@@ -3233,7 +3257,7 @@ void Viewer::renderUi() {
 								selection = &shadowMapImageView;
 							}
 							ImGui::TableNextColumn();
-							ImGui::Text("(%u, %u)", shadowResolution.x, shadowResolution.y);
+							ImGui::Text("(%u, %u)", shadowResolution, shadowResolution);
 						}
 
 						// Show the glTF images
@@ -3311,9 +3335,9 @@ void Viewer::run() {
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
 	window = glfwCreateWindow(
-			static_cast<int>(static_cast<float>(videoMode->width) * 0.9f),
-			static_cast<int>(static_cast<float>(videoMode->height) * 0.9f),
-			"vk_viewer", nullptr, nullptr);
+		static_cast<int>(static_cast<float>(videoMode->width) * 0.9f),
+		static_cast<int>(static_cast<float>(videoMode->height) * 0.9f),
+		"vk_viewer", nullptr, nullptr);
 
 	if (window == nullptr) {
 		throw std::runtime_error("Failed to create window");
@@ -3351,14 +3375,21 @@ void Viewer::run() {
 
 	loadGltfImages();
 
-	// Create the swapchain
+	// Create the swapchain, and push a function to the deletion queue to destroy it.
 	rebuildSwapchain(videoMode->width, videoMode->height);
+	deletionQueue.push([&]() {
+		for (auto& view: swapchainImageViews)
+			vkDestroyImageView(device, view, nullptr);
+		vkb::destroy_swapchain(swapchain);
+		vkDestroyImageView(device, depthImageView, VK_NULL_HANDLE);
+		vmaDestroyImage(allocator, depthImage, depthImageAllocation);
+	});
 
 	// Build the mesh pipeline
 	buildMeshPipeline();
 
-	// Build the shadow map pipeline
-	createShadowMapAndPipeline();
+	// Build the shadow map and the pipeline
+	createShadowMapPipeline();
 
 	// Resize the drawBuffers vector
 	drawBuffers.resize(frameOverlap);
@@ -3500,8 +3531,8 @@ void Viewer::run() {
 				.renderArea = {
 					.offset = {},
 					.extent = {
-						.width = Viewer::shadowResolution.x,
-						.height = Viewer::shadowResolution.y,
+						.width = shadowResolution,
+						.height = shadowResolution,
 					},
 				},
 				.layerCount = glsl::shadowMapCount,
@@ -3824,12 +3855,6 @@ void Viewer::destroy() noexcept {
 			vmaDestroyBuffer(allocator, drawBuffer.aabbDrawHandle, drawBuffer.aabbDrawAllocation);
 			vmaDestroyBuffer(allocator, drawBuffer.primitiveDrawHandle, drawBuffer.primitiveDrawAllocation);
 		}
-
-		for (auto& view : swapchainImageViews)
-			vkDestroyImageView(device, view, nullptr);
-		vkb::destroy_swapchain(swapchain);
-		vkDestroyImageView(device, depthImageView, VK_NULL_HANDLE);
-		vmaDestroyImage(allocator, depthImage, depthImageAllocation);
 
 		// Destroys everything. We leave this out of the try-catch block to make sure it gets executed.
 		timelineDeletionQueue.destroy();

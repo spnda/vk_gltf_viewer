@@ -325,7 +325,7 @@ struct Viewer {
 	std::vector<Gltf> assets;
 
 	// Shadow maps
-	static constexpr auto shadowResolution = glm::u32vec2(4096.f, 4096.f);
+	std::uint32_t shadowResolution = 2048U;
 	VkImage shadowMapImage = VK_NULL_HANDLE;
 	VmaAllocation shadowMapAllocation = VK_NULL_HANDLE;
 	VkImageView shadowMapImageView = VK_NULL_HANDLE;
@@ -392,7 +392,8 @@ struct Viewer {
 	void renderUi();
 
 	/** Creates the shadow map and the necessary pipeline */
-	void createShadowMapAndPipeline();
+	void createShadowMap();
+	void createShadowMapPipeline();
 
 	/** Runs the application and the render loop */
 	void run();
