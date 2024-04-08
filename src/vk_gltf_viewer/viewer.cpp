@@ -2475,7 +2475,7 @@ void Viewer::createShadowMapAndPipeline() {
 	// Build the shadow map pipeline layout
 	std::array<VkDescriptorSetLayout, 2> layouts {{ cameraSetLayout, meshletSetLayout }};
 	const VkPushConstantRange pushConstantRange = {
-		.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+		.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
 		.offset = 0,
 		.size = sizeof(std::uint32_t),
 	};
@@ -2861,6 +2861,22 @@ std::array<glm::vec3, 8> getFrustumCorners(glm::mat4 viewProjection) {
 	return corners;
 }
 
+void generateCameraFrustum(glsl::RenderView& renderView) {
+	// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
+	const auto& vp = renderView.viewProjection;
+	auto& p = renderView.frustum;
+	for (glm::length_t i = 0; i < 4; ++i) { p[0][i] = vp[i][3] + vp[i][0]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[1][i] = vp[i][3] - vp[i][0]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[2][i] = vp[i][3] + vp[i][1]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[3][i] = vp[i][3] - vp[i][1]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[4][i] = vp[i][3] + vp[i][2]; }
+	for (glm::length_t i = 0; i < 4; ++i) { p[5][i] = vp[i][3] - vp[i][2]; }
+	for (auto& plane : p) {
+		plane /= glm::length(glm::vec3(plane));
+		plane.w = -plane.w;
+	}
+}
+
 void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	assert(cameraBuffers.size() > currentFrame);
 	ZoneScoped;
@@ -2929,35 +2945,23 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 
 	projectionMatrix[1][1] *= -1;
 	camera.view = viewMatrix;
-	camera.viewProjection = reverseDepth(projectionMatrix) * camera.view;
+	camera.views[0].viewProjection = reverseDepth(projectionMatrix) * camera.view;
 
 	if (!freezeCameraFrustum) {
-		// This plane extraction code is from https://www.gamedevs.org/uploads/fast-extraction-viewing-frustum-planes-from-world-view-projection-matrix.pdf
-		const auto& vp = camera.viewProjection;
-		auto& p = camera.frustum;
-		for (glm::length_t i = 0; i < 4; ++i) { p[0][i] = vp[i][3] + vp[i][0]; }
-		for (glm::length_t i = 0; i < 4; ++i) { p[1][i] = vp[i][3] - vp[i][0]; }
-		for (glm::length_t i = 0; i < 4; ++i) { p[2][i] = vp[i][3] + vp[i][1]; }
-		for (glm::length_t i = 0; i < 4; ++i) { p[3][i] = vp[i][3] - vp[i][1]; }
-		for (glm::length_t i = 0; i < 4; ++i) { p[4][i] = vp[i][3] + vp[i][2]; }
-		for (glm::length_t i = 0; i < 4; ++i) { p[5][i] = vp[i][3] - vp[i][2]; }
-		for (auto& plane: p) {
-			plane /= glm::length(glm::vec3(plane));
-			plane.w = -plane.w;
-		}
+		generateCameraFrustum(camera.views[0]);
 	}
 
 	// Basic power of four split distances.
 	// TODO: Use a dynamic algorithm such as from PSSM
 	for (std::uint32_t i = 0; i < glsl::shadowMapCount; ++i) {
-		camera.splitDistances[i] = pow(4.0f, i + 1);
+		camera.splitDistances[i] = std::powf(4.0f, i + 1);
 	}
 	const float clipRange = 1000.0f - 0.01f; // zFar - zNear
 
 	// Divide the view frustum up into N subfrusta, whose depth lengths are defined by the above distance calculation.
 	// The getFrustumCorners returns the far plane corners as the last 4 elements.
 	auto corners = getFrustumCorners(projectionMatrix * viewMatrix);
-	for (std::size_t i = 0; auto& matrix : camera.lightSpaceMatrix) {
+	for (std::size_t i = 0; i < glsl::shadowMapCount; ++i) {
 		float splitDist = camera.splitDistances[i] / clipRange;
 		float lastDist = i == 0 ? 0.0f : camera.splitDistances[i - 1] / clipRange;
 
@@ -2991,8 +2995,8 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		glm::mat4 lightProjection = glm::orthoRH_ZO(minExtents.x, maxExtents.x, minExtents.y, maxExtents.y, -(maxExtents.z - minExtents.z), maxExtents.z - minExtents.z);
 
 		lightProjection[1][1] *= -1;
-		matrix = lightProjection * lightView;
-		++i;
+		camera.views[i + 1].viewProjection = lightProjection * lightView;
+		generateCameraFrustum(camera.views[i + 1]);
 	}
 	camera.shadowMapBias = shadowMapBias;
 }
@@ -3499,7 +3503,7 @@ void Viewer::run() {
 			vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 			for (std::uint32_t i = 0; i < glsl::shadowMapCount; ++i) {
-				vkCmdPushConstants(cmd, shadowMapPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT, 0, sizeof(std::uint32_t), &i);
+				vkCmdPushConstants(cmd, shadowMapPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT, 0, sizeof(std::uint32_t), &i);
 				vkCmdDrawMeshTasksIndirectEXT(cmd,
 											  drawBuffers[currentFrame].primitiveDrawHandle, 0,
 											  drawBuffers[currentFrame].drawCount,

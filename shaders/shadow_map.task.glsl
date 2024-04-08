@@ -5,9 +5,19 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_control_flow_attributes: require
 
-layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(constant_id = 0) const uint subgroupSize = 32;
+
+// This now uses the spec constant 0 for the x size
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 #include "mesh_common.glsl.h"
+
+layout(set = 0, binding = 0, scalar) uniform CameraUniform {
+    Camera camera;
+};
 
 layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
     Meshlet meshlets[];
@@ -17,7 +27,13 @@ layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
+layout(push_constant) uniform Constants {
+    uint layerIndex;
+};
+
 taskPayloadSharedEXT TaskPayload taskPayload;
+
+#include "frustum_culling.glsl.h"
 
 void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
@@ -29,12 +45,24 @@ void main() {
 
     // Generate the delta IDs by iterating over every meshlet.
     const uint meshletLoops = (meshletCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;
+    uint visibleMeshlets = 0;
     [[unroll]] for (uint i = 0; i < meshletLoops; ++i) {
         uint idx = gl_LocalInvocationIndex.x + i * gl_WorkGroupSize.x;
         idx = min(idx, meshletCount - 1);
-        uint meshletID = taskPayload.baseID + idx;
-        taskPayload.deltaIDs[idx] = uint8_t(idx);
+        const Meshlet meshlet = meshlets[primitive.descOffset + taskPayload.baseID + idx];
+
+        // Do some culling
+        const vec3 worldAabbCenter = (primitive.modelMatrix * vec4(meshlet.aabbCenter, 1.0f)).xyz;
+        const vec3 worldAabbExtent = getWorldSpaceAabbExtent(meshlet.aabbExtents.xyz, primitive.modelMatrix);
+        const bool visible = isMeshletVisibleAabb(worldAabbCenter, worldAabbExtent, layerIndex + 1);
+
+        // Get the index for this thread for this subgroup
+        uint payloadIndex = subgroupExclusiveAdd(uint(visible));
+        if (visible) {
+            taskPayload.deltaIDs[visibleMeshlets + payloadIndex] = uint8_t(idx);
+        }
+        visibleMeshlets += subgroupAdd(uint(visible));
     }
 
-    EmitMeshTasksEXT(meshletCount, 1, 1);
+    EmitMeshTasksEXT(visibleMeshlets, 1, 1);
 }

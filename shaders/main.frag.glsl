@@ -44,7 +44,7 @@ float shadow(vec3 worldSpacePos) {
         }
     }
 
-    vec4 lightSpacePos = camera.lightSpaceMatrix[layer] * vec4(worldSpacePos, 1.0f);
+    vec4 lightSpacePos = camera.views[layer + 1].viewProjection * vec4(worldSpacePos, 1.0f);
     vec3 coords = lightSpacePos.xyz / lightSpacePos.w; // Perspective divide to get screen coordinates
 
     // Transform from NDC into UV coordinates. Note that with Vulkan the Z range is [0,1] already,

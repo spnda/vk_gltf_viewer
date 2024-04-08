@@ -53,5 +53,5 @@ void main() {
     vec3 position = positions[edges[gl_VertexIndex]];
     vec3 pos = position * meshlet.aabbExtents.xyz + meshlet.aabbCenter.xyz;
 
-    gl_Position = camera.viewProjection * primitive.modelMatrix * vec4(pos, 1.0f);
+    gl_Position = camera.views[0].viewProjection * primitive.modelMatrix * vec4(pos, 1.0f);
 }

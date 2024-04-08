@@ -63,7 +63,7 @@ void main() {
         SetMeshOutputsEXT(meshlet.vertexCount, meshlet.triangleCount);
     }
 
-    mat4 mvp = camera.viewProjection * primitive.modelMatrix;
+    mat4 mvp = camera.views[0].viewProjection * primitive.modelMatrix;
 
     // The max_vertices does not match the local workgroup size.
     // Therefore, we'll have this loop that will run over all possible vertices.

@@ -15,16 +15,21 @@ using namespace glm;
 
 GLSL_CONSTANT uint shadowMapCount = 4;
 
-struct Camera {
+struct RenderView {
     mat4 viewProjection;
-    mat4 view;
-
-    float splitDistances[shadowMapCount];
-    mat4 lightSpaceMatrix[shadowMapCount];
-    float shadowMapBias;
 
     // We represent a plane using a single vec4, in the form of ax + by + cz + d = 0
     vec4 frustum[6];
+};
+
+struct Camera {
+    mat4 view;
+
+    float splitDistances[shadowMapCount];
+    float shadowMapBias;
+
+    // The first view is the viewport, the rest are the sun light cascades.
+    RenderView views[1 + shadowMapCount];
 };
 
 // TODO: These are the optimal values for NVIDIA. What about the others?
