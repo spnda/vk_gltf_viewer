@@ -9,7 +9,7 @@
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
 
-#include <glfw/glfw3.h>
+#include <GLFW/glfw3.h>
 
 struct Viewer;
 

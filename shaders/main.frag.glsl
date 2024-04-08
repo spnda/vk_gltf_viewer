@@ -44,6 +44,7 @@ float shadow(vec3 worldSpacePos) {
         }
     }
 
+    // Get the current fragment's position for the light's view.
     vec4 lightSpacePos = camera.views[layer + 1].viewProjection * vec4(worldSpacePos, 1.0f);
     vec3 coords = lightSpacePos.xyz / lightSpacePos.w; // Perspective divide to get screen coordinates
 
@@ -73,10 +74,22 @@ float shadow(vec3 worldSpacePos) {
     return shadow / pow(2 * kernelSize + 1, 2);
 }
 
+// Converts a color from sRGB gamma to linear light gamma
+// See https://gamedev.stackexchange.com/a/194038/159451
+vec4 toLinear(vec4 sRGB) {
+    bvec3 cutoff = lessThan(sRGB.rgb, vec3(0.04045));
+    vec3 higher = pow((sRGB.rgb + vec3(0.055)) / vec3(1.055), vec3(2.4));
+    vec3 lower = sRGB.rgb / vec3(12.92);
+
+    return vec4(mix(higher, lower, cutoff), sRGB.a);
+}
+
 void main() {
     Material material = materials[materialIndex];
+
+    // the glTF baseColorTexture contains sRGB encoded values.
     vec4 sampled = texture(textures[material.albedoIndex], transformUv(material, uv));
-    vec4 outColor = color * material.albedoFactor * sampled;
+    vec4 outColor = color * material.albedoFactor * toLinear(sampled);
     outColor = vec4(outColor.xyz * (1.0f - shadow(worldSpacePos)), outColor.w);
 
     if (outColor.a < material.alphaCutoff)

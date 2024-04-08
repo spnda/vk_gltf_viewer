@@ -13,7 +13,7 @@
 #include <vk_gltf_viewer/imgui_renderer.hpp>
 
 // Needs to happen after Vulkan includes
-#include <glfw/glfw3.h>
+#include <GLFW/glfw3.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
@@ -1480,7 +1480,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 
 	void loadWithStb(std::uint32_t imageIdx, std::span<std::uint8_t> encodedImageData) const {
 		ZoneScoped;
-		static constexpr VkFormat imageFormat = VK_FORMAT_R8G8B8A8_SRGB;
+		static constexpr VkFormat imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
 		static constexpr auto channels = 4;
 
 		// Load and decode the image data using stbi
@@ -1847,29 +1847,29 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		}
 
 		// Transcode the format if necessary. This will change the value of vkFormat.
-		// TODO: We always transcode to BC7_SRGB. Try and detect other possible formats?
+		// TODO: We always transcode to BC7_UNORM. Try and detect other possible formats?
 		auto imageFormat = static_cast<VkFormat>(texture->vkFormat);
 		if (ktxTexture2_NeedsTranscoding(texture)) {
 			khr_df_model_e colorModel = ktxTexture2_GetColorModel_e(texture);
 
 			ktx_transcode_fmt_e targetFormat;
 			auto& features = viewer->device.physical_device.features;
-			if (features.textureCompressionBC && isFormatSupported(VK_FORMAT_BC7_SRGB_BLOCK)) {
+			if (features.textureCompressionBC && isFormatSupported(VK_FORMAT_BC7_UNORM_BLOCK)) {
 				targetFormat = KTX_TTF_BC7_RGBA;
-				imageFormat = VK_FORMAT_BC7_SRGB_BLOCK;
-			} else if (features.textureCompressionBC && isFormatSupported(VK_FORMAT_BC3_SRGB_BLOCK)) {
+				imageFormat = VK_FORMAT_BC7_UNORM_BLOCK;
+			} else if (features.textureCompressionBC && isFormatSupported(VK_FORMAT_BC3_UNORM_BLOCK)) {
 				targetFormat = KTX_TTF_BC3_RGBA;
-				imageFormat = VK_FORMAT_BC3_SRGB_BLOCK;
+				imageFormat = VK_FORMAT_BC3_UNORM_BLOCK;
 			} else if (colorModel == KHR_DF_MODEL_UASTC && features.textureCompressionASTC_LDR) {
 				targetFormat = KTX_TTF_ASTC_4x4_RGBA;
-				imageFormat = VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+				imageFormat = VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
 			} else if (colorModel == KHR_DF_MODEL_ETC2 && features.textureCompressionETC2) {
 				targetFormat = KTX_TTF_ETC2_RGBA;
-				imageFormat = VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK;
+				imageFormat = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
 			} else {
 				// As a fallback, let's just decompress.
 				targetFormat = KTX_TTF_RGBA32;
-				imageFormat = VK_FORMAT_R8G8B8A8_SRGB;
+				imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
 			}
 
 			ktxError = ktxTexture2_TranscodeBasis(texture, targetFormat, KTX_TF_HIGH_QUALITY);
