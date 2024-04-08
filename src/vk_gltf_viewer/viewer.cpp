@@ -1823,6 +1823,13 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		});
 	}
 
+	/** Simply checks if the device supports the minimum format features for the given format */
+	bool isFormatSupported(VkFormat format) const {
+		VkFormatProperties formatProperties;
+		vkGetPhysicalDeviceFormatProperties(viewer->device.physical_device, format, &formatProperties);
+		return ((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) && (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT));
+	}
+
 	void loadKtx(std::uint32_t imageIdx, std::span<std::uint8_t> data) const {
 		ZoneScoped;
 		// The KTX library also has no idea what modern programming looks like apparently, and has an absolute abomination of an API.
@@ -1842,12 +1849,32 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		// TODO: We always transcode to BC7_SRGB. Try and detect other possible formats?
 		auto imageFormat = static_cast<VkFormat>(texture->vkFormat);
 		if (ktxTexture2_NeedsTranscoding(texture)) {
-			ktxError = ktxTexture2_TranscodeBasis(texture, KTX_TTF_BC7_RGBA, KTX_TF_HIGH_QUALITY);
+			khr_df_model_e colorModel = ktxTexture2_GetColorModel_e(texture);
+
+			ktx_transcode_fmt_e targetFormat;
+			auto& features = viewer->device.physical_device.features;
+			if (features.textureCompressionBC && isFormatSupported(VK_FORMAT_BC7_SRGB_BLOCK)) {
+				targetFormat = KTX_TTF_BC7_RGBA;
+				imageFormat = VK_FORMAT_BC7_SRGB_BLOCK;
+			} else if (features.textureCompressionBC && isFormatSupported(VK_FORMAT_BC3_SRGB_BLOCK)) {
+				targetFormat = KTX_TTF_BC3_RGBA;
+				imageFormat = VK_FORMAT_BC3_SRGB_BLOCK;
+			} else if (colorModel == KHR_DF_MODEL_UASTC && features.textureCompressionASTC_LDR) {
+				targetFormat = KTX_TTF_ASTC_4x4_RGBA;
+				imageFormat = VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+			} else if (colorModel == KHR_DF_MODEL_ETC2 && features.textureCompressionETC2) {
+				targetFormat = KTX_TTF_ETC2_RGBA;
+				imageFormat = VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK;
+			} else {
+				// As a fallback, let's just decompress.
+				targetFormat = KTX_TTF_RGBA32;
+				imageFormat = VK_FORMAT_R8G8B8A8_SRGB;
+			}
+
+			ktxError = ktxTexture2_TranscodeBasis(texture, targetFormat, KTX_TF_HIGH_QUALITY);
 			if (ktxError != KTX_SUCCESS) {
 				throw std::runtime_error(fmt::format("Failed to transcoe basisu from KTX2 texture: {}", fastgltf::to_underlying(ktxError)));
 			}
-
-			imageFormat = VK_FORMAT_BC7_SRGB_BLOCK;
 		}
 
 		auto& sampledImage = viewer->images[imageOffset + imageIdx];
@@ -2986,13 +3013,18 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		}
 		radius = std::ceil(radius * 16.0f) / 16.0f;
 
-		auto maxExtents = glm::vec3(radius);
-		auto minExtents = -maxExtents;
+		auto max = glm::vec3(radius);
+		auto min = -max;
+
+		// Depth factor to not miss anything due to a too low zNear or zFar
+		static constexpr float zMult = 10.0f; // TODO: Can we compute this somehow?
+		min.z = min.z < 0 ? min.z * zMult : min.z / zMult;
+		max.z = max.z < 0 ? max.z / zMult : max.z * zMult;
 
 		// Compute light view projection
 		glm::vec3 lightDir = normalize(-lightPosition);
-		glm::mat4 lightView = glm::lookAtRH(center - lightDir * -minExtents.z, center, glm::vec3(0.0f, 1.0f, 0.0f));
-		glm::mat4 lightProjection = glm::orthoRH_ZO(minExtents.x, maxExtents.x, minExtents.y, maxExtents.y, -(maxExtents.z - minExtents.z), maxExtents.z - minExtents.z);
+		glm::mat4 lightView = glm::lookAtRH(center - lightDir * -min.z, center, glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::mat4 lightProjection = glm::orthoRH_ZO(min.x, max.x, min.y, max.y, -(max.z - min.z), max.z - min.z);
 
 		lightProjection[1][1] *= -1;
 		camera.views[i + 1].viewProjection = lightProjection * lightView;
