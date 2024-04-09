@@ -20,13 +20,16 @@ struct RenderView {
 
     // We represent a plane using a single vec4, in the form of ax + by + cz + d = 0
     vec4 frustum[6];
+
+    // zFar - zNear
+    float projectionZLength;
 };
 
 struct Camera {
     mat4 view;
 
+    vec3 lightDirection;
     float splitDistances[shadowMapCount];
-    float shadowMapBias;
 
     // The first view is the viewport, the rest are the sun light cascades.
     RenderView views[1 + shadowMapCount];
@@ -60,6 +63,7 @@ struct Meshlet {
 struct Vertex {
     vec3 position;
     vec4 color;
+    vec3 normal;
 
 // Quantized float16_t vec2. TODO: glm has half float types, use those?
 #if defined(__cplusplus)

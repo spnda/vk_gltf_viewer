@@ -47,7 +47,8 @@ taskPayloadSharedEXT TaskPayload taskPayload;
 layout(location = 0) out vec4 colors[];
 layout(location = 1) out vec2 uvs[];
 layout(location = 2) out vec3 worldSpacePos[];
-layout(location = 3) perprimitiveEXT flat out uint materialIndex[];
+layout(location = 3) out vec3 normals[];
+layout(location = 4) perprimitiveEXT flat out uint materialIndex[];
 
 shared vec3 clipVertices[maxPrimitives];
 
@@ -87,6 +88,7 @@ void main() {
 
         colors[vidx] = vertex.color;
         uvs[vidx] = vertex.uv;
+        normals[vidx] = vertex.normal;
     }
 
     const float transformDet = determinant(primitive.modelMatrix);

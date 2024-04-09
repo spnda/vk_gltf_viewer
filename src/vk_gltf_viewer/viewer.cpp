@@ -962,11 +962,19 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 				meshopt_quantizeHalf(0.0f),
 				meshopt_quantizeHalf(0.0f),
 			};
+			vertex.normal = glm::vec3(0.0f);
 		}, adapter);
 
 		auto& indicesAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
 		std::vector<std::uint32_t> indices(indicesAccessor.count);
 		fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data(), adapter);
+
+		// TODO: Generate normals when unavailable
+		if (auto* normalAttribute = gltfPrimitive.findAttribute("NORMAL"); normalAttribute != gltfPrimitive.attributes.end()) {
+			fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[normalAttribute->second], [&](glm::vec3 val, std::size_t idx) {
+				vertices[idx].normal = val;
+			}, adapter);
+		}
 
 		if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
 			// The glTF spec allows VEC3 and VEC4 for COLOR_n, with VEC3 data having to be extended with 1.0f for the fourth component.
@@ -2987,6 +2995,8 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		generateCameraFrustum(camera.views[0]);
 	}
 
+	camera.lightDirection = glm::normalize(-lightPosition);
+
 	// Basic power of four split distances.
 	// TODO: Use a dynamic algorithm such as from PSSM
 	for (std::uint32_t i = 0; i < glsl::shadowMapCount; ++i) {
@@ -3031,12 +3041,12 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		max.z = max.z < 0 ? max.z / zMult : max.z * zMult;
 
 		// Compute light view projection
-		glm::vec3 lightDir = normalize(-lightPosition);
-		glm::mat4 lightView = glm::lookAtRH(center - lightDir * -min.z, center, glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::mat4 lightView = glm::lookAtRH(center - camera.lightDirection * -min.z, center, glm::vec3(0.0f, 1.0f, 0.0f));
 		glm::mat4 lightProjection = glm::orthoRH_ZO(min.x, max.x, min.y, max.y, -(max.z - min.z), max.z - min.z);
 
 		lightProjection[1][1] *= -1;
 		camera.views[i + 1].viewProjection = lightProjection * lightView;
+		camera.views[i + 1].projectionZLength = (max.z - min.z) * 2; // zFar - zNear
 		generateCameraFrustum(camera.views[i + 1]);
 	}
 	camera.shadowMapBias = shadowMapBias;

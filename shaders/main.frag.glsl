@@ -9,7 +9,8 @@
 layout(location = 0) in vec4 color;
 layout(location = 1) in vec2 uv;
 layout(location = 2) in vec3 worldSpacePos;
-layout(location = 3) flat in uint materialIndex;
+layout(location = 3) in vec3 normal;
+layout(location = 4) flat in uint materialIndex;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -33,7 +34,7 @@ vec2 transformUv(in Material material, vec2 uv) {
     return rotationMat * uv * material.uvScale + material.uvOffset;
 }
 
-float shadow(vec3 worldSpacePos) {
+float shadow(in vec3 normal, in vec3 worldSpacePos) {
     // Select cascade layer (fallback to the last layer)
     float depthValue = abs((camera.view * vec4(worldSpacePos, 1.0f)).z);
     uint layer = shadowMapCount - 1;
@@ -61,14 +62,23 @@ float shadow(vec3 worldSpacePos) {
     // https://developer.download.nvidia.com/shaderlibrary/docs/shadow_PCSS.pdf
     const float receiverDepth = coords.z;
     const float depthBlocker = texture(shadowMap, vec3(coords.xy, layer)).r;
-    int kernelSize = clamp(int((receiverDepth - depthBlocker) * 50.f / depthBlocker), 1, 3); // Clamp between 1 and 3
+    int kernelSize = clamp(int((receiverDepth - depthBlocker) * 50.f / depthBlocker), 1, 3); // Clamp between 1 and 3 for performance reasons
     vec2 texelSize = 1.f / textureSize(shadowMap, 0).xy;
+
+    // Calculate the "perfect" shadow bias as per https://www.desmos.com/calculator/nbhoiubvfj
+    const vec3 L = -normalize(camera.lightDirection);
+    const float b = 1.41411356f * texelSize.x / 2.0f; // *sqrt(2) for diagonal length, effectively just length(texelSize)
+    const float NoL = clamp(abs(dot(normal, L)), 0.0001f, 1.f);
+    float bias = 2.f / (1 << 23) + b * length(cross(normal, L)) / NoL;
+    bias = (0.01f + bias) / camera.views[layer + 1].projectionZLength;
+
+    // Run the PCF kernel
     float shadow = 0.0f;
     for (int x = -kernelSize; x <= kernelSize; ++x) {
         for (int y = -kernelSize; y <= kernelSize; ++y) {
             // Sample from the shadow map with an offset and determine if we are the closest fragment for the light
             float pcfDepth = texture(shadowMap, vec3(coords.xy + vec2(x, y) * texelSize, layer)).r;
-            shadow += receiverDepth > pcfDepth + camera.shadowMapBias ? 0.5f : 0.0f;
+            shadow += receiverDepth > pcfDepth + bias ? 0.5f : 0.0f;
         }
     }
     return shadow / pow(2 * kernelSize + 1, 2);
@@ -90,7 +100,9 @@ void main() {
     // the glTF baseColorTexture contains sRGB encoded values.
     vec4 sampled = texture(textures[material.albedoIndex], transformUv(material, uv));
     vec4 outColor = color * material.albedoFactor * toLinear(sampled);
-    outColor = vec4(outColor.xyz * (1.0f - shadow(worldSpacePos)), outColor.w);
+
+    // We use the vertex normals for the shadow bias calculation, as the self shadowing is caused by the geometry.
+    outColor = vec4(outColor.xyz * (1.0f - shadow(normal, worldSpacePos)), outColor.w);
 
     if (outColor.a < material.alphaCutoff)
         discard;
