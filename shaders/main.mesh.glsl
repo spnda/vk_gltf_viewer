@@ -88,7 +88,7 @@ void main() {
 
         colors[vidx] = vertex.color;
         uvs[vidx] = vertex.uv;
-        normals[vidx] = vertex.normal;
+        normals[vidx] = vec3(vertex.normal) / 127.f - 1.f;
     }
 
     const float transformDet = determinant(primitive.modelMatrix);

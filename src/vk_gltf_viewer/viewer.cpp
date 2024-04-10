@@ -962,18 +962,36 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 				meshopt_quantizeHalf(0.0f),
 				meshopt_quantizeHalf(0.0f),
 			};
-			vertex.normal = glm::vec3(0.0f);
+			vertex.normal = glm::u8vec3(0U);
 		}, adapter);
 
 		auto& indicesAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
 		std::vector<std::uint32_t> indices(indicesAccessor.count);
 		fastgltf::copyFromAccessor<std::uint32_t>(asset, indicesAccessor, indices.data(), adapter);
 
-		// TODO: Generate normals when unavailable
 		if (auto* normalAttribute = gltfPrimitive.findAttribute("NORMAL"); normalAttribute != gltfPrimitive.attributes.end()) {
 			fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[normalAttribute->second], [&](glm::vec3 val, std::size_t idx) {
-				vertices[idx].normal = val;
+				vertices[idx].normal = glm::u8vec3(val * 127.f + 127.5f);
 			}, adapter);
+		} else {
+			// Generate basic smooth vertex normals. As we quantize the normals, we have to store them first to normalize them afterwards.
+			fastgltf::StaticVector<glm::vec3> normals(posAccessor.count, glm::vec3(0.f));
+			for (std::uint32_t idx = 0; idx < indicesAccessor.count / 3; ++idx) {
+				auto i = indices[idx * 3];
+				auto i1 = indices[idx * 3 + 1];
+				auto i2 = indices[idx * 3 + 2];
+
+				auto v1 = vertices[i1].position - vertices[i].position;
+				auto v2 = vertices[i2].position - vertices[i].position;
+				auto val = glm::normalize(glm::cross(v1, v2));
+
+				normals[i] += val;
+				normals[i1] += val;
+				normals[i2] += val;
+			}
+			for (std::size_t i = 0; i < normals.size(); ++i) {
+				vertices[i].normal = glm::u8vec3(glm::normalize(normals[i]) * 127.f + 127.5f);
+			}
 		}
 
 		if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
