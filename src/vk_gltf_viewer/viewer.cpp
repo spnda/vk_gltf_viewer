@@ -1024,6 +1024,9 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 
 		std::vector<glsl::Meshlet> finalMeshlets; finalMeshlets.reserve(primitive.meshlet_count);
 		for (auto& meshlet : meshlets) {
+			// Optimise meshlets
+			meshopt_optimizeMeshlet(&meshlet_vertices[meshlet.vertex_offset], &meshlet_triangles[meshlet.triangle_offset], meshlet.triangle_count, meshlet.vertex_count);
+
 			// Compute AABB bounds
 			auto& initialVertex = vertices[meshlet_vertices[meshlet.vertex_offset]];
 			auto min = glm::vec3(initialVertex.position), max = glm::vec3(initialVertex.position);
@@ -3049,7 +3052,6 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		camera.views[i + 1].projectionZLength = (max.z - min.z) * 2; // zFar - zNear
 		generateCameraFrustum(camera.views[i + 1]);
 	}
-	camera.shadowMapBias = shadowMapBias;
 }
 
 void Viewer::updateCameraNodes(Gltf& gltf, std::size_t nodeIndex) {
@@ -3175,7 +3177,6 @@ void Viewer::renderUi() {
 		ImGui::DragFloat3("Camera position", glm::value_ptr(movement.position), 0.01f);
 		ImGui::EndDisabled();
 		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition), 0.01f);
-		ImGui::DragFloat("Shadow map bias", &shadowMapBias, 0.0001f);
 
 		// See https://github.com/ocornut/imgui/issues/1815#issuecomment-1851196300
 		const std::uint32_t resolutionStepSize = 1024;
