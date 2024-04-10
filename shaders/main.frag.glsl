@@ -78,7 +78,7 @@ float shadow(in vec3 normal, in vec3 worldSpacePos) {
         for (int y = -kernelSize; y <= kernelSize; ++y) {
             // Sample from the shadow map with an offset and determine if we are the closest fragment for the light
             float pcfDepth = texture(shadowMap, vec3(coords.xy + vec2(x, y) * texelSize, layer)).r;
-            shadow += receiverDepth > pcfDepth + bias ? 0.5f : 0.0f;
+            shadow += receiverDepth > pcfDepth + bias ? 1.f : 0.f;
         }
     }
     return shadow / pow(2 * kernelSize + 1, 2);
@@ -95,16 +95,23 @@ vec4 toLinear(vec4 sRGB) {
 }
 
 void main() {
-    Material material = materials[materialIndex];
+    const Material material = materials[materialIndex];
+
+    vec3 ambient = vec3(0.1, 0.1, 0.1);
 
     // the glTF baseColorTexture contains sRGB encoded values.
     vec4 sampled = texture(textures[material.albedoIndex], transformUv(material, uv));
-    vec4 outColor = color * material.albedoFactor * toLinear(sampled);
+    vec4 albedoColor = color * material.albedoFactor * toLinear(sampled);
+    if (albedoColor.a < material.alphaCutoff)
+        discard;
+
+    vec3 diffuse = vec3(max(dot(normal, -camera.lightDirection), 0.f));
 
     // We use the vertex normals for the shadow bias calculation, as the self shadowing is caused by the geometry.
-    outColor = vec4(outColor.xyz * (1.0f - shadow(normal, worldSpacePos)), outColor.w);
+    vec3 result = (ambient + (1.0f - shadow(normal, worldSpacePos)) * diffuse) * albedoColor.xyz;
 
-    if (outColor.a < material.alphaCutoff)
-        discard;
-    fragColor = outColor;
+    // Reinhard tonemapping
+    const float exposure = 1.f;
+    vec3 mapped = vec3(1.f) - exp(-result * exposure);
+    fragColor = vec4(mapped, 1);
 }
