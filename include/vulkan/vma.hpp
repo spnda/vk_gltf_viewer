@@ -15,8 +15,8 @@
 #if 0
 #include <fmt/printf.h>
 #define VMA_DEBUG_LOG_FORMAT(format, ...) do { \
-	fmt::printf((format), __VA_ARGS__); \
-	fmt::printf("\n"); \
+	fmt::fprintf(stderr, (format), __VA_ARGS__); \
+	fmt::fprintf(stderr, "\n"); \
 } while(false)
 #endif
 

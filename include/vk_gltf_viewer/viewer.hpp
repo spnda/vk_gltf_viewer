@@ -7,6 +7,8 @@
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
 #include <vulkan/debug_utils.hpp>
+#include <vulkan/fence_pool.hpp>
+#include <vulkan/command_pool.hpp>
 #include <VkBootstrap.h>
 
 #include <TaskScheduler.h>
@@ -23,7 +25,6 @@
 #include <fastgltf/types.hpp>
 
 #include <vk_gltf_viewer/imgui_renderer.hpp>
-#include <vk_gltf_viewer/fence_pool.hpp>
 
 struct FrameSyncData {
     VkSemaphore imageAvailable;
@@ -220,6 +221,16 @@ public:
 struct Queue {
 	VkQueue handle = VK_NULL_HANDLE;
 	std::unique_ptr<std::mutex> lock; // Can't hold the object in a vector otherwise.
+
+	VkResult submit(const VkSubmitInfo2& submit, VkFence fence) const {
+		std::lock_guard guard(*lock);
+		return vkQueueSubmit2(handle, 1, &submit, fence);
+	}
+
+	VkResult submit(std::span<const VkSubmitInfo2> submits, VkFence fence) const {
+		std::lock_guard guard(*lock);
+		return vkQueueSubmit2(handle, submits.size(), submits.data(), fence);
+	}
 };
 
 struct Gltf {
@@ -254,19 +265,13 @@ struct Viewer {
 	std::uint32_t transferQueueFamily = VK_QUEUE_FAMILY_IGNORED;
 	std::vector<Queue> transferQueues;
 
-	Queue& getNextTransferQueueHandle() {
+	[[nodiscard]] decltype(auto) getNextTransferQueueHandle() {
 		static std::atomic<std::size_t> idx = 0;
 		return transferQueues[idx++ % transferQueues.size()];
 	}
 
-	struct CommandPool {
-		VkCommandPool pool;
-		// TODO: Find some mechanism to allow using multiple command buffers on one thread.
-		//       Perhaps we can use up to N command buffers and fences for multiple submits from a single thread.
-		VkCommandBuffer buffer;
-	};
-	std::vector<CommandPool> uploadCommandPools; //< Command pools for transfer queues
-	std::vector<CommandPool> graphicsCommandPools; //< Command pools for the main graphics queue
+	std::vector<vk::CommandPool> uploadCommandPools; //< Command pools for transfer queues
+	std::vector<vk::CommandPool> graphicsCommandPools; //< Command pools for the main graphics queue
 
     GLFWwindow* window = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -346,6 +351,8 @@ struct Viewer {
     }
 
 	void loadGltf(const std::filesystem::path& file);
+
+	void immediateSubmit(vk::CommandPool& cmdPool, const std::function<void(VkCommandBuffer)>& commands);
 
 	/** This function creates a DEVICE_LOCAL storage buffer suitable for a transfer destination */
 	VkResult createGpuTransferBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) const noexcept;

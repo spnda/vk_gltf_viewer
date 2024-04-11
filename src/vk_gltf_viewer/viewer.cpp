@@ -33,6 +33,20 @@
 #include <vk_gltf_viewer/viewer.hpp>
 #include <vk_gltf_viewer/scheduler.hpp>
 
+#ifdef TRACY_ENABLE
+void* operator new(std::size_t count)
+{
+	auto ptr = malloc(count);
+	TracyAlloc(ptr , count);
+	return ptr;
+}
+void operator delete(void* ptr) noexcept
+{
+	TracyFree(ptr);
+	free(ptr);
+}
+#endif
+
 /** Replacement buffer data adapter for fastgltf which supports decompressing with EXT_meshopt_compression */
 struct CompressedBufferDataAdapter {
 	std::vector<std::optional<fastgltf::StaticVector<std::byte>>> decompressedBuffers;
@@ -371,6 +385,7 @@ void Viewer::setupVulkanDevice() {
 
 		vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue.handle);
 		graphicsQueue.lock = std::make_unique<std::mutex>();
+		vk::setDebugUtilsName(device, graphicsQueue.handle, "Graphics queue");
 
 		// Get the transfer queue handles
 		auto transferQueueIndexRes = device.get_dedicated_queue_index(vkb::QueueType::transfer);
@@ -380,31 +395,18 @@ void Viewer::setupVulkanDevice() {
 		transferQueues.resize(queueFamilies[transferQueueFamily].queueCount);
 		for (std::size_t i = 0; auto& queue: transferQueues) {
 			queue.lock = std::make_unique<std::mutex>();
-			vkGetDeviceQueue(device, transferQueueFamily, i++, &queue.handle);
+			vkGetDeviceQueue(device, transferQueueFamily, i, &queue.handle);
+			vk::setDebugUtilsName(device, queue.handle, fmt::format("Transfer queue {}", i));
+			++i;
 		}
 	}
 
 	// Create the transfer command pools
 	auto threadCount = std::thread::hardware_concurrency();
-	auto createPools = [&](std::vector<CommandPool>& pools, std::uint32_t queueFamily) {
+	auto createPools = [&](std::vector<vk::CommandPool>& pools, std::uint32_t queueFamily) {
 		pools.resize(threadCount);
 		for (auto& commandPool : pools) {
-			const VkCommandPoolCreateInfo commandPoolInfo{
-				.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-				.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-				.queueFamilyIndex = queueFamily,
-			};
-			auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool.pool);
-			vk::checkResult(createResult, "Failed to allocate buffer upload command pool: {}");
-
-			const VkCommandBufferAllocateInfo allocateInfo {
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-				.commandPool = commandPool.pool,
-				.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-				.commandBufferCount = 1,
-			};
-			auto allocateResult = vkAllocateCommandBuffers(device, &allocateInfo, &commandPool.buffer);
-			vk::checkResult(allocateResult, "Failed to allocate buffer upload command buffers: {}");
+			commandPool.create(device, queueFamily);
 		}
 	};
 	createPools(uploadCommandPools, transferQueueFamily);
@@ -412,9 +414,9 @@ void Viewer::setupVulkanDevice() {
 
 	deletionQueue.push([this]() {
 		for (auto& cmdPool : uploadCommandPools)
-			vkDestroyCommandPool(device, cmdPool.pool, nullptr);
+			cmdPool.destroy();
 		for (auto& cmdPool : graphicsCommandPools)
-			vkDestroyCommandPool(device, cmdPool.pool, nullptr);
+			cmdPool.destroy();
 	});
 
 	fencePool.init(device);
@@ -1239,12 +1241,7 @@ void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bu
 		std::memcpy(map.get(), bytes.data(), bytes.size_bytes());
 	}
 
-	// Reset fences and command buffers.
-	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].buffer;
-	vkResetCommandBuffer(cmd, 0);
-	auto fence = fencePool.acquire();
-	vkResetFences(device, 1, &fence->handle);
-
+	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].allocate();
 	const VkCommandBufferBeginInfo beginInfo {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -1261,22 +1258,18 @@ void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bu
 
 	vkEndCommandBuffer(cmd);
 
-	auto& queue = getNextTransferQueueHandle();
-	{
-		// We need to guard the vkQueueSubmit call
-		std::lock_guard lock(*queue.lock);
-
-		// Submit the command buffer
-		const VkPipelineStageFlags submitWaitStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-		const VkSubmitInfo submitInfo {
-			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-			.pWaitDstStageMask = &submitWaitStages,
-			.commandBufferCount = 1,
-			.pCommandBuffers = &cmd,
-		};
-		auto submitResult = vkQueueSubmit(queue.handle, 1, &submitInfo, fence->handle);
-		vk::checkResult(submitResult, "Failed to submit buffer copy: {}");
-	}
+	const VkCommandBufferSubmitInfo cmdSubmitInfo {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+		.commandBuffer = cmd,
+	};
+	const VkSubmitInfo2 submitInfo {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+		.commandBufferInfoCount = 1,
+		.pCommandBufferInfos = &cmdSubmitInfo,
+	};
+	auto fence = fencePool.acquire();
+	auto submitResult = getNextTransferQueueHandle().submit(submitInfo, fence->handle);
+	vk::checkResult(submitResult, "Failed to submit buffer copy: {}");
 
 	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
 	fencePool.wait_and_free(fence);
@@ -1302,12 +1295,7 @@ void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, const std::funct
 					&stagingBuffer, &stagingAllocation, VK_NULL_HANDLE);
 	vk::checkResult(result, "Failed to create staging buffer for image upload: {}");
 
-	// Reset fences and command buffers.
-	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].buffer;
-	vkResetCommandBuffer(cmd, 0);
-	auto fence = fencePool.acquire();
-	vkResetFences(device, 1, &fence->handle);
-
+	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].allocate();
 	const VkCommandBufferBeginInfo beginInfo {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -1318,22 +1306,18 @@ void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, const std::funct
 
 	vkEndCommandBuffer(cmd);
 
-	auto& queue = getNextTransferQueueHandle();
-	{
-		std::lock_guard lock(*queue.lock);
-
-		const VkCommandBufferSubmitInfo cmdInfo {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-			.commandBuffer = cmd,
-		};
-		const VkSubmitInfo2 submitInfo {
-			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-			.commandBufferInfoCount = 1,
-			.pCommandBufferInfos = &cmdInfo,
-		};
-		result = vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
-		vk::checkResult(result, "Failed to submit image upload: {}");
-	}
+	const VkCommandBufferSubmitInfo cmdInfo {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+		.commandBuffer = cmd,
+	};
+	const VkSubmitInfo2 submitInfo {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+		.commandBufferInfoCount = 1,
+		.pCommandBufferInfos = &cmdInfo,
+	};
+	auto fence = fencePool.acquire();
+	result = getNextTransferQueueHandle().submit(submitInfo, fence->handle);
+	vk::checkResult(result, "Failed to submit image upload: {}");
 
 	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
 	fencePool.wait_and_free(fence);
@@ -1622,10 +1606,8 @@ struct ImageLoadTask : public ExceptionTaskSet {
 
 		// Generate mipmaps
 		// TODO: Avoid the fence here, and use a semaphore to sync these two submits?
-		auto cmd = viewer->graphicsCommandPools[taskScheduler.GetThreadNum()].buffer;
+		auto cmd = viewer->graphicsCommandPools[taskScheduler.GetThreadNum()].allocate();
 		vkResetCommandBuffer(cmd, 0);
-		auto fence = viewer->fencePool.acquire();
-		vkResetFences(viewer->device, 1, &fence->handle);
 
 		const VkCommandBufferBeginInfo beginInfo {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1720,22 +1702,18 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		vkEndCommandBuffer(cmd);
 
 		// TODO: Use compute queues instead of the main queue?
-		auto& queue = viewer->graphicsQueue;
-		{
-			std::lock_guard lock(*queue.lock);
-
-			const VkCommandBufferSubmitInfo cmdInfo {
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-				.commandBuffer = cmd,
-			};
-			const VkSubmitInfo2 submitInfo {
-				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-				.commandBufferInfoCount = 1,
-				.pCommandBufferInfos = &cmdInfo,
-			};
-			result = vkQueueSubmit2(queue.handle, 1, &submitInfo, fence->handle);
-			vk::checkResult(result, "Failed to submit mipmap generation: {}");
-		}
+		const VkCommandBufferSubmitInfo cmdInfo {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+			.commandBuffer = cmd,
+		};
+		const VkSubmitInfo2 submitInfo {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+			.commandBufferInfoCount = 1,
+			.pCommandBufferInfos = &cmdInfo,
+		};
+		auto fence = viewer->fencePool.acquire();
+		result = viewer->graphicsQueue.submit(submitInfo, fence->handle);
+		vk::checkResult(result, "Failed to submit mipmap generation: {}");
 
 		viewer->fencePool.wait_and_free(fence);
 	}
@@ -3518,6 +3496,21 @@ void Viewer::run() {
 		};
 		vkBeginCommandBuffer(cmd, &beginInfo);
 
+		// Insert a global memory barrier at the start of the frame
+		const VkMemoryBarrier2 globalMemoryBarrier {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			.srcAccessMask = VK_ACCESS_2_NONE,
+			.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			.dstAccessMask = VK_ACCESS_2_NONE,
+		};
+		const VkDependencyInfo globalDependencyInfo {
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.memoryBarrierCount = 1,
+			.pMemoryBarriers = &globalMemoryBarrier,
+		};
+		vkCmdPipelineBarrier2(cmd, &globalDependencyInfo);
+
 		{
 			TracyVkZone(tracyCtx, cmd, "Shadow map generation");
 
@@ -3614,7 +3607,7 @@ void Viewer::run() {
 			std::array<VkImageMemoryBarrier2, 3> imageBarriers = {{
 				{
 					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 					.srcAccessMask = VK_ACCESS_2_NONE,
 					.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
 					.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -3631,8 +3624,8 @@ void Viewer::run() {
 				},
 				{
 					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-					.srcAccessMask = VK_ACCESS_2_NONE,
+					.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+					.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
 					.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
 					.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
