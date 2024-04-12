@@ -45,7 +45,7 @@ layout(push_constant) uniform Constants {
 taskPayloadSharedEXT TaskPayload taskPayload;
 
 void main() {
-    const PrimitiveDraw primitive = primitives[gl_DrawID];
+    const PrimitiveDraw primitive = primitives[taskPayload.drawID];
     uint deltaId = taskPayload.baseID + uint(taskPayload.deltaIDs[gl_WorkGroupID.x]);
     const Meshlet meshlet = meshlets[primitive.descOffset + deltaId];
 

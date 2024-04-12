@@ -38,13 +38,14 @@ struct Camera {
 // TODO: These are the optimal values for NVIDIA. What about the others?
 GLSL_CONSTANT uint maxVertices = 64;
 GLSL_CONSTANT uint maxPrimitives = 126;
-GLSL_CONSTANT uint maxMeshlets = 102;
+GLSL_CONSTANT uint maxMeshlets = 98;
 
 // This is essentially a replacement for gl_WorkGroupID.x, but one which can store any index
 // between 0..256 instead of the linear requirement of the work group ID.
 // For NVIDIA, we try to keep this structure below 108 bytes to keep it in shared memory.
-// Therefore, this is exactly 106 bytes big (4 + 102 * 1).
+// Therefore, this is exactly 106 bytes big (4 + 4 + 98 * 1).
 struct TaskPayload {
+    uint drawID; // gl_DrawID, as its value is undefined in the mesh shader
     uint baseID;
     uint8_t deltaIDs[maxMeshlets];
 };

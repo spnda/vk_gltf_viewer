@@ -37,6 +37,7 @@ taskPayloadSharedEXT TaskPayload taskPayload;
 
 void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
+    taskPayload.drawID = gl_DrawID;
 
     // Every task shader workgroup only gets 128 meshlets to handle. This calculates how many
     // this specific work group should handle, and sets the baseID accordingly.
