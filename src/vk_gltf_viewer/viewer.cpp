@@ -2971,7 +2971,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 			speedMultiplier *= 10.0f;
 		}
 
-		movement.velocity += (movement.accelerationVector * speedMultiplier);
+		movement.velocity += (movement.accelerationVector * speedMultiplier * deltaTime); // v = a * t
 		// Lerp the velocity to 0, adding deceleration.
 		movement.velocity = movement.velocity + (5.0f * deltaTime) * (-movement.velocity);
 		// Add the velocity into the position
@@ -2994,7 +2994,17 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		generateCameraFrustum(camera.views[0]);
 	}
 
-	camera.lightDirection = glm::normalize(-lightPosition);
+	// Compute the lightDirection based on sunAzimuth and sunAltitude
+	// camera.lightDirection = glm::normalize(-lightPosition);
+	auto lightDir = glm::vec3(0.0f);
+	if (sunAzimuth == 0 && sunAltitude == 0) {
+		lightDir = glm::vec3(1.0f, 0.0f, 0.0f);
+	} else {
+		lightDir.x = std::cos(glm::radians(sunAltitude));
+		lightDir.y = -std::sin(glm::radians(sunAltitude));
+		lightDir.z = std::sin(glm::radians(sunAzimuth));
+	}
+	camera.lightDirection = lightDir;
 
 	// Basic power of four split distances.
 	// TODO: Use a dynamic algorithm such as from PSSM
@@ -3165,14 +3175,15 @@ void Viewer::renderUi() {
 			showDataInspector = true;
 		}
 
-		ImGui::Separator();
+		ImGui::SeparatorText("Camera");
 
 		ImGui::DragFloat("Camera speed", &movement.speedMultiplier, 0.01f, 0.05f, 10.0f, "%.2f");
 
 		ImGui::BeginDisabled(true);
 		ImGui::DragFloat3("Camera position", glm::value_ptr(movement.position), 0.01f);
 		ImGui::EndDisabled();
-		ImGui::DragFloat3("Light position", glm::value_ptr(lightPosition), 0.01f);
+		ImGui::DragFloat("Sun azimuth in °", &sunAzimuth, 0.1f, -360.0f, 360.0f);
+		ImGui::DragFloat("Sun altitude in °", &sunAltitude, 0.1f, -360.0f, 360.0f);
 
 		// See https://github.com/ocornut/imgui/issues/1815#issuecomment-1851196300
 		const std::uint32_t resolutionStepSize = 1024;
@@ -3195,7 +3206,7 @@ void Viewer::renderUi() {
 		ImGui::Text("FPS: %.2f", 1.f / deltaTime);
 		ImGui::Text("AFPS: %.2f rad/s", 2 * std::numbers::pi_v<float> / deltaTime); // Angular FPS
 
-		ImGui::Separator();
+		ImGui::SeparatorText("Debug options");
 
 		ImGui::Checkbox("Enable AABB visualization", &enableAabbVisualization);
 		ImGui::Checkbox("Freeze Camera frustum", &freezeCameraFrustum);

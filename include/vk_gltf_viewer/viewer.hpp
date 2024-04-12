@@ -336,7 +336,9 @@ struct Viewer {
 	VkSampler shadowMapSampler = VK_NULL_HANDLE;
 	VkPipelineLayout shadowMapPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowMapPipeline = VK_NULL_HANDLE;
-	glm::vec3 lightPosition = glm::vec3(-5.0f, 17.5f, 3.75f);
+
+	float sunAzimuth = 0.0f;
+	float sunAltitude = 0.0f;
 
     DeletionQueue deletionQueue;
 	TimelineDeletionQueue timelineDeletionQueue;
