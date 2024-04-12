@@ -54,6 +54,8 @@ void main() {
         SetMeshOutputsEXT(meshlet.vertexCount, meshlet.triangleCount);
     }
 
+    mat4 mvp = camera.views[layerIndex + 1].viewProjection * primitive.modelMatrix;
+
     // The max_vertices does not match the local workgroup size.
     // Therefore, we'll have this loop that will run over all possible vertices.
     const uint vertexLoops = (meshlet.vertexCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;
@@ -69,7 +71,7 @@ void main() {
         uint vertexIndex = vertexIndices[primitive.vertexIndicesOffset + meshlet.vertexOffset + vidx];
         Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
 
-        gl_MeshVerticesEXT[vidx].gl_Position = camera.views[layerIndex + 1].viewProjection * primitive.modelMatrix * vec4(vertex.position, 1.0f);
+        gl_MeshVerticesEXT[vidx].gl_Position = mvp * vec4(vertex.position, 1.0f);
     }
 
     const uint primitiveLoops = (meshlet.triangleCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;

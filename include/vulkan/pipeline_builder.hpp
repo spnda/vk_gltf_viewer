@@ -58,7 +58,7 @@ namespace vk {
         ComputePipelineBuilder& pushPNext(std::uint32_t idx, const void* pNext) override;
         ComputePipelineBuilder& setPipelineLayout(std::uint32_t idx, VkPipelineLayout layout) override;
         ComputePipelineBuilder& setPipelineFlags(std::uint32_t idx, VkPipelineCreateFlags flags) override;
-        ComputePipelineBuilder& setShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name);
+        ComputePipelineBuilder& setShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name = "main", const VkSpecializationInfo* specInfo = nullptr);
     };
 
     class GraphicsPipelineBuilder final : PipelineBuilder {

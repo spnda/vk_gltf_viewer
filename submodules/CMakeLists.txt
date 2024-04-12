@@ -91,6 +91,7 @@ endif()
 
 if (EXISTS "${VKV_DEPS_DIR}/fastgltf")
     message(STATUS "vk_gltf_viewer: Found fastgltf")
+    option(FASTGLTF_COMPILE_AS_CPP20 "" ON)
     add_subdirectory("${VKV_DEPS_DIR}/fastgltf")
 endif()
 

@@ -2454,7 +2454,7 @@ void Viewer::createShadowMap() {
 	vk::setDebugUtilsName(device, shadowMapImage, "Shadow map image");
 	vk::setAllocationName(allocator, shadowMapAllocation, "Shadow map image allocation");
 
-	const VkImageViewCreateInfo imageViewInfo{
+	const VkImageViewCreateInfo imageViewInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = shadowMapImage,
 		.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
@@ -2531,7 +2531,7 @@ void Viewer::createShadowMapPipeline() {
 	};
 	result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &shadowMapPipelineLayout);
 	vk::checkResult(result, "Failed to create shadow map pipeline layout: {}");
-	vk::setDebugUtilsName(device, meshPipelineLayout, "Shadow map pipeline layout");
+	vk::setDebugUtilsName(device, shadowMapPipelineLayout, "Shadow map pipeline layout");
 
 	// Load shaders
 	VkShaderModule taskModule, meshModule, fragModule;
@@ -3513,6 +3513,11 @@ void Viewer::run() {
 
 		{
 			TracyVkZone(tracyCtx, cmd, "Shadow map generation");
+			VkDebugUtilsLabelEXT label {
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+				.pLabelName = "Shadow map generation",
+			};
+			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
 
 			// Transition the shadow map image from UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL
 			const VkImageMemoryBarrier2 imageBarrier {
@@ -3588,6 +3593,10 @@ void Viewer::run() {
 			vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 			for (std::uint32_t i = 0; i < glsl::shadowMapCount; ++i) {
+				auto str = fmt::format("Shadow cascade {}", i);
+				label.pLabelName = str.c_str();
+				vkCmdInsertDebugUtilsLabelEXT(cmd, &label);
+
 				vkCmdPushConstants(cmd, shadowMapPipelineLayout, VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT, 0, sizeof(std::uint32_t), &i);
 				vkCmdDrawMeshTasksIndirectEXT(cmd,
 											  drawBuffers[currentFrame].primitiveDrawHandle, 0,
@@ -3596,10 +3605,17 @@ void Viewer::run() {
 			}
 
 			vkCmdEndRendering(cmd);
+
+			vkCmdEndDebugUtilsLabelEXT(cmd);
 		}
 
 		{
 			TracyVkZone(tracyCtx, cmd, "Mesh shading");
+			const VkDebugUtilsLabelEXT label {
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+				.pLabelName = "Mesh shading",
+			};
+			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
 
 			// Transition the swapchain image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL for rendering
 			// Transition the depth image from UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL
@@ -3734,11 +3750,18 @@ void Viewer::run() {
 			}
 
 			vkCmdEndRendering(cmd);
+
+			vkCmdEndDebugUtilsLabelEXT(cmd);
 		}
 
 		// Draw UI
 		{
 			TracyVkZone(tracyCtx, cmd, "ImGui rendering");
+			const VkDebugUtilsLabelEXT label {
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+				.pLabelName = "ImGui rendering",
+			};
+			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
 
 			// Insert a barrier to protect against any hazard reads from ImGui textures we might be using as render targets.
 			const VkMemoryBarrier2 memoryBarrier {
@@ -3757,6 +3780,8 @@ void Viewer::run() {
 
 			auto extent = glm::u32vec2(swapchain.extent.width, swapchain.extent.height);
 			imgui.draw(cmd, swapchainImageViews[swapchainImageIndex], extent, currentFrame);
+
+			vkCmdEndDebugUtilsLabelEXT(cmd);
 		}
 
 		// Transition the swapchain image from COLOR_ATTACHMENT -> PRESENT_SRC_KHR
@@ -3777,7 +3802,6 @@ void Viewer::run() {
 				.layerCount = 1,
 			},
 		};
-
 		const VkDependencyInfo dependencyInfo {
 			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
 			.imageMemoryBarrierCount = 1,

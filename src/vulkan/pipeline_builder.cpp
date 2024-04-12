@@ -78,13 +78,14 @@ vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::setPipelineFlags(std::ui
     return *this;
 }
 
-vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::setShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name) {
+vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::setShaderStage(std::uint32_t idx, VkShaderStageFlagBits stage, VkShaderModule module, std::string_view name, const VkSpecializationInfo* specInfo) {
     assert(idx < pipelineInfos.size());
     pipelineInfos[idx].stage = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = stage,
-            .module = module,
-            .pName = name.data(),
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+		.stage = stage,
+		.module = module,
+		.pName = name.data(),
+		.pSpecializationInfo = specInfo,
     };
     return *this;
 }

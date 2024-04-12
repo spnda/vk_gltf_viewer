@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <queue>
 #include <span>
 
 #include <vulkan/vk.hpp>
@@ -11,7 +13,7 @@ namespace vk {
 		std::uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED;
 		VkDevice device = VK_NULL_HANDLE;
 
-		std::deque<VkCommandBuffer> availableCommandBuffers;
+		std::queue<VkCommandBuffer> availableCommandBuffers;
 
 	public:
 		void create(VkDevice nDevice, std::uint32_t queueFamilyIndex) {
@@ -48,7 +50,7 @@ namespace vk {
 		void allocate(VkCommandBuffer& handle) {
 			if (!availableCommandBuffers.empty()) {
 				handle = availableCommandBuffers.front();
-				availableCommandBuffers.pop_front();
+				availableCommandBuffers.pop();
 				return;
 			}
 
@@ -66,7 +68,7 @@ namespace vk {
 			if (availableCommandBuffers.size() >= handles.size()) {
 				for (auto& handle: handles) {
 					handle = availableCommandBuffers.front();
-					availableCommandBuffers.pop_front();
+					availableCommandBuffers.pop();
 				}
 				return;
 			}
@@ -84,7 +86,7 @@ namespace vk {
 		/** Makes the command buffer available again, and resets it */
 		void reset_and_free(VkCommandBuffer handle) {
 			vkResetCommandBuffer(handle, 0);
-			availableCommandBuffers.emplace_back(handle);
+			availableCommandBuffers.emplace(handle);
 		}
 	};
 } // namespace vk
