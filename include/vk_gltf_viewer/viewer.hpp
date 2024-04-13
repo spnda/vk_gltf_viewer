@@ -57,7 +57,7 @@ struct CameraMovement {
 	float pitch = 0.0f;
 	bool firstMouse = false;
 
-	float speedMultiplier = 0.05f;
+	float speedMultiplier = 5.f;
 };
 
 #include <mesh_common.glsl.h>
@@ -337,8 +337,8 @@ struct Viewer {
 	VkPipelineLayout shadowMapPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowMapPipeline = VK_NULL_HANDLE;
 
-	float sunAzimuth = 0.0f;
-	float sunAltitude = 0.0f;
+	float sunAzimuth = 10.f;
+	float sunAltitude = 130.f;
 
     DeletionQueue deletionQueue;
 	TimelineDeletionQueue timelineDeletionQueue;

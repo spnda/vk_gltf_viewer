@@ -236,11 +236,15 @@ void Viewer::setupVulkanInstance() {
         builder.enable_extensions(glfwExtensionCount, glfwExtensionArray);
     }
 
+	builder.enable_extension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
     auto instanceResult = builder
             .set_app_name("vk_viewer")
             .require_api_version(1, 3, 0)
+#if DEBUG
             .request_validation_layers()
             .set_debug_callback(vulkanDebugCallback)
+#endif
             .build();
     checkResult(instanceResult);
 
@@ -745,11 +749,11 @@ void Viewer::buildMeshPipeline() {
 	std::array<VkPipeline, 2> pipelines {};
     result = builder.build(pipelines.data());
 	vk::checkResult(result, "Failed to create mesh and aabb visualizing pipeline: {}");
-	vk::setDebugUtilsName(device, meshPipeline, "Mesh pipeline");
-	vk::setDebugUtilsName(device, aabbVisualizingPipeline, "AABB Visualization pipeline");
 
 	meshPipeline = pipelines[0];
 	aabbVisualizingPipeline = pipelines[1];
+	vk::setDebugUtilsName(device, meshPipeline, "Mesh pipeline");
+	vk::setDebugUtilsName(device, aabbVisualizingPipeline, "AABB Visualization pipeline");
 
 	// We don't need the shader modules after creating the pipeline anymore.
     vkDestroyShaderModule(device, fragModule, VK_NULL_HANDLE);
@@ -2472,12 +2476,12 @@ void Viewer::createShadowMap() {
 	vk::setDebugUtilsName(device, shadowMapImageView, "Shadow map image view");
 
 	// Update the material descriptor with the shadowMap
-	const VkDescriptorImageInfo imageInfo{
+	const VkDescriptorImageInfo imageInfo {
 		.sampler = shadowMapSampler,
 		.imageView = shadowMapImageView,
 		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 	};
-	const VkWriteDescriptorSet write{
+	const VkWriteDescriptorSet write {
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 		.dstSet = materialSet,
 		.dstBinding = 1,
@@ -2552,7 +2556,7 @@ void Viewer::createShadowMapPipeline() {
 		.addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
 		.addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
 		.setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-		.setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL)
+		.setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER_OR_EQUAL)
 		// We're using CULL_MODE_FRONT to avoid peter panning
 		.setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
 		.setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
@@ -3054,7 +3058,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		glm::mat4 lightProjection = glm::orthoRH_ZO(min.x, max.x, min.y, max.y, -(max.z - min.z), max.z - min.z);
 
 		lightProjection[1][1] *= -1;
-		camera.views[i + 1].viewProjection = lightProjection * lightView;
+		camera.views[i + 1].viewProjection = reverseDepth(lightProjection) * lightView;
 		camera.views[i + 1].projectionZLength = (max.z - min.z) * 2; // zFar - zNear
 		generateCameraFrustum(camera.views[i + 1]);
 	}
@@ -3562,7 +3566,7 @@ void Viewer::run() {
 				.resolveMode = VK_RESOLVE_MODE_NONE,
 				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-				.clearValue = {1.0f, 0.0f},
+				.clearValue = {0.0f, 0.0f},
 			};
 			const VkRenderingInfo renderingInfo {
 				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,

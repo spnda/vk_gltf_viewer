@@ -58,7 +58,7 @@ void main() {
         const bool visible = isMeshletVisibleAabb(worldAabbCenter, worldAabbExtent, layerIndex + 1);
 
         // Get the index for this thread for this subgroup
-        uint payloadIndex = subgroupExclusiveAdd(uint(visible));
+        const uint payloadIndex = subgroupExclusiveAdd(uint(visible));
         if (visible) {
             taskPayload.deltaIDs[visibleMeshlets + payloadIndex] = uint8_t(idx);
         }

@@ -3,6 +3,7 @@
 
 #include <tracy/Tracy.hpp>
 
+#include <vulkan/debug_utils.hpp>
 #include <vulkan/pipeline_builder.hpp>
 
 VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, VkShaderModule *pShaderModule) {
@@ -26,7 +27,13 @@ VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, V
         .pCode = buffer.get(),
     };
 
-    return vkCreateShaderModule(device, &createInfo, VK_NULL_HANDLE, pShaderModule);
+    auto result = vkCreateShaderModule(device, &createInfo, VK_NULL_HANDLE, pShaderModule);
+	if (result != VK_SUCCESS) {
+		return result;
+	}
+
+	vk::setDebugUtilsName(device, *pShaderModule, filePath.string());
+	return result;
 }
 
 vk::PipelineBuilder::PipelineBuilder(VkDevice device)

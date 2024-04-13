@@ -78,7 +78,7 @@ float shadow(in vec3 normal, in vec3 worldSpacePos) {
         for (int y = -kernelSize; y <= kernelSize; ++y) {
             // Sample from the shadow map with an offset and determine if we are the closest fragment for the light
             float pcfDepth = texture(shadowMap, vec3(coords.xy + vec2(x, y) * texelSize, layer)).r;
-            shadow += receiverDepth > pcfDepth + bias ? 1.f : 0.f;
+            shadow += receiverDepth < pcfDepth - bias ? 1.f : 0.f;
         }
     }
     return shadow / pow(2 * kernelSize + 1, 2);
