@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <functional>
 #include <numbers>
 #include <numeric>
@@ -32,6 +33,33 @@
 #include <vk_gltf_viewer/util.hpp>
 #include <vk_gltf_viewer/viewer.hpp>
 #include <vk_gltf_viewer/scheduler.hpp>
+
+void* vkAlloc(void* userData, std::size_t size, std::size_t alignment, VkSystemAllocationScope scope) noexcept {
+#ifdef _WIN32
+	auto* ptr = _aligned_malloc(size, alignment);
+#else
+	auto* ptr = std::aligned_alloc(alignment, size);
+#endif
+#ifdef TRACY_ENABLE
+	TracyAlloc(ptr, size);
+#endif
+	return ptr;
+}
+
+void* vkRealloc(void* userData, void* original, std::size_t size, std::size_t alignment, VkSystemAllocationScope scope) noexcept {
+	return _aligned_realloc(original, size, alignment);
+}
+
+void vkFree(void* userData, void* alloc) noexcept {
+#ifdef TRACY_ENABLE
+	TracyFree(alloc);
+#endif
+#ifdef _WIN32
+	_aligned_free(alloc);
+#else
+	std::free(alloc);
+#endif
+}
 
 #ifdef TRACY_ENABLE
 void* operator new(std::size_t count)
@@ -227,6 +255,14 @@ void Viewer::setupVulkanInstance() {
         throw std::runtime_error("The Vulkan loader only supports version 1.0.");
     }
 
+	// Initialize allocation callbacks
+	vk::allocationCallbacks = VkAllocationCallbacks {
+		.pUserData = nullptr,
+		.pfnAllocation = &vkAlloc,
+		.pfnReallocation = &vkRealloc,
+		.pfnFree = &vkFree,
+	};
+
     vkb::InstanceBuilder builder;
 
     // Enable GLFW extensions
@@ -370,6 +406,7 @@ void Viewer::setupVulkanDevice() {
 		.flags = allocatorFlags | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
 		.physicalDevice = device.physical_device,
 		.device = device,
+		.pAllocationCallbacks = &vk::allocationCallbacks,
 		.pVulkanFunctions = &vmaFunctions,
 		.instance = instance,
 		.vulkanApiVersion = VK_API_VERSION_1_3,
@@ -450,7 +487,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 	});
 	timelineDeletionQueue.push([this, image = depthImage, allocation = depthImageAllocation, view = depthImageView] {
 		if (image != VK_NULL_HANDLE) {
-			vkDestroyImageView(device, view, VK_NULL_HANDLE);
+			vkDestroyImageView(device, view, nullptr);
 			vmaDestroyImage(allocator, image, allocation);
 		}
 	});
@@ -503,7 +540,7 @@ void Viewer::rebuildSwapchain(std::uint32_t width, std::uint32_t height) {
 			.layerCount = 1,
 		}
 	};
-	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &depthImageView);
+	result = vkCreateImageView(device, &imageViewInfo, &vk::allocationCallbacks, &depthImageView);
 	vk::checkResult(result, "Failed to create depth image view: {}");
 	vk::setDebugUtilsName(device, depthImageView, "Depth image view");
 }
@@ -534,11 +571,11 @@ void Viewer::createDescriptorPool() {
 		.poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
 		.pPoolSizes = sizes.data(),
 	};
-	auto result = vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &descriptorPool);
+	auto result = vkCreateDescriptorPool(device, &poolCreateInfo, &vk::allocationCallbacks, &descriptorPool);
 	vk::checkResult(result, "Failed to create descriptor pool: {}");
 
 	deletionQueue.push([&]() {
-		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+		vkDestroyDescriptorPool(device, descriptorPool, &vk::allocationCallbacks);
 	});
 }
 
@@ -559,12 +596,12 @@ void Viewer::buildCameraDescriptor() {
 		.pBindings = layoutBindings.data(),
 	};
 	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
-											  VK_NULL_HANDLE, &cameraSetLayout);
+											  &vk::allocationCallbacks, &cameraSetLayout);
 	vk::checkResult(result, "Failed to create camera descriptor set layout: {}");
 	vk::setDebugUtilsName(device, cameraSetLayout, "Camera descriptor layout");
 
 	deletionQueue.push([&]() {
-		vkDestroyDescriptorSetLayout(device, cameraSetLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, cameraSetLayout, &vk::allocationCallbacks);
 	});
 
 	// Allocate frameOverlap descriptor sets used for the camera buffer.
@@ -646,7 +683,7 @@ void Viewer::buildMeshPipeline() {
         .pSetLayouts = layouts.data(),
         .pushConstantRangeCount = 0,
     };
-    auto result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &meshPipelineLayout);
+    auto result = vkCreatePipelineLayout(device, &layoutCreateInfo, &vk::allocationCallbacks, &meshPipelineLayout);
 	vk::checkResult(result, "Failed to create mesh pipeline layout: {}");
 	vk::setDebugUtilsName(device, meshPipelineLayout, "Mesh shading pipeline layout");
 
@@ -758,16 +795,16 @@ void Viewer::buildMeshPipeline() {
 	vk::setDebugUtilsName(device, aabbVisualizingPipeline, "AABB Visualization pipeline");
 
 	// We don't need the shader modules after creating the pipeline anymore.
-    vkDestroyShaderModule(device, fragModule, VK_NULL_HANDLE);
-    vkDestroyShaderModule(device, meshModule, VK_NULL_HANDLE);
-	vkDestroyShaderModule(device, taskModule, VK_NULL_HANDLE);
-	vkDestroyShaderModule(device, aabbFragModule, VK_NULL_HANDLE);
-	vkDestroyShaderModule(device, aabbVertModule, VK_NULL_HANDLE);
+    vkDestroyShaderModule(device, fragModule, &vk::allocationCallbacks);
+    vkDestroyShaderModule(device, meshModule, &vk::allocationCallbacks);
+	vkDestroyShaderModule(device, taskModule, &vk::allocationCallbacks);
+	vkDestroyShaderModule(device, aabbFragModule, &vk::allocationCallbacks);
+	vkDestroyShaderModule(device, aabbVertModule, &vk::allocationCallbacks);
 
     deletionQueue.push([this]() {
-        vkDestroyPipeline(device, meshPipeline, VK_NULL_HANDLE);
-        vkDestroyPipelineLayout(device, meshPipelineLayout, VK_NULL_HANDLE);
-		vkDestroyPipeline(device, aabbVisualizingPipeline, VK_NULL_HANDLE);
+        vkDestroyPipeline(device, meshPipeline, &vk::allocationCallbacks);
+        vkDestroyPipelineLayout(device, meshPipelineLayout, &vk::allocationCallbacks);
+		vkDestroyPipeline(device, aabbVisualizingPipeline, &vk::allocationCallbacks);
     });
 }
 
@@ -778,11 +815,11 @@ void Viewer::createFrameData() {
         constexpr VkSemaphoreCreateInfo semaphoreCreateInfo = {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
 		};
-        auto semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.imageAvailable);
+        auto semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, &vk::allocationCallbacks, &frame.imageAvailable);
 		vk::checkResult(semaphoreResult, "Failed to create image semaphore: {}");
 		vk::setDebugUtilsName(device, frame.imageAvailable, "Image acquire semaphore");
 
-        semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &frame.renderingFinished);
+        semaphoreResult = vkCreateSemaphore(device, &semaphoreCreateInfo, &vk::allocationCallbacks, &frame.renderingFinished);
 		vk::checkResult(semaphoreResult, "Failed to create rendering semaphore: {}");
 		vk::setDebugUtilsName(device, frame.renderingFinished, "Rendering finished semaphore");
 
@@ -790,15 +827,15 @@ void Viewer::createFrameData() {
 			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
 		};
-        auto fenceResult = vkCreateFence(device, &fenceCreateInfo, nullptr, &frame.presentFinished);
+        auto fenceResult = vkCreateFence(device, &fenceCreateInfo, &vk::allocationCallbacks, &frame.presentFinished);
 		vk::checkResult(fenceResult, "Failed to create present fence: {}");
 		vk::setDebugUtilsName(device, frame.presentFinished, "Present fence");
     }
 	deletionQueue.push([this]() {
 		for (auto& frame : frameSyncData) {
-			vkDestroyFence(device, frame.presentFinished, nullptr);
-			vkDestroySemaphore(device, frame.renderingFinished, nullptr);
-			vkDestroySemaphore(device, frame.imageAvailable, nullptr);
+			vkDestroyFence(device, frame.presentFinished, &vk::allocationCallbacks);
+			vkDestroySemaphore(device, frame.renderingFinished, &vk::allocationCallbacks);
+			vkDestroySemaphore(device, frame.imageAvailable, &vk::allocationCallbacks);
 		}
 	});
 
@@ -809,7 +846,7 @@ void Viewer::createFrameData() {
 			// .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
 			.queueFamilyIndex = graphicsQueueFamily,
 		};
-        auto createResult = vkCreateCommandPool(device, &commandPoolInfo, nullptr, &frame.pool);
+        auto createResult = vkCreateCommandPool(device, &commandPoolInfo, &vk::allocationCallbacks, &frame.pool);
 		vk::checkResult(createResult, "Failed to create frame command pool: {}");
 
         const VkCommandBufferAllocateInfo allocateInfo {
@@ -824,7 +861,7 @@ void Viewer::createFrameData() {
     }
 	deletionQueue.push([this]() {
 		for (auto& frame : frameCommandPools)
-			vkDestroyCommandPool(device, frame.pool, nullptr);
+			vkDestroyCommandPool(device, frame.pool, &vk::allocationCallbacks);
 	});
 }
 
@@ -1165,12 +1202,12 @@ void Viewer::loadGltfMeshes() {
 		.pBindings = layoutBindings.data(),
 	};
 	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
-											  VK_NULL_HANDLE, &meshletSetLayout);
+											  &vk::allocationCallbacks, &meshletSetLayout);
 	vk::checkResult(result, "Failed to create meshlet descriptor set layout: {}");
 	vk::setDebugUtilsName(device, meshletSetLayout, "Mesh shader pipeline descriptor layout");
 
 	deletionQueue.push([this]() {
-		vkDestroyDescriptorSetLayout(device, meshletSetLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, meshletSetLayout, &vk::allocationCallbacks);
 	});
 
 	for (auto& gltf : assets) {
@@ -1287,6 +1324,8 @@ void Viewer::immediateSubmit(Queue& queue, vk::CommandPool& cmdPool, std::functi
 
 		if (result == VK_SUCCESS) {
 			// Submit has finished, we can free the fence and command buffer
+			// TODO: We shouldn't be accessing this pool from any thread, as command pools need to be externally synchronized,
+			//		 including all of the command buffers allocated from each pool.
 			it->commandPool->reset_and_free(it->submittedCommandBuffer);
 			fencePool.free(it->associatedFence);
 
@@ -1307,8 +1346,6 @@ void Viewer::flushSubmits() {
 	for (auto& pending : pendingUploadSubmits) {
 		vk::checkResult(pending.associatedFence->wait(), "Failed to wait on fence: {}");
 
-		// TODO: We shouldn't be accessing this pool from any thread, as command pools need to be externally synchronized,
-		//		 including all of the command buffers allocated from each pool.
 		pending.commandPool->reset_and_free(pending.submittedCommandBuffer);
 		fencePool.free(pending.associatedFence);
 		pending.finishCallback();
@@ -1589,7 +1626,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 				.layerCount = 1,
 			},
 		};
-		result = vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
+		result = vkCreateImageView(viewer->device, &imageViewInfo, &vk::allocationCallbacks, &sampledImage.imageView);
 		vk::checkResult(result, "Failed to create Vulkan image view for stbi image: {}");
 
 		// Create the staging buffer and map it.
@@ -1814,7 +1851,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 
 		auto imageViewInfo = dds::getVulkanImageViewCreateInfo(&image, vkFormat);
 		imageViewInfo.image = sampledImage.image;
-		result = vkCreateImageView(viewer->device, &imageViewInfo, nullptr, &sampledImage.imageView);
+		result = vkCreateImageView(viewer->device, &imageViewInfo, &vk::allocationCallbacks, &sampledImage.imageView);
 		vk::checkResult(result, "Failed to create Vulkan image view for DDS texture: {}");
 
 		// Compute the aligned offsets for every mip level
@@ -2001,7 +2038,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 				.layerCount = 1,
 			}
 		};
-		result = vkCreateImageView(viewer->device, &imageViewInfo, nullptr, &sampledImage.imageView);
+		result = vkCreateImageView(viewer->device, &imageViewInfo, &vk::allocationCallbacks, &sampledImage.imageView);
 		vk::checkResult(result, "Failed to create Vulkan image view for KTX2 texture: {}");
 
 		// Create the staging allocation and copy the texture data over
@@ -2284,7 +2321,7 @@ void Viewer::createDefaultImages() {
 			.layerCount = 1,
 		},
 	};
-	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &defaultTexture.imageView);
+	result = vkCreateImageView(device, &imageViewInfo, &vk::allocationCallbacks, &defaultTexture.imageView);
 	vk::checkResult(result, "Failed to create default image view: {}");
 	vk::setDebugUtilsName(device, defaultTexture.imageView, "Default image view");
 }
@@ -2398,11 +2435,11 @@ void Viewer::loadGltfImages() {
 		.pBindings = layoutBindings.data(),
 	};
 	auto result = vkCreateDescriptorSetLayout(device, &descriptorLayoutCreateInfo,
-											  VK_NULL_HANDLE, &materialSetLayout);
+											  &vk::allocationCallbacks, &materialSetLayout);
 	vk::checkResult(result, "Failed to create material descriptor set layout: {}");
 	vk::setDebugUtilsName(device, materialSetLayout, "Material descriptor layout");
 	deletionQueue.push([this]() {
-		vkDestroyDescriptorSetLayout(device, materialSetLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, materialSetLayout, &vk::allocationCallbacks);
 	});
 
 	// Allocate the material descriptor
@@ -2435,7 +2472,7 @@ void Viewer::loadGltfImages() {
 		.maxAnisotropy = 16.0f,
 		.maxLod = VK_LOD_CLAMP_NONE,
 	};
-	result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[0]);
+	result = vkCreateSampler(device, &samplerInfo, &vk::allocationCallbacks, &samplers[0]);
 	vk::checkResult(result, "Failed to create default sampler: {}");
 	vk::setDebugUtilsName(device, samplers[0], "Default sampler");
 
@@ -2451,7 +2488,7 @@ void Viewer::loadGltfImages() {
 			samplerInfo.addressModeV = getVulkanAddressMode(sampler.wrapT);
 			samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 			samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
-			result = vkCreateSampler(device, &samplerInfo, nullptr, &samplers[gltf.baseSamplerOffset + i++]);
+			result = vkCreateSampler(device, &samplerInfo, &vk::allocationCallbacks, &samplers[gltf.baseSamplerOffset + i++]);
 			vk::checkResult(result, "Failed to create sampler: {}");
 		}
 		samplerOffset += gltf.asset.samplers.size();
@@ -2566,7 +2603,7 @@ void Viewer::createShadowMap() {
 			.layerCount = glsl::shadowMapCount,
 		}
 	};
-	result = vkCreateImageView(device, &imageViewInfo, VK_NULL_HANDLE, &shadowMapImageView);
+	result = vkCreateImageView(device, &imageViewInfo, &vk::allocationCallbacks, &shadowMapImageView);
 	vk::checkResult(result, "Failed to create shadow map image view: {}");
 	vk::setDebugUtilsName(device, shadowMapImageView, "Shadow map image view");
 
@@ -2601,7 +2638,7 @@ void Viewer::createShadowMapPipeline() {
 		.maxLod = 1.0f,
 		.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, // I think this should be 1.0f in all components?
 	};
-	auto result = vkCreateSampler(device, &samplerInfo, nullptr, &shadowMapSampler);
+	auto result = vkCreateSampler(device, &samplerInfo, &vk::allocationCallbacks, &shadowMapSampler);
 	vk::checkResult(result, "Failed to create shadow map sampler: {}");
 	vk::setDebugUtilsName(device, shadowMapSampler, "Shadow map sampler");
 
@@ -2609,8 +2646,8 @@ void Viewer::createShadowMapPipeline() {
 	createShadowMap();
 
 	deletionQueue.push([&]() {
-		vkDestroySampler(device, shadowMapSampler, nullptr);
-		vkDestroyImageView(device, shadowMapImageView, nullptr);
+		vkDestroySampler(device, shadowMapSampler, &vk::allocationCallbacks);
+		vkDestroyImageView(device, shadowMapImageView, &vk::allocationCallbacks);
 		vmaDestroyImage(allocator, shadowMapImage, shadowMapAllocation);
 	});
 
@@ -2628,7 +2665,7 @@ void Viewer::createShadowMapPipeline() {
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &pushConstantRange,
 	};
-	result = vkCreatePipelineLayout(device, &layoutCreateInfo, VK_NULL_HANDLE, &shadowMapPipelineLayout);
+	result = vkCreatePipelineLayout(device, &layoutCreateInfo, &vk::allocationCallbacks, &shadowMapPipelineLayout);
 	vk::checkResult(result, "Failed to create shadow map pipeline layout: {}");
 	vk::setDebugUtilsName(device, shadowMapPipelineLayout, "Shadow map pipeline layout");
 
@@ -2665,13 +2702,13 @@ void Viewer::createShadowMapPipeline() {
 	vk::checkResult(result, "Failed to create shadow map pipeline: {}");
 	vk::setDebugUtilsName(device, shadowMapPipeline, "Shadow map pipeline");
 
-	vkDestroyShaderModule(device, fragModule, nullptr);
-	vkDestroyShaderModule(device, meshModule, nullptr);
-	vkDestroyShaderModule(device, taskModule, nullptr);
+	vkDestroyShaderModule(device, fragModule, &vk::allocationCallbacks);
+	vkDestroyShaderModule(device, meshModule, &vk::allocationCallbacks);
+	vkDestroyShaderModule(device, taskModule, &vk::allocationCallbacks);
 
 	deletionQueue.push([this]() {
-		vkDestroyPipeline(device, shadowMapPipeline, nullptr);
-		vkDestroyPipelineLayout(device, shadowMapPipelineLayout, nullptr);
+		vkDestroyPipeline(device, shadowMapPipeline, &vk::allocationCallbacks);
+		vkDestroyPipelineLayout(device, shadowMapPipelineLayout, &vk::allocationCallbacks);
 	});
 }
 
@@ -3292,7 +3329,7 @@ void Viewer::renderUi() {
 							&minRes, &maxRes, fmt::format("{}", shadowResolution).c_str())) {
 			shadowResolution = shadowResolutionSliderValue * resolutionStepSize;
 			timelineDeletionQueue.push([this, image = shadowMapImage, allocation = shadowMapAllocation, view = shadowMapImageView]() {
-				vkDestroyImageView(device, view, nullptr);
+				vkDestroyImageView(device, view, &vk::allocationCallbacks);
 				vmaDestroyImage(allocator, image, allocation);
 			});
 
@@ -3498,7 +3535,7 @@ void Viewer::run() {
 		for (auto& view: swapchainImageViews)
 			vkDestroyImageView(device, view, nullptr);
 		vkb::destroy_swapchain(swapchain);
-		vkDestroyImageView(device, depthImageView, VK_NULL_HANDLE);
+		vkDestroyImageView(device, depthImageView, &vk::allocationCallbacks);
 		vmaDestroyImage(allocator, depthImage, depthImageAllocation);
 	});
 
@@ -4000,12 +4037,12 @@ void Viewer::destroy() noexcept {
 
 		// Destroy the samplers
 		for (auto& sampler: samplers) {
-			vkDestroySampler(device, sampler, VK_NULL_HANDLE);
+			vkDestroySampler(device, sampler, &vk::allocationCallbacks);
 		}
 
 		// Destroy the images
 		for (auto& image: images) {
-			vkDestroyImageView(device, image.imageView, VK_NULL_HANDLE);
+			vkDestroyImageView(device, image.imageView, &vk::allocationCallbacks);
 			vmaDestroyImage(allocator, image.image, image.allocation);
 		}
 

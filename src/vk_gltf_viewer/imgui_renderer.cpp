@@ -103,7 +103,7 @@ void imgui::Renderer::createFontAtlas() {
 			.layerCount = 1,
 		}
 	};
-	vkCreateImageView(viewer->device, &imageViewCreateInfo, VK_NULL_HANDLE, &fontAtlasView);
+	vkCreateImageView(viewer->device, &imageViewCreateInfo, &vk::allocationCallbacks, &fontAtlasView);
 	vk::setDebugUtilsName(viewer->device, fontAtlasView, "ImGui font atlas view");
 	io.Fonts->SetTexID(static_cast<ImTextureID>(fontAtlasView));
 
@@ -196,19 +196,19 @@ void imgui::Renderer::destroy() {
 		}
 
 		vmaDestroyBuffer(viewer->allocator, fontAtlasStagingBuffer, fontAtlasStagingAllocation);
-		vkDestroySampler(viewer->device, fontAtlasSampler, nullptr);
-		vkDestroyImageView(viewer->device, fontAtlasView, nullptr);
+		vkDestroySampler(viewer->device, fontAtlasSampler, &vk::allocationCallbacks);
+		vkDestroyImageView(viewer->device, fontAtlasView, &vk::allocationCallbacks);
 		vmaDestroyImage(viewer->allocator, fontAtlas, fontAtlasAllocation);
 
 		vkResetDescriptorPool(viewer->device, descriptorPool, 0);
-		vkDestroyDescriptorPool(viewer->device, descriptorPool, nullptr);
-		vkDestroyDescriptorSetLayout(viewer->device, descriptorLayout, nullptr);
+		vkDestroyDescriptorPool(viewer->device, descriptorPool, &vk::allocationCallbacks);
+		vkDestroyDescriptorSetLayout(viewer->device, descriptorLayout, &vk::allocationCallbacks);
 
-		vkDestroyPipeline(viewer->device, pipeline, nullptr);
-		vkDestroyPipelineLayout(viewer->device, pipelineLayout, nullptr);
+		vkDestroyPipeline(viewer->device, pipeline, &vk::allocationCallbacks);
+		vkDestroyPipelineLayout(viewer->device, pipelineLayout, &vk::allocationCallbacks);
 
-		vkDestroyShaderModule(viewer->device, fragmentShader, nullptr);
-		vkDestroyShaderModule(viewer->device, vertexShader, nullptr);
+		vkDestroyShaderModule(viewer->device, fragmentShader, &vk::allocationCallbacks);
+		vkDestroyShaderModule(viewer->device, vertexShader, &vk::allocationCallbacks);
 	}
 
 	ImGui_ImplGlfw_Shutdown();
@@ -216,7 +216,7 @@ void imgui::Renderer::destroy() {
 
 	if (volkGetLoadedDevice() != nullptr) {
 		taskScheduler.WaitforTask(&cacheSaveTask);
-		vkDestroyPipelineCache(viewer->device, pipelineCache, nullptr);
+		vkDestroyPipelineCache(viewer->device, pipelineCache, &vk::allocationCallbacks);
 	}
 }
 
@@ -512,7 +512,7 @@ VkResult imgui::Renderer::init(Viewer* pViewer) {
 	const VkSamplerCreateInfo samplerInfo = {
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 	};
-	auto samplerResult = vkCreateSampler(viewer->device, &samplerInfo, VK_NULL_HANDLE, &fontAtlasSampler);
+	auto samplerResult = vkCreateSampler(viewer->device, &samplerInfo, &vk::allocationCallbacks, &fontAtlasSampler);
 	vk::checkResult(samplerResult, "Failed to create ImGui font-atlas sampler");
 	vk::setDebugUtilsName(viewer->device, fontAtlasSampler, "ImGui font-atlas sampler");
 
@@ -538,7 +538,7 @@ VkResult imgui::Renderer::init(Viewer* pViewer) {
 		.bindingCount = 1,
 		.pBindings = &binding,
 	};
-	auto descriptorLayoutResult = vkCreateDescriptorSetLayout(viewer->device, &descriptorLayoutInfo, nullptr, &descriptorLayout);
+	auto descriptorLayoutResult = vkCreateDescriptorSetLayout(viewer->device, &descriptorLayoutInfo, &vk::allocationCallbacks, &descriptorLayout);
 	vk::checkResult(descriptorLayoutResult, "Failed to create ImGui font atlas descriptor set layout: {}");
 
 	// Create the descriptor pool to hold exactly the amount of descriptors the backend supports.
@@ -555,7 +555,7 @@ VkResult imgui::Renderer::init(Viewer* pViewer) {
 		.poolSizeCount = static_cast<std::uint32_t>(descriptorPoolSizes.size()),
 		.pPoolSizes = descriptorPoolSizes.data(),
 	};
-	auto descriptorPoolResult = vkCreateDescriptorPool(viewer->device, &descriptorPoolInfo, nullptr, &descriptorPool);
+	auto descriptorPoolResult = vkCreateDescriptorPool(viewer->device, &descriptorPoolInfo, &vk::allocationCallbacks, &descriptorPool);
 	vk::checkResult(descriptorPoolResult, "Failed to create ImGui descriptor pool: {}");
 
 	// Create the single descriptor set
@@ -581,7 +581,7 @@ VkResult imgui::Renderer::init(Viewer* pViewer) {
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &pushConstantRange,
 	};
-	auto result = vkCreatePipelineLayout(viewer->device, &layoutCreateInfo, VK_NULL_HANDLE, &pipelineLayout);
+	auto result = vkCreatePipelineLayout(viewer->device, &layoutCreateInfo, &vk::allocationCallbacks, &pipelineLayout);
 	if (result != VK_SUCCESS) {
 		return result;
 	}

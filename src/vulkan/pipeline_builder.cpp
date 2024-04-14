@@ -27,7 +27,7 @@ VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, V
         .pCode = buffer.get(),
     };
 
-    auto result = vkCreateShaderModule(device, &createInfo, VK_NULL_HANDLE, pShaderModule);
+    auto result = vkCreateShaderModule(device, &createInfo, &vk::allocationCallbacks, pShaderModule);
 	if (result != VK_SUCCESS) {
 		return result;
 	}
@@ -187,7 +187,7 @@ VkResult vk::GraphicsPipelineBuilder::build(VkPipeline* pipeline) noexcept {
     }
 
     return vkCreateGraphicsPipelines(
-            device, pipelineCache, static_cast<std::uint32_t>(pipelineInfos.size()), pipelineInfos.data(), nullptr, pipeline);
+            device, pipelineCache, static_cast<std::uint32_t>(pipelineInfos.size()), pipelineInfos.data(), &vk::allocationCallbacks, pipeline);
 }
 
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::pushPNext(std::uint32_t idx, const void* pNext) {

@@ -56,4 +56,7 @@ namespace vk {
 			throw vulkan_error(message, result);
         }
     }
+
+	/** Global allocation callbacks value */
+	inline VkAllocationCallbacks allocationCallbacks;
 } // namespace vk

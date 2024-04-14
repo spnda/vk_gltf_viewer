@@ -28,7 +28,7 @@ namespace vk {
 				.initialDataSize = size,
 				.pInitialData = data,
 			};
-			return vkCreatePipelineCache(device, &cacheInfo, nullptr, cache);
+			return vkCreatePipelineCache(device, &cacheInfo, &vk::allocationCallbacks, cache);
 		}
 
 	public:

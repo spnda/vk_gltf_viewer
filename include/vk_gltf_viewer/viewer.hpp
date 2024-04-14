@@ -170,13 +170,13 @@ public:
 			.flags = 0,
 		};
 
-		auto result = vkCreateSemaphore(device, &createInfo, nullptr, &timelineSemaphore);
+		auto result = vkCreateSemaphore(device, &createInfo, &vk::allocationCallbacks, &timelineSemaphore);
 		vk::checkResult(result, "Failed to create timeline semaphore for deletion queue: {}");
 		vk::setDebugUtilsName(device, timelineSemaphore, "Deletion queue timeline semaphore");
 	}
 
 	void destroy() {
-		vkDestroySemaphore(device, timelineSemaphore, nullptr);
+		vkDestroySemaphore(device, timelineSemaphore, &vk::allocationCallbacks);
 		timelineSemaphore = VK_NULL_HANDLE;
 	}
 
