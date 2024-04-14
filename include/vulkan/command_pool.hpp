@@ -24,6 +24,7 @@ namespace vk {
 		CommandPool(CommandPool&& other) noexcept : pool(other.pool), device(other.device), availableCommandBuffers(std::move(other.availableCommandBuffers)) {}
 
 		void create(VkDevice nDevice, std::uint32_t queueFamilyIndex) {
+			ZoneScoped;
 			device = nDevice;
 			queueFamily = queueFamilyIndex;
 
@@ -55,6 +56,7 @@ namespace vk {
 		}
 
 		void allocate(VkCommandBuffer& handle) {
+			ZoneScoped;
 			if (!availableCommandBuffers.empty()) {
 				handle = availableCommandBuffers.front();
 				availableCommandBuffers.pop();
@@ -73,6 +75,7 @@ namespace vk {
 		}
 
 		void allocate(std::span<VkCommandBuffer> handles) {
+			ZoneScoped;
 			if (availableCommandBuffers.size() >= handles.size()) {
 				for (auto& handle: handles) {
 					handle = availableCommandBuffers.front();
@@ -94,6 +97,7 @@ namespace vk {
 
 		/** Makes the command buffer available again, and resets it */
 		void reset_and_free(VkCommandBuffer handle) {
+			ZoneScoped;
 			std::lock_guard lock(poolMutex);
 			vkResetCommandBuffer(handle, 0);
 			availableCommandBuffers.emplace(handle);

@@ -63,6 +63,7 @@ public:
 
 	/** This will reset the fence and the passed shared_ptr, as this is a reference. Only call this after having waited on the fence */
 	void free(std::shared_ptr<Fence>& fence) {
+		ZoneScoped;
 		vk::checkResult(vkResetFences(device, 1, &fence->handle), "Failed to reset fence");
 		std::lock_guard lock(availabilityMutex);
 		availableFences.emplace(std::move(fence));

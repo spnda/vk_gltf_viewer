@@ -280,6 +280,7 @@ VkResult imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize 
 }
 
 void imgui::Renderer::addTextureToDescriptorSet(ImTextureID textureId) {
+	ZoneScoped;
 	if (imageDescriptorIndices.contains(textureId)) {
 		return;
 	}

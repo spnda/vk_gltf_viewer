@@ -223,11 +223,13 @@ struct Queue {
 	std::unique_ptr<std::mutex> lock; // Can't hold the object in a vector otherwise.
 
 	VkResult submit(const VkSubmitInfo2& submit, VkFence fence) const {
+		ZoneScoped;
 		std::lock_guard guard(*lock);
 		return vkQueueSubmit2(handle, 1, &submit, fence);
 	}
 
 	VkResult submit(std::span<const VkSubmitInfo2> submits, VkFence fence) const {
+		ZoneScoped;
 		std::lock_guard guard(*lock);
 		return vkQueueSubmit2(handle, submits.size(), submits.data(), fence);
 	}

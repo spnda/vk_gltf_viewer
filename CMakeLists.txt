@@ -6,7 +6,7 @@ add_subdirectory(submodules)
 
 add_executable(vk_gltf_viewer EXCLUDE_FROM_ALL)
 target_compile_features(vk_gltf_viewer PUBLIC cxx_std_20)
-target_link_libraries(vk_gltf_viewer PRIVATE fastgltf stb dds_image ktx_read::ktx_read meshoptimizer)
+target_link_libraries(vk_gltf_viewer PRIVATE fastgltf wuffs dds_image ktx_read::ktx_read meshoptimizer)
 target_link_libraries(vk_gltf_viewer PRIVATE glfw::glfw imgui::imgui enkiTS::enkiTS Tracy::Client fmt::fmt glm::glm)
 target_link_libraries(vk_gltf_viewer PRIVATE Vulkan::Headers Vulkan::Utils volk::volk_headers vk-bootstrap::vk-bootstrap Vulkan::MemoryAllocator)
 

@@ -19,9 +19,6 @@
 [submodule "submodules/fastgltf"]
 	path = submodules/fastgltf
 	url = https://github.com/spnda/fastgltf
-[submodule "submodules/stb"]
-	path = submodules/stb
-	url = https://github.com/nothings/stb
 [submodule "submodules/glfw"]
 	path = submodules/glfw
 	url = https://github.com/glfw/glfw
@@ -46,3 +43,6 @@
 [submodule "submodules/ktx-software"]
 	path = submodules/ktx-software
 	url = https://github.com/KhronosGroup/KTX-Software/
+[submodule "submodules/wuffs"]
+	path = submodules/wuffs
+	url = https://github.com/google/wuffs

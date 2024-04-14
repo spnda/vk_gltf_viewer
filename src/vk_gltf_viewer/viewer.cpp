@@ -1484,7 +1484,8 @@ void Viewer::uploadMeshlets(GlobalMeshData& data) {
 	}
 }
 
-#include <stb_image.h>
+#define WUFFS_CONFIG__MODULE__AUX__IMAGE // For C++ image API
+#include "wuffs-v0.4.c"
 
 #define DDS_USE_STD_FILESYSTEM 1
 #include <dds.hpp>
@@ -1533,22 +1534,24 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		m_SetSize = asset.images.size();
 	}
 
-	void loadWithStb(std::uint32_t imageIdx, std::span<std::uint8_t> encodedImageData) const {
+	void loadDefault(std::uint32_t imageIdx, std::span<std::uint8_t> encodedImageData) const {
 		ZoneScoped;
-		static constexpr VkFormat imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
+		static constexpr VkFormat imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
 		static constexpr auto channels = 4;
 
-		// Load and decode the image data using stbi
-		int width = 0, height = 0, nrChannels = 0;
-		auto* ptr = stbi_load_from_memory(encodedImageData.data(), static_cast<int>(encodedImageData.size()), &width, &height, &nrChannels, channels);
-		if (ptr == nullptr) {
-			if (auto* reason = stbi_failure_reason(); reason != nullptr)
-				throw std::runtime_error(fmt::format("Failed to load image using stbi from memory: {}", reason));
-			throw std::runtime_error("Failed to load image using stbi from memory");
+		wuffs_aux::DecodeImageCallbacks callbacks;
+		wuffs_aux::sync_io::MemoryInput input(encodedImageData.data(), encodedImageData.size_bytes());
+		auto decodeResult = wuffs_aux::DecodeImage(callbacks, input);
+		if (!decodeResult.error_message.empty()) {
+			throw std::runtime_error(std::move(decodeResult.error_message));
+		}
+		if (!decodeResult.pixbuf.pixcfg.pixel_format().is_interleaved()) {
+			throw std::runtime_error("Cannot load non-interleaved PNG/JPEG images.");
 		}
 
+		std::uint32_t width = decodeResult.pixbuf.pixcfg.width(), height = decodeResult.pixbuf.pixcfg.height();
 		auto& sampledImage = viewer->images[imageOffset + imageIdx];
-		sampledImage.size = { static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height) };
+		sampledImage.size = { width, height };
 
 		auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
 		const VkImageCreateInfo imageInfo {
@@ -1590,21 +1593,20 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		vk::checkResult(result, "Failed to create Vulkan image view for stbi image: {}");
 
 		// Create the staging buffer and map it.
-		auto imageData = std::span(ptr, width * height * sizeof(std::uint8_t) * channels);
+		std::uint64_t dataLength = decodeResult.pixbuf.pixcfg.pixbuf_len();
 		VkBuffer stagingBuffer;
 		VmaAllocation stagingAllocation;
-		result = viewer->createHostStagingBuffer(imageData.size_bytes(), &stagingBuffer, &stagingAllocation);
+		result = viewer->createHostStagingBuffer(dataLength, &stagingBuffer, &stagingAllocation);
 		vk::checkResult(result, "Failed to create host staging buffer: {}");
 
 		{
 			vk::ScopedMap map(viewer->allocator, stagingAllocation);
-			std::memcpy(map.get(), imageData.data(), imageData.size_bytes());
+			std::memcpy(map.get(), decodeResult.pixbuf.plane(0).ptr, dataLength);
 		}
 
-		stbi_image_free(imageData.data());
-
+		// We need to use the graphicsQueue here, too, since we use a semaphore and that needs to stay on the same queue.
 		auto semaphore = viewer->semaphorePool.acquire();
-		viewer->immediateSubmit(viewer->getNextTransferQueueHandle(), viewer->uploadCommandPools[taskScheduler.GetThreadNum()], [&](auto cmd) {
+		viewer->immediateSubmit(viewer->graphicsQueue, viewer->graphicsCommandPools[taskScheduler.GetThreadNum()], [&](auto cmd) {
 			TracyVkZone(viewer->tracyCtx, cmd, "RGBA8 Image upload");
 
 			// Transition the entire image (with all mip levels) to TRANSFER_DST_OPTIMAL
@@ -1757,6 +1759,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 
 		vkEndCommandBuffer(cmd);
 
+		// TODO: Add support for semaphore wait on immediateSubmit
 		const VkSemaphoreSubmitInfo waitInfo {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 			.semaphore = semaphore->handle,
@@ -2107,7 +2110,7 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		switch (actualMime) {
 			case fastgltf::MimeType::PNG:
 			case fastgltf::MimeType::JPEG: {
-				loadWithStb(imageIdx, data);
+				loadDefault(imageIdx, data);
 				return;
 			}
 			case fastgltf::MimeType::DDS: {
