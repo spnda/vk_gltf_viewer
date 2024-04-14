@@ -424,8 +424,10 @@ void Viewer::setupVulkanDevice() {
 	});
 
 	fencePool.init(device);
+	semaphorePool.init(device);
 	deletionQueue.push([this]() {
 		fencePool.destroy();
+		semaphorePool.destroy();
 	});
 }
 
@@ -1200,6 +1202,7 @@ void Viewer::loadGltfMeshes() {
 }
 
 VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer, VmaAllocation *allocation) const noexcept {
+	ZoneScoped;
 	const VmaAllocationCreateInfo allocationCreateInfo {
 		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 	};
@@ -1213,6 +1216,7 @@ VkResult Viewer::createGpuTransferBuffer(std::size_t byteSize, VkBuffer *buffer,
 }
 
 VkResult Viewer::createHostStagingBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) const noexcept {
+	ZoneScoped;
 	// Using HOST_ACCESS_SEQUENTIAL_WRITE and adding TRANSFER_SRC to usage will make this buffer
 	// either land in BAR scope, or in system memory. In either case, this is sufficient for a staging buffer.
 	const VmaAllocationCreateInfo allocationCreateInfo {
@@ -1224,8 +1228,91 @@ VkResult Viewer::createHostStagingBuffer(std::size_t byteSize, VkBuffer* buffer,
 		.size = byteSize,
 		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 	};
-	return vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
+	auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
 						   buffer, allocation, VK_NULL_HANDLE);
+	if (result != VK_SUCCESS) {
+		return result;
+	}
+
+	vk::setAllocationName(allocator, *allocation, "Staging allocation");
+	return result;
+}
+
+void Viewer::immediateSubmit(Queue& queue, vk::CommandPool& cmdPool, std::function<void(VkCommandBuffer)> commands, std::function<void()> callback, VkSemaphore signalSemaphore) {
+	ZoneScoped;
+	auto cmd = cmdPool.allocate();
+	const VkCommandBufferBeginInfo beginInfo {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	vkBeginCommandBuffer(cmd, &beginInfo);
+
+	commands(cmd);
+
+	vkEndCommandBuffer(cmd);
+
+	const VkCommandBufferSubmitInfo cmdSubmitInfo {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+		.commandBuffer = cmd,
+	};
+	const VkSemaphoreSubmitInfo signalInfo {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = signalSemaphore,
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+	};
+	VkSubmitInfo2 submitInfo {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+		.commandBufferInfoCount = 1,
+		.pCommandBufferInfos = &cmdSubmitInfo,
+	};
+	if (signalSemaphore != VK_NULL_HANDLE) {
+		submitInfo.signalSemaphoreInfoCount = 1;
+		submitInfo.pSignalSemaphoreInfos = &signalInfo;
+	}
+
+	auto fence = fencePool.acquire();
+	auto submitResult = queue.submit(submitInfo, fence->handle);
+	vk::checkResult(submitResult, "Failed to submit buffer copy: {}");
+
+	std::lock_guard guard(pendingUploadSubmitsMutex);
+	// Check if any submits have finished, and free their associated resources if so
+	auto it = pendingUploadSubmits.begin();
+	while (it != pendingUploadSubmits.end()) {
+		auto result = it->associatedFence->wait(0);
+		// VK_TIMEOUT is returned when timeout is zero and the submit associated with the fence has not finished.
+		if (result == VK_TIMEOUT) {
+			++it;
+			continue;
+		}
+
+		if (result == VK_SUCCESS) {
+			// Submit has finished, we can free the fence and command buffer
+			it->commandPool->reset_and_free(it->submittedCommandBuffer);
+			fencePool.free(it->associatedFence);
+
+			// Call the callback function
+			it->finishCallback();
+
+			it = pendingUploadSubmits.erase(it);
+		} else {
+			throw vulkan_error("Failed to wait on fence", result);
+		}
+	}
+
+	pendingUploadSubmits.emplace_back(fence, &cmdPool, cmd, callback);
+}
+
+void Viewer::flushSubmits() {
+	std::lock_guard guard(pendingUploadSubmitsMutex);
+	for (auto& pending : pendingUploadSubmits) {
+		vk::checkResult(pending.associatedFence->wait(), "Failed to wait on fence: {}");
+
+		// TODO: We shouldn't be accessing this pool from any thread, as command pools need to be externally synchronized,
+		//		 including all of the command buffers allocated from each pool.
+		pending.commandPool->reset_and_free(pending.submittedCommandBuffer);
+		fencePool.free(pending.associatedFence);
+		pending.finishCallback();
+	}
 }
 
 void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bufferHandle, VmaAllocation* allocationHandle) {
@@ -1278,55 +1365,6 @@ void Viewer::uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* bu
 	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
 	fencePool.wait_and_free(fence);
 
-	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
-}
-
-void Viewer::uploadImageToDevice(std::size_t stagingBufferSize, const std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)>& commands) {
-	ZoneScoped;
-	// Create a host allocation to hold our image data.
-	const VmaAllocationCreateInfo allocationCreateInfo {
-		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-	};
-	const VkBufferCreateInfo bufferCreateInfo {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.size = stagingBufferSize,
-		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-	};
-	VkBuffer stagingBuffer;
-	VmaAllocation stagingAllocation;
-	auto result = vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationCreateInfo,
-					&stagingBuffer, &stagingAllocation, VK_NULL_HANDLE);
-	vk::checkResult(result, "Failed to create staging buffer for image upload: {}");
-
-	auto cmd = uploadCommandPools[taskScheduler.GetThreadNum()].allocate();
-	const VkCommandBufferBeginInfo beginInfo {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-	};
-	vkBeginCommandBuffer(cmd, &beginInfo);
-
-	commands(cmd, stagingBuffer, stagingAllocation);
-
-	vkEndCommandBuffer(cmd);
-
-	const VkCommandBufferSubmitInfo cmdInfo {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-		.commandBuffer = cmd,
-	};
-	const VkSubmitInfo2 submitInfo {
-		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-		.commandBufferInfoCount = 1,
-		.pCommandBufferInfos = &cmdInfo,
-	};
-	auto fence = fencePool.acquire();
-	result = getNextTransferQueueHandle().submit(submitInfo, fence->handle);
-	vk::checkResult(result, "Failed to submit image upload: {}");
-
-	// We always wait for this operation to complete here, to free up the command buffer and fence for the next iteration.
-	fencePool.wait_and_free(fence);
-
-	// Destroy the staging buffer
 	vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
 }
 
@@ -1551,12 +1589,23 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		result = vkCreateImageView(viewer->device, &imageViewInfo, VK_NULL_HANDLE, &sampledImage.imageView);
 		vk::checkResult(result, "Failed to create Vulkan image view for stbi image: {}");
 
+		// Create the staging buffer and map it.
 		auto imageData = std::span(ptr, width * height * sizeof(std::uint8_t) * channels);
-		viewer->uploadImageToDevice(imageData.size_bytes(), [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
-			{
-				vk::ScopedMap map(viewer->allocator, stagingAllocation);
-				std::memcpy(map.get(), imageData.data(), imageData.size_bytes());
-			}
+		VkBuffer stagingBuffer;
+		VmaAllocation stagingAllocation;
+		result = viewer->createHostStagingBuffer(imageData.size_bytes(), &stagingBuffer, &stagingAllocation);
+		vk::checkResult(result, "Failed to create host staging buffer: {}");
+
+		{
+			vk::ScopedMap map(viewer->allocator, stagingAllocation);
+			std::memcpy(map.get(), imageData.data(), imageData.size_bytes());
+		}
+
+		stbi_image_free(imageData.data());
+
+		auto semaphore = viewer->semaphorePool.acquire();
+		viewer->immediateSubmit(viewer->getNextTransferQueueHandle(), viewer->uploadCommandPools[taskScheduler.GetThreadNum()], [&](auto cmd) {
+			TracyVkZone(viewer->tracyCtx, cmd, "RGBA8 Image upload");
 
 			// Transition the entire image (with all mip levels) to TRANSFER_DST_OPTIMAL
 			VkImageMemoryBarrier2 imageBarrier {
@@ -1604,122 +1653,135 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			};
 			vkCmdCopyBufferToImage(cmd, stagingBuffer, sampledImage.image,
 								   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-		});
-
-		stbi_image_free(imageData.data());
+		}, [viewer = viewer, buffer = stagingBuffer, allocation = stagingAllocation]() {
+			vmaDestroyBuffer(viewer->allocator, buffer, allocation);
+		}, semaphore->handle);
 
 		// Generate mipmaps
-		// TODO: Avoid the fence here, and use a semaphore to sync these two submits?
-		auto cmd = viewer->graphicsCommandPools[taskScheduler.GetThreadNum()].allocate();
-		vkResetCommandBuffer(cmd, 0);
-
+		// TODO: Use compute queues instead of the main graphics queue?
+		auto& cmdPool = viewer->graphicsCommandPools[taskScheduler.GetThreadNum()];
+		auto cmd = cmdPool.allocate();
 		const VkCommandBufferBeginInfo beginInfo {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 		};
 		vkBeginCommandBuffer(cmd, &beginInfo);
 
-		// Reused image barrier for transitioning each mip layer
-		VkImageMemoryBarrier2 barrier {
-			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-			.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
-			.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
-			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = sampledImage.image,
-			.subresourceRange = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.levelCount = 1,
-				.baseArrayLayer = 0,
-				.layerCount = 1,
-			},
-		};
-		const VkDependencyInfo dependencyInfo {
-			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-			.imageMemoryBarrierCount = 1,
-			.pImageMemoryBarriers = &barrier,
-		};
+		{
+			TracyVkZone(viewer->tracyCtx, cmd, "Mipmap generation");
 
-		std::int32_t mipWidth = width;
-		std::int32_t mipHeight = height;
-		for (std::uint32_t i = 1; i < mipLevels; ++i) {
-			// Transition mip i - 1 to TRANSFER_SRC_OPTIMAL
-			barrier.subresourceRange.baseMipLevel = i - 1;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-			barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-			barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-			vkCmdPipelineBarrier2(cmd,&dependencyInfo);
-
-			const VkImageBlit blit {
-				.srcSubresource = {
+			// Reused image barrier for transitioning each mip layer
+			VkImageMemoryBarrier2 barrier{
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+				.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = sampledImage.image,
+				.subresourceRange = {
 					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.mipLevel = i - 1,
+					.levelCount = 1,
 					.baseArrayLayer = 0,
 					.layerCount = 1,
-				},
-				.srcOffsets = {
-					0, 0, 0,
-					mipWidth, mipHeight, 1,
-				},
-				.dstSubresource = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.mipLevel = i,
-					.baseArrayLayer = 0,
-					.layerCount = 1,
-				},
-				.dstOffsets = {
-					0, 0, 0,
-					mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1,
 				},
 			};
-			vkCmdBlitImage(cmd,
-						   sampledImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-						   sampledImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-						   1, &blit, VK_FILTER_LINEAR);
+			const VkDependencyInfo dependencyInfo{
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 1,
+				.pImageMemoryBarriers = &barrier,
+			};
 
-			// Transition mip i - 1 (the one we just copied from) to SHADER_READ_ONLY_OPTIMAL
-			barrier.subresourceRange.baseMipLevel = i - 1;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			std::int32_t mipWidth = width;
+			std::int32_t mipHeight = height;
+			for (std::uint32_t i = 1; i < mipLevels; ++i) {
+				// Transition mip i - 1 to TRANSFER_SRC_OPTIMAL
+				barrier.subresourceRange.baseMipLevel = i - 1;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+				barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+				barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+				barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+				const VkImageBlit blit{
+					.srcSubresource = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel = i - 1,
+						.baseArrayLayer = 0,
+						.layerCount = 1,
+					},
+					.srcOffsets = {
+						0, 0, 0,
+						mipWidth, mipHeight, 1,
+					},
+					.dstSubresource = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel = i,
+						.baseArrayLayer = 0,
+						.layerCount = 1,
+					},
+					.dstOffsets = {
+						0, 0, 0,
+						mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1,
+					},
+				};
+				vkCmdBlitImage(cmd,
+							   sampledImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							   sampledImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+							   1, &blit, VK_FILTER_LINEAR);
+
+				// Transition mip i - 1 (the one we just copied from) to SHADER_READ_ONLY_OPTIMAL
+				barrier.subresourceRange.baseMipLevel = i - 1;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+				barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+				barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+				barrier.dstAccessMask = VK_ACCESS_2_NONE;
+				vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
+				if (mipWidth > 1) mipWidth /= 2;
+				if (mipHeight > 1) mipHeight /= 2;
+			}
+
+			// Transition the last mip level to SHARED_READ_ONLY_OPTIMAL
+			barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
 			barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
 			barrier.dstAccessMask = VK_ACCESS_2_NONE;
-			vkCmdPipelineBarrier2(cmd,&dependencyInfo);
-
-			if (mipWidth > 1) mipWidth /= 2;
-			if (mipHeight > 1) mipHeight /= 2;
+			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 		}
-
-		// Transition the last mip level to SHARED_READ_ONLY_OPTIMAL
-		barrier.subresourceRange.baseMipLevel = mipLevels - 1;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-		barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
-		barrier.dstAccessMask = VK_ACCESS_2_NONE;
-		vkCmdPipelineBarrier2(cmd,&dependencyInfo);
 
 		vkEndCommandBuffer(cmd);
 
-		// TODO: Use compute queues instead of the main queue?
-		const VkCommandBufferSubmitInfo cmdInfo {
+		const VkSemaphoreSubmitInfo waitInfo {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+			.semaphore = semaphore->handle,
+			.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+		};
+		const VkCommandBufferSubmitInfo cmdSubmitInfo {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
 			.commandBuffer = cmd,
 		};
-		const VkSubmitInfo2 submitInfo {
+		VkSubmitInfo2 submitInfo {
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+			.waitSemaphoreInfoCount = 1,
+			.pWaitSemaphoreInfos = &waitInfo,
 			.commandBufferInfoCount = 1,
-			.pCommandBufferInfos = &cmdInfo,
+			.pCommandBufferInfos = &cmdSubmitInfo,
 		};
-		auto fence = viewer->fencePool.acquire();
-		result = viewer->graphicsQueue.submit(submitInfo, fence->handle);
-		vk::checkResult(result, "Failed to submit mipmap generation: {}");
 
-		viewer->fencePool.wait_and_free(fence);
+		auto fence = viewer->fencePool.acquire();
+		auto submitResult = viewer->graphicsQueue.submit(submitInfo, fence->handle);
+		vk::checkResult(submitResult, "Failed to submit mipmap generation: {}");
+
+		std::lock_guard lock(viewer->pendingUploadSubmitsMutex);
+		viewer->pendingUploadSubmits.emplace_back(fence, &cmdPool, cmd, [viewer = this->viewer, semaphore]() mutable {
+			viewer->semaphorePool.free(semaphore);
+		});
 	}
 
 	void loadDds(std::uint32_t imageIdx, std::span<std::uint8_t> encodedImageData) const {
@@ -1760,14 +1822,21 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			totalSize += mip.size_bytes();
 		}
 
-		viewer->uploadImageToDevice(totalSize, [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
-			// Copy the image mips with correct offsets, aligned to the format's texel size
-			{
-				vk::ScopedMap<std::byte> map(viewer->allocator, stagingAllocation);
-				for (std::size_t i = 0; auto& mip : image.mipmaps) {
-					std::memcpy(map.get() + offsets[i++], mip.data(), mip.size_bytes());
-				}
+		// Copy the image mips with correct offsets, aligned to the format's texel size
+		VkBuffer stagingBuffer;
+		VmaAllocation stagingAllocation;
+		result = viewer->createHostStagingBuffer(totalSize, &stagingBuffer, &stagingAllocation);
+		vk::checkResult(result, "Failed to create host staging buffer: {}");
+
+		{
+			vk::ScopedMap<std::byte> map(viewer->allocator, stagingAllocation);
+			for (std::size_t i = 0; auto& mip : image.mipmaps) {
+				std::memcpy(map.get() + offsets[i++], mip.data(), mip.size_bytes());
 			}
+		}
+
+		viewer->immediateSubmit(viewer->getNextTransferQueueHandle(), viewer->uploadCommandPools[taskScheduler.GetThreadNum()], [&](VkCommandBuffer cmd) {
+			TracyVkZone(viewer->tracyCtx, cmd, "DDS Image upload");
 
 			// Transition the image to TRANSFER_DST_OPTIMAL
 			VkImageMemoryBarrier2 imageBarrier {
@@ -1832,6 +1901,8 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			imageBarrier.oldLayout = imageBarrier.newLayout;
 			imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+		}, [viewer = viewer, buffer = stagingBuffer, allocation = stagingAllocation]() {
+			vmaDestroyBuffer(viewer->allocator, buffer, allocation);
 		});
 	}
 
@@ -1930,11 +2001,19 @@ struct ImageLoadTask : public ExceptionTaskSet {
 		result = vkCreateImageView(viewer->device, &imageViewInfo, nullptr, &sampledImage.imageView);
 		vk::checkResult(result, "Failed to create Vulkan image view for KTX2 texture: {}");
 
-		viewer->uploadImageToDevice(texture->dataSize, [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
-			{
-				vk::ScopedMap map(viewer->allocator, stagingAllocation);
-				std::memcpy(map.get(), texture->pData, texture->dataSize);
-			}
+		// Create the staging allocation and copy the texture data over
+		VkBuffer stagingBuffer;
+		VmaAllocation stagingAllocation;
+		result = viewer->createHostStagingBuffer(texture->dataSize, &stagingBuffer, &stagingAllocation);
+		vk::checkResult(result, "Failed to create host staging buffer: {}");
+
+		{
+			vk::ScopedMap map(viewer->allocator, stagingAllocation);
+			std::memcpy(map.get(), texture->pData, texture->dataSize);
+		}
+
+		viewer->immediateSubmit(viewer->getNextTransferQueueHandle(), viewer->uploadCommandPools[taskScheduler.GetThreadNum()], [&](VkCommandBuffer cmd) {
+			TracyVkZone(viewer->tracyCtx, cmd, "KTX2 Image upload");
 
 			// Transition the image to TRANSFER_DST_OPTIMAL
 			VkImageMemoryBarrier2 imageBarrier {
@@ -1992,6 +2071,10 @@ struct ImageLoadTask : public ExceptionTaskSet {
 			imageBarrier.oldLayout = imageBarrier.newLayout;
 			imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+		}, [viewer = viewer, buffer = stagingBuffer, allocation = stagingAllocation]() {
+			// We need to copy the viewer pointer here, as capturing this is a reference which might not exist anymore
+			// when this callback is executed.
+			vmaDestroyBuffer(viewer->allocator, buffer, allocation);
 		});
 
 		ktxTexture_Destroy(ktxTexture(texture));
@@ -2116,11 +2199,18 @@ void Viewer::createDefaultImages() {
 
 	// We use R8G8B8A8_UNORM, so we need to use 8-bit integers for the colors here.
 	std::array<std::uint8_t, 4> white {{ 255, 255, 255, 255 }};
-	uploadImageToDevice(sizeof white, [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
-		{
-			vk::ScopedMap map(allocator, stagingAllocation);
-			std::memcpy(map.get(), white.data(), sizeof white);
-		}
+	VkBuffer stagingBuffer;
+	VmaAllocation stagingAllocation;
+	result = createHostStagingBuffer(sizeof white, &stagingBuffer, &stagingAllocation);
+	vk::checkResult(result, "Failed to create host staging buffer: {}");
+
+	{
+		vk::ScopedMap map(allocator, stagingAllocation);
+		std::memcpy(map.get(), white.data(), sizeof white);
+	}
+
+	immediateSubmit(getNextTransferQueueHandle(), uploadCommandPools[taskScheduler.GetThreadNum()], [&](VkCommandBuffer cmd) {
+		TracyVkZone(tracyCtx, cmd, "RGBA8 Default image upload");
 
 		// Transition the image to TRANSFER_DST_OPTIMAL
 		VkImageMemoryBarrier2 imageBarrier {
@@ -2176,6 +2266,8 @@ void Viewer::createDefaultImages() {
 		imageBarrier.oldLayout = imageBarrier.newLayout;
 		imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+	}, [this, buffer = stagingBuffer, allocation = stagingAllocation]() {
+		vmaDestroyBuffer(allocator, buffer, allocation);
 	});
 
 	const VkImageViewCreateInfo imageViewInfo {
@@ -3448,6 +3540,9 @@ void Viewer::run() {
 			updateCameraNodes(gltf, node);
 		}
 	}
+
+	// We only free any remaining resources now, since we don't need to explicitly wait on them.
+	flushSubmits();
 
 	// The render loop
 	std::size_t currentFrame = 0;

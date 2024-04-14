@@ -7,7 +7,7 @@
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
 #include <vulkan/debug_utils.hpp>
-#include <vulkan/fence_pool.hpp>
+#include <vulkan/sync_pools.hpp>
 #include <vulkan/command_pool.hpp>
 #include <VkBootstrap.h>
 
@@ -233,6 +233,14 @@ struct Queue {
 	}
 };
 
+struct PendingSubmit {
+	std::shared_ptr<Fence> associatedFence;
+	vk::CommandPool* commandPool;
+	VkCommandBuffer submittedCommandBuffer;
+
+	std::function<void()> finishCallback;
+};
+
 struct Gltf {
 	fastgltf::Asset asset;
 	std::string name;
@@ -258,7 +266,9 @@ struct Viewer {
 	VmaAllocator allocator = VK_NULL_HANDLE;
 	TracyVkCtx tracyCtx = nullptr;
 
+	/** Simple pools for dynamic sync while uploading */
 	FencePool fencePool;
+	SemaphorePool semaphorePool;
 
 	std::uint32_t graphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;
     Queue graphicsQueue;
@@ -270,6 +280,8 @@ struct Viewer {
 		return transferQueues[idx++ % transferQueues.size()];
 	}
 
+	std::mutex pendingUploadSubmitsMutex;
+	std::vector<PendingSubmit> pendingUploadSubmits; //< Pending upload submits
 	std::vector<vk::CommandPool> uploadCommandPools; //< Command pools for transfer queues
 	std::vector<vk::CommandPool> graphicsCommandPools; //< Command pools for the main graphics queue
 
@@ -354,7 +366,9 @@ struct Viewer {
 
 	void loadGltf(const std::filesystem::path& file);
 
-	void immediateSubmit(vk::CommandPool& cmdPool, const std::function<void(VkCommandBuffer)>& commands);
+	/** Immediately records and submits a command buffer, though does not wait on the submit. */
+	void immediateSubmit(Queue& queue, vk::CommandPool& cmdPool, std::function<void(VkCommandBuffer)> commands, std::function<void()> callback, VkSemaphore signalSemaphore = VK_NULL_HANDLE);
+	void flushSubmits();
 
 	/** This function creates a DEVICE_LOCAL storage buffer suitable for a transfer destination */
 	VkResult createGpuTransferBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) const noexcept;
@@ -362,8 +376,6 @@ struct Viewer {
 	VkResult createHostStagingBuffer(std::size_t byteSize, VkBuffer* buffer, VmaAllocation* allocation) const noexcept;
 	/** Uploads the data to a new storage buffer */
 	void uploadBufferToDevice(std::span<const std::byte> bytes, VkBuffer* buffer, VmaAllocation* allocation);
-	/** Uploads image data to a image */
-	void uploadImageToDevice(std::size_t stagingBufferSize, const std::function<void(VkCommandBuffer, VkBuffer, VmaAllocation)>& commands);
 
 	void uploadMeshlets(GlobalMeshData& globalMeshData);
 	/** Takes glTF meshes and uploads them to the GPU */

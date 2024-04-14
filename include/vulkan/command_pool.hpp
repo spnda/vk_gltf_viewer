@@ -1,21 +1,28 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <queue>
 #include <span>
 
 #include <vulkan/vk.hpp>
 
 namespace vk {
-	/** A command pool wrapper */
+	/** A thread-safe command pool wrapper */
 	class CommandPool {
 		VkCommandPool pool = VK_NULL_HANDLE;
 		std::uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED;
 		VkDevice device = VK_NULL_HANDLE;
 
+		/** We try to use the command pool on one thread only, but this is just for safety */
+		std::mutex poolMutex;
+
 		std::queue<VkCommandBuffer> availableCommandBuffers;
 
 	public:
+		explicit CommandPool() = default;
+		CommandPool(CommandPool&& other) noexcept : pool(other.pool), device(other.device), availableCommandBuffers(std::move(other.availableCommandBuffers)) {}
+
 		void create(VkDevice nDevice, std::uint32_t queueFamilyIndex) {
 			device = nDevice;
 			queueFamily = queueFamilyIndex;
@@ -54,6 +61,7 @@ namespace vk {
 				return;
 			}
 
+			std::lock_guard lock(poolMutex);
 			const VkCommandBufferAllocateInfo allocateInfo{
 				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 				.commandPool = pool,
@@ -73,6 +81,7 @@ namespace vk {
 				return;
 			}
 
+			std::lock_guard lock(poolMutex);
 			const VkCommandBufferAllocateInfo allocateInfo{
 				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 				.commandPool = pool,
@@ -85,6 +94,7 @@ namespace vk {
 
 		/** Makes the command buffer available again, and resets it */
 		void reset_and_free(VkCommandBuffer handle) {
+			std::lock_guard lock(poolMutex);
 			vkResetCommandBuffer(handle, 0);
 			availableCommandBuffers.emplace(handle);
 		}

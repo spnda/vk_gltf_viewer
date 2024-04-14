@@ -108,7 +108,17 @@ void imgui::Renderer::createFontAtlas() {
 	io.Fonts->SetTexID(static_cast<ImTextureID>(fontAtlasView));
 
 	auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(pixels), width * height * sizeof(std::byte) };
-	viewer->uploadImageToDevice(data.size_bytes(), [&](VkCommandBuffer cmd, VkBuffer stagingBuffer, VmaAllocation stagingAllocation) {
+	VkBuffer stagingBuffer;
+	VmaAllocation stagingAllocation;
+	result = viewer->createHostStagingBuffer(data.size_bytes(), &stagingBuffer, &stagingAllocation);
+	vk::checkResult(result, "Failed to create host staging buffer: {}");
+
+	{
+		vk::ScopedMap map(viewer->allocator, stagingAllocation);
+		std::memcpy(map.get(), data.data(), data.size_bytes());
+	}
+
+	viewer->immediateSubmit(viewer->getNextTransferQueueHandle(), viewer->uploadCommandPools[taskScheduler.GetThreadNum()], [&](VkCommandBuffer cmd) {
 		{
 			vk::ScopedMap map(viewer->allocator, stagingAllocation);
 			std::memcpy(map.get(), data.data(), data.size_bytes());
@@ -168,6 +178,8 @@ void imgui::Renderer::createFontAtlas() {
 		imageBarrier.oldLayout = imageBarrier.newLayout;
 		imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+	}, [allocator = viewer->allocator, buffer = stagingBuffer, allocation = stagingAllocation]() {
+		vmaDestroyBuffer(allocator, buffer, allocation);
 	});
 }
 
