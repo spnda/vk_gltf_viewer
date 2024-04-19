@@ -7,6 +7,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_fragment_shader_barycentric : require
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
@@ -47,7 +48,7 @@ taskPayloadSharedEXT TaskPayload taskPayload;
 layout(location = 0) out vec4 colors[];
 layout(location = 1) out vec2 uvs[];
 layout(location = 2) out vec3 worldSpacePos[];
-layout(location = 3) out vec3 normals[];
+layout(location = 3) out u8vec3 normals[];
 layout(location = 4) perprimitiveEXT flat out uint materialIndex[];
 
 shared vec3 clipVertices[maxPrimitives];
@@ -88,7 +89,7 @@ void main() {
 
         colors[vidx] = vertex.color;
         uvs[vidx] = vertex.uv;
-        normals[vidx] = vec3(vertex.normal) / 127.f - 1.f;
+        normals[vidx] = vertex.normal;
     }
 
     const float transformDet = determinant(primitive.modelMatrix);

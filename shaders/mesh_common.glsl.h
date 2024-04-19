@@ -2,6 +2,7 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #define GLSL_CONSTANT const
 #else
 // We put all shader declarations into the "glsl" namespace.
@@ -73,6 +74,12 @@ struct Vertex {
     f16vec2 uv;
 #endif
 };
+
+#if !defined(__cplusplus)
+vec3 unpackVertexNormal(in u8vec3 normal) {
+    return normalize(vec3(normal) / 127.f - 1.f);
+}
+#endif
 
 #if !defined(__cplusplus)
 struct VkDrawMeshTasksIndirectCommandEXT {

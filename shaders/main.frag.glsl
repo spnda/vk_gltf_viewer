@@ -3,13 +3,14 @@
 
 #extension GL_EXT_nonuniform_qualifier : enable
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_fragment_shader_barycentric : require
 
 #include "mesh_common.glsl.h"
 
 layout(location = 0) in vec4 color;
 layout(location = 1) in vec2 uv;
 layout(location = 2) in vec3 worldSpacePos;
-layout(location = 3) in vec3 normal;
+layout(location = 3) pervertexEXT in u8vec3 quantizedNormal[];
 layout(location = 4) flat in uint materialIndex;
 
 layout(location = 0) out vec4 fragColor;
@@ -105,6 +106,9 @@ void main() {
     if (albedoColor.a < material.alphaCutoff)
         discard;
 
+    vec3 normal = gl_BaryCoordEXT.x * unpackVertexNormal(quantizedNormal[0])
+        + gl_BaryCoordEXT.y * unpackVertexNormal(quantizedNormal[1])
+        + gl_BaryCoordEXT.z * unpackVertexNormal(quantizedNormal[2]);
     vec3 diffuse = vec3(max(dot(normal, -camera.lightDirection), 0.f));
 
     // We use the vertex normals for the shadow bias calculation, as the self shadowing is caused by the geometry.

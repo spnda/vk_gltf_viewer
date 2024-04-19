@@ -33,7 +33,7 @@
 	url = https://github.com/wolfpld/tracy
 [submodule "submodules/vulkan-utils"]
 	path = submodules/vulkan-utils
-	url = https://github.com/KhronosGroup/Vulkan-Utility-Libraries/
+	url = https://github.com/KhronosGroup/Vulkan-Utility-Libraries
 [submodule "submodules/imgui"]
 	path = submodules/imgui
 	url = https://github.com/ocornut/imgui
@@ -42,7 +42,7 @@
 	url = https://github.com/spnda/dds_image
 [submodule "submodules/ktx-software"]
 	path = submodules/ktx-software
-	url = https://github.com/KhronosGroup/KTX-Software/
+	url = https://github.com/KhronosGroup/KTX-Software
 [submodule "submodules/wuffs"]
 	path = submodules/wuffs
 	url = https://github.com/google/wuffs

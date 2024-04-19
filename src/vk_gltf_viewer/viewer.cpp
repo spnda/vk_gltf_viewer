@@ -336,6 +336,11 @@ void Viewer::setupVulkanDevice() {
         .meshShader = VK_TRUE,
     };
 
+	const VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR fragmentBarycentricFeatures {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR,
+		.fragmentShaderBarycentric = VK_TRUE,
+	};
+
 	// Select an appropriate device with the given requirements.
     vkb::PhysicalDeviceSelector selector(instance);
 
@@ -347,10 +352,12 @@ void Viewer::setupVulkanDevice() {
             .set_required_features_12(vulkan12Features)
             .set_required_features_13(vulkan13Features)
             .add_required_extension(VK_EXT_MESH_SHADER_EXTENSION_NAME)
+			.add_required_extension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME)
 #if TRACY_ENABLE
 			.add_required_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
 #endif
             .add_required_extension_features(meshShaderFeatures)
+			.add_required_extension_features(fragmentBarycentricFeatures)
             .require_present()
             .require_dedicated_transfer_queue()
             .select();
@@ -1456,7 +1463,7 @@ void Viewer::uploadMeshlets(GlobalMeshData& data) {
 
 	for (auto& descriptor : globalMeshBuffers.descriptors) {
 		// Update the descriptors with the buffer handles
-		std::array<VkDescriptorBufferInfo, 4> descriptorBufferInfos{{
+		std::array<VkDescriptorBufferInfo, 4> descriptorBufferInfos {{
 			{
 				.buffer = globalMeshBuffers.descHandle,
 				.offset = 0,
@@ -1478,7 +1485,7 @@ void Viewer::uploadMeshlets(GlobalMeshData& data) {
 				.range = VK_WHOLE_SIZE,
 			},
 		}};
-		std::array<VkWriteDescriptorSet, 4> descriptorWrites{{
+		std::array<VkWriteDescriptorSet, 4> descriptorWrites {{
 			{
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 				.dstSet = descriptor,

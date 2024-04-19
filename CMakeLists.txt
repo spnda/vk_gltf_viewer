@@ -55,7 +55,9 @@ foreach(SHADER_FILE ${SHADER_FILES})
             MATH(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
             string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
             set(INCLUDED_FILE "${SHADER_FOLDER}/${INCLUDED_FILE}")
-            list(APPEND FILE_INCLUDES ${INCLUDED_FILE})
+            if(EXISTS ${INCLUDED_FILE})
+                list(APPEND FILE_INCLUDES ${INCLUDED_FILE})
+            endif()
         endif()
     endforeach()
 
