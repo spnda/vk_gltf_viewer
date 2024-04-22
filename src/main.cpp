@@ -6,6 +6,13 @@
 #include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/viewer.hpp>
 
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__) || defined(unix)
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 #ifdef _MSC_VER
 int wmain(int argc, wchar_t* argv[]) {
 	if (argc < 2) {
@@ -34,6 +41,13 @@ int main(int argc, char* argv[]) {
 			return -1;
 		}
 	}
+
+#if defined(_WIN32) && defined(NDEBUG)
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+	SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+#elif defined(__APPLE__) || defined(unix)
+	setpriority(PRIO_PROCESS, getpid(), PRIO_MAX);
+#endif
 
 	taskScheduler.Initialize();
 

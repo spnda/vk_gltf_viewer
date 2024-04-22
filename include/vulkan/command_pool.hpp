@@ -50,7 +50,7 @@ namespace vk {
 		}
 
 		[[nodiscard]] VkCommandBuffer allocate() {
-			VkCommandBuffer handle;
+			VkCommandBuffer handle = VK_NULL_HANDLE;
 			allocate(handle);
 			return handle;
 		}
@@ -98,6 +98,7 @@ namespace vk {
 		/** Makes the command buffer available again, and resets it */
 		void reset_and_free(VkCommandBuffer handle) {
 			ZoneScoped;
+			assert(handle != VK_NULL_HANDLE);
 			std::lock_guard lock(poolMutex);
 			vkResetCommandBuffer(handle, 0);
 			availableCommandBuffers.emplace(handle);

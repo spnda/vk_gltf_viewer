@@ -2633,6 +2633,7 @@ void Viewer::createShadowMap() {
 }
 
 void Viewer::createShadowMapPipeline() {
+	ZoneScoped;
 	// Create the sampler for the shadow map
 	const VkSamplerCreateInfo samplerInfo{
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,

@@ -10,12 +10,12 @@ VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, V
     std::error_code error;
     auto length = static_cast<std::streamsize>(std::filesystem::file_size(filePath, error));
     if (error) {
-        return VK_ERROR_UNKNOWN;
+		throw std::runtime_error(fmt::format("Failed to get shader module file size: {}", error.message()));
     }
 
     std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open()) {
-        return VK_ERROR_UNKNOWN;
+		throw std::runtime_error("Failed to open shader module file");
     }
 
     auto buffer = std::make_unique_for_overwrite<std::uint32_t[]>(length / sizeof(std::uint32_t));
@@ -29,6 +29,7 @@ VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, V
 
     auto result = vkCreateShaderModule(device, &createInfo, &vk::allocationCallbacks, pShaderModule);
 	if (result != VK_SUCCESS) {
+		throw vulkan_error("Failed to create shader module: {}", result);
 		return result;
 	}
 
@@ -63,7 +64,9 @@ VkResult vk::ComputePipelineBuilder::build(VkPipeline* pipeline) noexcept {
     }
     assert(pipelineInfos.size() < std::numeric_limits<std::uint32_t>::max());
 
-    return vkCreateComputePipelines(device, pipelineCache, static_cast<std::uint32_t>(pipelineInfos.size()), pipelineInfos.data(), nullptr, pipeline);
+    return vkCreateComputePipelines(device, pipelineCache,
+									static_cast<std::uint32_t>(pipelineInfos.size()), pipelineInfos.data(),
+									&vk::allocationCallbacks, pipeline);
 }
 
 vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::pushPNext(std::uint32_t idx, const void* pNext) {
