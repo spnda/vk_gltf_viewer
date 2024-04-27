@@ -369,6 +369,21 @@ void Viewer::setupVulkanDevice() {
 		allocatorFlags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 	}
 
+	// I know this isn't the greatest solution to this, but it's all we have currently.
+	// See https://github.com/charles-lunarg/vk-bootstrap/issues/269.
+	VkPhysicalDeviceFeatures textureCompressionETCFeatures {
+		.textureCompressionETC2 = VK_TRUE,
+	};
+	physicalDevice.enable_features_if_present(textureCompressionETCFeatures);
+	VkPhysicalDeviceFeatures textureCompressionASTCFeatures {
+		.textureCompressionASTC_LDR = VK_TRUE,
+	};
+	physicalDevice.enable_features_if_present(textureCompressionASTCFeatures);
+	VkPhysicalDeviceFeatures textureCompressionBCFeatures {
+		.textureCompressionBC = VK_TRUE,
+	};
+	physicalDevice.enable_features_if_present(textureCompressionBCFeatures);
+
 	// Generate the queue descriptions for vkb. Use one queue for everything except
 	// for dedicated transfer queues.
 	std::vector<vkb::CustomQueueDescription> queues;
@@ -382,7 +397,7 @@ void Viewer::setupVulkanDevice() {
 		queues.emplace_back(i, std::move(priorities));
 	}
 
-	vkb::DeviceBuilder deviceBuilder(selectionResult.value());
+	vkb::DeviceBuilder deviceBuilder(physicalDevice);
     auto creationResult = deviceBuilder
 			.custom_queue_setup(queues)
             .build();
