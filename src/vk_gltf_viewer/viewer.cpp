@@ -934,10 +934,11 @@ void multithreadedBase64Decoding(std::string_view encodedData, std::uint8_t* out
 
 void Viewer::loadGltf(const std::filesystem::path& filePath) {
 	ZoneScoped;
-    fastgltf::GltfDataBuffer fileBuffer;
-    if (!fileBuffer.loadFromFile(filePath)) {
-        throw std::runtime_error("Failed to load file");
-    }
+	auto mappedFile = fastgltf::MappedGltfFile::FromPath(filePath);
+	if (!bool(mappedFile)) {
+		throw std::runtime_error(fmt::format("Failed to load file: {}, {}",
+											 fastgltf::getErrorName(mappedFile.error()), fastgltf::getErrorMessage(mappedFile.error())));
+	}
 
 	static constexpr auto supportedExtensions = fastgltf::Extensions::KHR_mesh_quantization
 		| fastgltf::Extensions::KHR_lights_punctual
@@ -957,7 +958,7 @@ void Viewer::loadGltf(const std::filesystem::path& filePath) {
 		| fastgltf::Options::LoadExternalImages
 		| fastgltf::Options::GenerateMeshIndices;
 
-    auto expected = parser.loadGltf(&fileBuffer, filePath.parent_path(), gltfOptions);
+    auto expected = parser.loadGltf(mappedFile.get(), filePath.parent_path(), gltfOptions);
     if (expected.error() != fastgltf::Error::None) {
         auto message = fastgltf::getErrorMessage(expected.error());
         throw std::runtime_error(std::string("Failed to load glTF: ") + std::string(message));
