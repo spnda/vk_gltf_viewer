@@ -247,7 +247,7 @@ struct Gltf {
 	fastgltf::Asset asset;
 	std::string name;
 
-	glm::vec3 translation = glm::vec3(0.0f);
+	fastgltf::math::fvec3 translation;
 
 	std::size_t sceneIndex = 0;
 	std::size_t materialVariant = 0;

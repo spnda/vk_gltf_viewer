@@ -2821,47 +2821,6 @@ void Viewer::loadGltfMaterials() {
 	vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
 
-glm::mat4 getTransformMatrix(const fastgltf::Node& node, glm::mat4x4& base) {
-	/** Both a matrix and TRS values are not allowed
-	 * to exist at the same time according to the spec */
-	if (const auto* pMatrix = std::get_if<fastgltf::Node::TransformMatrix>(&node.transform)) {
-		return base * glm::mat4x4(glm::make_mat4x4(pMatrix->data()));
-	}
-
-	if (const auto* pTransform = std::get_if<fastgltf::TRS>(&node.transform)) {
-		return base
-			   * glm::translate(glm::mat4(1.0f), glm::make_vec3(pTransform->translation.data()))
-			   * glm::toMat4(glm::quat::wxyz(pTransform->rotation[3], pTransform->rotation[0], pTransform->rotation[1], pTransform->rotation[2]))
-			   * glm::scale(glm::mat4(1.0f), glm::make_vec3(pTransform->scale.data()));
-	}
-
-	return base;
-}
-
-/**
- * Generic function for iterating through the node hierarchy of a scene.
- * TODO: Add to fastgltf.
- * */
-void iterateSceneNodes(Gltf& gltf, std::size_t sceneIndex, glm::mat4 matrix, std::function<void(fastgltf::Node&, glm::mat4 matrix)> callback) {
-	auto& scene = gltf.asset.scenes[sceneIndex];
-
-	auto function = [&](std::size_t nodeIndex, glm::mat4 nodeMatrix, auto& self) -> void {
-		assert(gltf.asset.nodes.size() > nodeIndex);
-		auto& node = gltf.asset.nodes[nodeIndex];
-		nodeMatrix = getTransformMatrix(node, nodeMatrix);
-
-		callback(node, nodeMatrix);
-
-		for (auto& child : node.children) {
-			self(child, nodeMatrix, self);
-		}
-	};
-
-	for (auto& sceneNode : scene.nodeIndices) {
-		function(sceneNode, matrix, function);
-	}
-}
-
 void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	ZoneScoped;
 	assert(drawBuffers.size() > currentFrame);
@@ -2877,7 +2836,8 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 			return;
 
 		auto& scene = gltf.asset.scenes[gltf.sceneIndex];
-		iterateSceneNodes(gltf, gltf.sceneIndex, glm::translate(glm::mat4(1.0f), gltf.translation), [&](fastgltf::Node& node, glm::mat4 matrix) {
+		fastgltf::iterateSceneNodes(gltf.asset, gltf.sceneIndex, translate(fastgltf::math::fmat4x4(), gltf.translation),
+									[&](fastgltf::Node& node, fastgltf::math::fmat4x4 matrix) {
 			if (!node.meshIndex.has_value())
 				return;
 
@@ -2905,7 +2865,7 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 					.groupCountZ = 1,
 				};
 				draw.command = indirectCommand;
-				draw.modelMatrix = matrix;
+				draw.modelMatrix = glm::make_mat4x4(&matrix[0][0]);
 				draw.descOffset = primitive.descOffset;
 				draw.vertexIndicesOffset = primitive.vertexIndicesOffset;
 				draw.triangleIndicesOffset = primitive.triangleIndicesOffset;
@@ -3095,10 +3055,10 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 	if (auto& firstGltf = assets.front(); firstGltf.cameraIndex.has_value()) {
 		// TODO: How do we want to handle cameras from multiple loaded assets? Currently,
 		//       we only support the cameras from the first asset.
-		iterateSceneNodes(firstGltf, firstGltf.sceneIndex, glm::translate(glm::mat4(1.0f), firstGltf.translation),
-						  [&](fastgltf::Node& node, glm::mat4 matrix) {
+		fastgltf::iterateSceneNodes(firstGltf.asset, firstGltf.sceneIndex, translate(fastgltf::math::fmat4x4(), firstGltf.translation),
+						  [&](fastgltf::Node& node, fastgltf::math::fmat4x4 matrix) {
 			if (node.cameraIndex.has_value() && &node == firstGltf.cameraNodes[*firstGltf.cameraIndex]) {
-				viewMatrix = glm::affineInverse(matrix);
+				viewMatrix = glm::affineInverse(glm::make_mat4x4(&matrix[0][0]));
 			}
 		});
 
@@ -3256,7 +3216,7 @@ void Viewer::renderUi() {
 			}
 
 			ImGui::PushID(i);
-			ImGui::DragFloat3("Base asset translation", glm::value_ptr(gltf.translation), 0.1f);
+			ImGui::DragFloat3("Base asset translation", gltf.translation.value_ptr(), 0.1f);
 			ImGui::PopID();
 
 			ImGui::BeginDisabled(gltf.asset.scenes.size() <= 1);
@@ -3392,7 +3352,7 @@ void Viewer::renderUi() {
 							ImGui::Text("%s", gltf.name.c_str());
 
 							ImGui::TableNextColumn();
-							ImGui::Text("(%.2f, %.2f, %.2f)", gltf.translation.x, gltf.translation.y, gltf.translation.z);
+							ImGui::Text("(%.2f, %.2f, %.2f)", gltf.translation.x(), gltf.translation.y(), gltf.translation.z());
 						}
 
 						ImGui::EndTable();
