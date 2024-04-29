@@ -70,6 +70,9 @@ struct Primitive {
 
 	std::size_t meshlet_count;
 	fastgltf::Optional<std::uint32_t> materialIndex;
+
+    glm::vec3 aabbExtents;
+    glm::vec3 aabbCenter;
 };
 
 struct Mesh {

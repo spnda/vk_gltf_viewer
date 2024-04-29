@@ -33,6 +33,14 @@ taskPayloadSharedEXT TaskPayload taskPayload;
 
 void main() {
     const PrimitiveDraw primitive = primitives[gl_DrawID];
+
+    // Early return if entire primitive is outside of the frustum
+    const vec3 primWorldAabbCenter = (primitive.modelMatrix * vec4(primitive.aabbCenter, 1.0f)).xyz;
+    const vec3 primWorldAabbExtent = getWorldSpaceAabbExtent(primitive.aabbExtents.xyz, primitive.modelMatrix);
+    if (!isAabbInFrustum(primWorldAabbCenter, primWorldAabbExtent, 0)) {
+        return;
+    }
+
     taskPayload.drawID = gl_DrawID;
 
     // Every task shader workgroup only gets 128 meshlets to handle. This calculates how many
@@ -51,7 +59,7 @@ void main() {
         // Do some culling
         const vec3 worldAabbCenter = (primitive.modelMatrix * vec4(meshlet.aabbCenter, 1.0f)).xyz;
         const vec3 worldAabbExtent = getWorldSpaceAabbExtent(meshlet.aabbExtents.xyz, primitive.modelMatrix);
-        const bool visible = isMeshletVisibleAabb(worldAabbCenter, worldAabbExtent, 0);
+        const bool visible = isAabbInFrustum(worldAabbCenter, worldAabbExtent, 0);
 
         // Get the index for this thread for this subgroup
         uint payloadIndex = subgroupExclusiveAdd(uint(visible));

@@ -103,6 +103,9 @@ struct PrimitiveDraw {
 
     uint meshletCount;
     uint materialIndex;
+
+    vec3 aabbExtents;
+    vec3 aabbCenter;
 };
 
 struct Material {

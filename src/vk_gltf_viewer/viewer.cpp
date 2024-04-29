@@ -1019,6 +1019,8 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 		// Get AABB for the entire primitive to quantize positions
 		auto primitiveMin = getMinMax(posAccessor.min);
 		auto primitiveMax = getMinMax(posAccessor.max);
+		primitive.aabbCenter = (primitiveMin + primitiveMax) * 0.5f;
+		primitive.aabbExtents = primitiveMax - primitive.aabbCenter;
 
 		// Read vertices.
 		std::vector<glsl::Vertex> vertices; vertices.reserve(posAccessor.count);
@@ -2830,6 +2832,9 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 	std::vector<glsl::PrimitiveDraw> draws;
 	std::vector<VkDrawIndirectCommand> aabbDraws;
 
+	draws.reserve(currentDrawBuffer.primitiveDrawBufferSize / sizeof(glsl::PrimitiveDraw));
+	aabbDraws.reserve(currentDrawBuffer.aabbDrawBufferSize / sizeof(VkDrawIndirectCommand));
+
 	// TODO: Do we want to thread this by chance? Also, do we perhaps want a separate indirect draw call per asset?
 	for (auto& gltf : assets) {
 		if (gltf.asset.scenes.empty() || gltf.sceneIndex >= gltf.asset.scenes.size())
@@ -2872,6 +2877,8 @@ void Viewer::updateDrawBuffer(std::size_t currentFrame) {
 				draw.verticesOffset = primitive.verticesOffset;
 				draw.meshletCount = static_cast<std::uint32_t>(primitive.meshlet_count);
 				draw.materialIndex = materialIndex;
+				draw.aabbCenter = primitive.aabbCenter;
+				draw.aabbExtents = primitive.aabbExtents;
 
 				// Create the AABB draw command
 				auto& aabb = aabbDraws.emplace_back();

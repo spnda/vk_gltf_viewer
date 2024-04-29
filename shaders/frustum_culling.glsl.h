@@ -1,5 +1,5 @@
 // Frustum culling using 6 planes on an AABB
-bool isMeshletVisibleAabb(in vec3 center, in vec3 extents, in uint view) {
+bool isAabbInFrustum(in vec3 center, in vec3 extents, in uint view) {
     [[unroll]] for (uint i = 0; i < 6; ++i) {
         const vec4 plane = camera.views[view].frustum[i];
 
