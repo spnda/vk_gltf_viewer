@@ -45,7 +45,7 @@ layout(set = 2, binding = 0, scalar) readonly buffer Materials {
 
 taskPayloadSharedEXT TaskPayload taskPayload;
 
-layout(location = 0) out vec4 colors[];
+layout(location = 0) out u8vec4 colors[];
 layout(location = 1) out vec2 uvs[];
 layout(location = 2) out vec3 worldSpacePos[];
 layout(location = 3) out u8vec3 normals[];

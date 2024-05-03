@@ -1027,7 +1027,7 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 		fastgltf::iterateAccessor<glm::vec3>(asset, posAccessor, [&](glm::vec3 val) {
 			auto& vertex = vertices.emplace_back();
 			vertex.position = val;
-			vertex.color = glm::vec4(1.0f);
+			vertex.color = glm::u8vec4(255U);
 			vertex.uv = {
 				meshopt_quantizeHalf(0.0f),
 				meshopt_quantizeHalf(0.0f),
@@ -1069,11 +1069,13 @@ struct PrimitiveProcessingTask : enki::ITaskSet {
 			auto& colorAccessor = asset.accessors[colorAttribute->second];
 			if (colorAccessor.type == fastgltf::AccessorType::Vec4) {
 				fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, asset.accessors[colorAttribute->second], [&](glm::vec4 val, std::size_t idx) {
-					vertices[idx].color = val;
+					val = glm::clamp(val, 0.0f, 1.0f);
+					vertices[idx].color = glm::u8vec4(val * 255.f);
 				}, adapter);
 			} else if (colorAccessor.type == fastgltf::AccessorType::Vec3) {
 				fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[colorAttribute->second], [&](glm::vec3 val, std::size_t idx) {
-					vertices[idx].color = glm::vec4(val, 1.0f);
+					val = glm::clamp(val, 0.0f, 1.0f);
+					vertices[idx].color = glm::u8vec4(glm::vec4(val, 1.0f) * 255.f);
 				}, adapter);
 			}
 		}

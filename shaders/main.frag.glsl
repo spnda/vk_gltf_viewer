@@ -7,11 +7,22 @@
 
 #include "mesh_common.glsl.h"
 
-layout(location = 0) in vec4 color;
+layout(location = 0) pervertexEXT in u8vec4 quantizedColor[];
 layout(location = 1) in vec2 uv;
 layout(location = 2) in vec3 worldSpacePos;
 layout(location = 3) pervertexEXT in u8vec3 quantizedNormal[];
 layout(location = 4) flat in uint materialIndex;
+
+vec4 interpolateColor() {
+    return gl_BaryCoordEXT.x * unpackVertexColor(quantizedColor[0])
+        + gl_BaryCoordEXT.y * unpackVertexColor(quantizedColor[1])
+        + gl_BaryCoordEXT.z * unpackVertexColor(quantizedColor[2]);
+}
+vec3 interpolateNormal() {
+    return gl_BaryCoordEXT.x * unpackVertexNormal(quantizedNormal[0])
+        + gl_BaryCoordEXT.y * unpackVertexNormal(quantizedNormal[1])
+        + gl_BaryCoordEXT.z * unpackVertexNormal(quantizedNormal[2]);
+}
 
 layout(location = 0) out vec4 fragColor;
 
@@ -102,13 +113,12 @@ void main() {
 
     // the glTF baseColorTexture contains sRGB encoded values.
     vec4 sampled = texture(textures[material.albedoIndex], transformUv(material, uv));
-    vec4 albedoColor = color * material.albedoFactor * toLinear(sampled);
+    vec4 vtxColor = interpolateColor();
+    vec4 albedoColor = vtxColor * material.albedoFactor * toLinear(sampled);
     if (albedoColor.a < material.alphaCutoff)
         discard;
 
-    vec3 normal = gl_BaryCoordEXT.x * unpackVertexNormal(quantizedNormal[0])
-        + gl_BaryCoordEXT.y * unpackVertexNormal(quantizedNormal[1])
-        + gl_BaryCoordEXT.z * unpackVertexNormal(quantizedNormal[2]);
+    vec3 normal = interpolateNormal();
     vec3 diffuse = vec3(max(dot(normal, -camera.lightDirection), 0.f));
 
     // We use the vertex normals for the shadow bias calculation, as the self shadowing is caused by the geometry.
