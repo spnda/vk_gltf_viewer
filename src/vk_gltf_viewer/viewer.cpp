@@ -3023,9 +3023,8 @@ std::array<glm::vec3, 8> getFrustumCorners(glm::mat4 viewProjection) {
 	for (std::uint32_t z = 0; z < 2; ++z) {
 		for (std::uint32_t y = 0; y < 2; ++y) {
 			for (std::uint32_t x = 0; x < 2; ++x) {
-				const auto pos = glm::fvec3(x, y, z);
-				const auto pt = inv * glm::vec4(
-					2.f * pos - 1.0f, 1.0f);
+				const auto pt =
+					inv * glm::vec4(2.f * glm::fvec2(x, y) - 1.0f, z, 1.0f);
 				corners[i++] = glm::vec3(pt) / pt.w;
 			}
 		}
@@ -3225,7 +3224,7 @@ void Viewer::renderUi() {
 			}
 
 			ImGui::PushID(i);
-			ImGui::DragFloat3("Base asset translation", gltf.translation.value_ptr(), 0.1f);
+			ImGui::DragFloat3("Base asset translation", gltf.translation.data(), 0.1f);
 			ImGui::PopID();
 
 			ImGui::BeginDisabled(gltf.asset.scenes.size() <= 1);
