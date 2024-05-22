@@ -24,6 +24,7 @@ struct RenderView {
 
     // zFar - zNear
     float projectionZLength;
+    float projectionWidth;
 };
 
 struct Camera {

@@ -3184,6 +3184,7 @@ void Viewer::updateCameraBuffer(std::size_t currentFrame) {
 		lightProjection[1][1] *= -1;
 		camera.views[i + 1].viewProjection = reverseDepth(lightProjection) * lightView;
 		camera.views[i + 1].projectionZLength = (max.z - min.z) * 2; // zFar - zNear
+		camera.views[i + 1].projectionWidth = std::abs(max.x - min.x);
 		generateCameraFrustum(camera.views[i + 1]);
 	}
 }

@@ -46,6 +46,16 @@ vec2 transformUv(in Material material, vec2 uv) {
     return rotationMat * uv * material.uvScale + material.uvOffset;
 }
 
+// Calculate the "perfect" shadow bias as per https://www.desmos.com/calculator/nbhoiubvfj
+// The texelSize needs to be the world width of a single texel of the shadow map.
+float getBaseShadowBias(in RenderView view, in vec3 L, in vec3 N, in float texelSize) {
+    const float b = 1.41411356f * texelSize.x / 2.0f; // *sqrt(2) for diagonal length, effectively just length(texelSize)
+    const float NoL = clamp(abs(dot(N, L)), 0.0001f, 1.f);
+    float bias = 2.f / (1 << 23) + b * length(cross(N, L)) / NoL;
+    bias = (0.01f + bias) / view.projectionZLength;
+    return bias;
+}
+
 float shadow(in vec3 normal, in vec3 worldSpacePos) {
     // Select cascade layer (fallback to the last layer)
     float depthValue = abs((camera.view * vec4(worldSpacePos, 1.0f)).z);
@@ -57,8 +67,10 @@ float shadow(in vec3 normal, in vec3 worldSpacePos) {
         }
     }
 
+    RenderView view = camera.views[layer + 1];
+
     // Get the current fragment's position for the light's view.
-    vec4 lightSpacePos = camera.views[layer + 1].viewProjection * vec4(worldSpacePos, 1.0f);
+    vec4 lightSpacePos = view.viewProjection * vec4(worldSpacePos, 1.0f);
     vec3 coords = lightSpacePos.xyz / lightSpacePos.w; // Perspective divide to get screen coordinates
 
     // Transform from NDC into UV coordinates. Note that with Vulkan the Z range is [0,1] already,
@@ -75,17 +87,13 @@ float shadow(in vec3 normal, in vec3 worldSpacePos) {
     const float receiverDepth = coords.z;
     const float depthBlocker = texture(shadowMap, vec3(coords.xy, layer)).r;
     int kernelSize = clamp(int((receiverDepth - depthBlocker) * 50.f / depthBlocker), 1, 3); // Clamp between 1 and 3 for performance reasons
-    vec2 texelSize = 1.f / textureSize(shadowMap, 0).xy;
+    vec2 texelSize = view.projectionWidth / textureSize(shadowMap, 0).xy;
 
-    // Calculate the "perfect" shadow bias as per https://www.desmos.com/calculator/nbhoiubvfj
-    const vec3 L = -normalize(camera.lightDirection);
-    const float b = 1.41411356f * texelSize.x / 2.0f; // *sqrt(2) for diagonal length, effectively just length(texelSize)
-    const float NoL = clamp(abs(dot(normal, L)), 0.0001f, 1.f);
-    float bias = 2.f / (1 << 23) + b * length(cross(normal, L)) / NoL;
-    bias = (0.01f + bias) / camera.views[layer + 1].projectionZLength;
+    const float baseBias = getBaseShadowBias(view, -normalize(camera.lightDirection), normal, texelSize.x);
+    return receiverDepth < depthBlocker - bias ? 1.f : 0.f;
 
     // Run the PCF kernel
-    float shadow = 0.0f;
+    /*float shadow = 0.0f;
     for (int x = -kernelSize; x <= kernelSize; ++x) {
         for (int y = -kernelSize; y <= kernelSize; ++y) {
             // Sample from the shadow map with an offset and determine if we are the closest fragment for the light
@@ -93,7 +101,7 @@ float shadow(in vec3 normal, in vec3 worldSpacePos) {
             shadow += receiverDepth < pcfDepth - bias ? 1.f : 0.f;
         }
     }
-    return shadow / pow(2 * kernelSize + 1, 2);
+    return shadow / pow(2 * kernelSize + 1, 2);*/
 }
 
 // Converts a color from sRGB gamma to linear light gamma
