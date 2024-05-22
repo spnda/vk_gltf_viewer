@@ -41,7 +41,7 @@ void main() {
     // Early return if entire primitive is outside of the frustum
     const vec3 primWorldAabbCenter = (primitive.modelMatrix * vec4(primitive.aabbCenter, 1.0f)).xyz;
     const vec3 primWorldAabbExtent = getWorldSpaceAabbExtent(primitive.aabbExtents.xyz, primitive.modelMatrix);
-    if (!isAabbInFrustum(primWorldAabbCenter, primWorldAabbExtent, 0)) {
+    if (!isAabbInFrustum(primWorldAabbCenter, primWorldAabbExtent, layerIndex + 1)) {
         return;
     }
 

@@ -2655,14 +2655,16 @@ void Viewer::createShadowMap() {
 void Viewer::createShadowMapPipeline() {
 	ZoneScoped;
 	// Create the sampler for the shadow map
-	const VkSamplerCreateInfo samplerInfo{
+	const VkSamplerCreateInfo samplerInfo {
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-		.magFilter = VK_FILTER_NEAREST,
-		.minFilter = VK_FILTER_NEAREST,
+		.magFilter = VK_FILTER_LINEAR,
+		.minFilter = VK_FILTER_LINEAR,
 		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
 		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
 		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
 		.maxAnisotropy = 1.0f,
+		.compareEnable = VK_TRUE,
+		.compareOp = VK_COMPARE_OP_LESS,
 		.maxLod = 1.0f,
 		.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, // I think this should be 1.0f in all components?
 	};
