@@ -7,27 +7,34 @@
 
 #include "mesh_common.glsl.h"
 
-layout(location = 0) pervertexEXT in u8vec4 quantizedColor[];
-layout(location = 1) in vec2 uv;
-layout(location = 2) in vec3 worldSpacePos;
-layout(location = 3) pervertexEXT in u8vec3 quantizedNormal[];
-layout(location = 4) flat in uint materialIndex;
+layout(location = 0) pervertexEXT in uint vertexIndex[];
+layout(location = 1) in vec3 worldSpacePos;
+layout(location = 2) flat in uint materialIndex;
 
-vec4 interpolateColor() {
+vec4 interpolateColor(const in u8vec4 quantizedColor[3]) {
     return gl_BaryCoordEXT.x * unpackVertexColor(quantizedColor[0])
         + gl_BaryCoordEXT.y * unpackVertexColor(quantizedColor[1])
         + gl_BaryCoordEXT.z * unpackVertexColor(quantizedColor[2]);
 }
-vec3 interpolateNormal() {
+vec3 interpolateNormal(const in u8vec3 quantizedNormal[3]) {
     return gl_BaryCoordEXT.x * unpackVertexNormal(quantizedNormal[0])
         + gl_BaryCoordEXT.y * unpackVertexNormal(quantizedNormal[1])
         + gl_BaryCoordEXT.z * unpackVertexNormal(quantizedNormal[2]);
+}
+vec2 interpolateUv(const in f16vec2 quantizedUv[3]) {
+    return gl_BaryCoordEXT.x * vec2(quantizedUv[0])
+        + gl_BaryCoordEXT.y * vec2(quantizedUv[1])
+        + gl_BaryCoordEXT.z * vec2(quantizedUv[2]);
 }
 
 layout(location = 0) out vec4 fragColor;
 
 layout(set = 0, binding = 0, scalar) restrict readonly uniform CameraUniform {
     Camera camera;
+};
+
+layout(set = 1, binding = 3, scalar) restrict readonly buffer VertexBuffer {
+    Vertex vertices[];
 };
 
 layout(set = 2, binding = 0, scalar) restrict readonly buffer Materials {
@@ -115,18 +122,27 @@ vec4 toLinear(vec4 sRGB) {
 }
 
 void main() {
-    const Material material = materials[materialIndex];
+    restrict const Material material = materials[materialIndex];
+
+    // Do vertex fetch for the other attributes apart from position
+    restrict const Vertex vertex1 = vertices[vertexIndex[0]];
+    restrict const Vertex vertex2 = vertices[vertexIndex[1]];
+    restrict const Vertex vertex3 = vertices[vertexIndex[2]];
 
     vec3 ambient = vec3(0.1, 0.1, 0.1);
 
+    // Interpolate UV coordinates and the quantized vertex color
+    vec2 uv = interpolateUv(f16vec2[](vertex1.uv, vertex2.uv, vertex3.uv));
+    vec4 vtxColor = interpolateColor(u8vec4[](vertex1.color, vertex2.color, vertex3.color));
+
     // the glTF baseColorTexture contains sRGB encoded values.
     vec4 sampled = texture(textures[material.albedoIndex], transformUv(material, uv));
-    vec4 vtxColor = interpolateColor();
     vec4 albedoColor = vtxColor * material.albedoFactor * toLinear(sampled);
     if (albedoColor.a < material.alphaCutoff)
         discard;
 
-    vec3 normal = interpolateNormal();
+    // Interpolate the quantized normal
+    vec3 normal = interpolateNormal(u8vec3[](vertex1.normal, vertex2.normal, vertex3.normal));
     vec3 diffuse = vec3(max(dot(normal, -camera.lightDirection), 0.f));
 
     // We use the vertex normals for the shadow bias calculation, as the self shadowing is caused by the geometry.

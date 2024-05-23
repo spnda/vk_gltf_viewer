@@ -15,41 +15,39 @@ layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(triangles, max_vertices = maxVertices, max_primitives = maxPrimitives) out;
 
-layout(set = 0, binding = 0, scalar) uniform CameraUniform {
+layout(set = 0, binding = 0, scalar) restrict readonly uniform CameraUniform {
     Camera camera;
 };
 
-layout(set = 1, binding = 0, scalar) readonly buffer MeshletDescBuffer {
+layout(set = 1, binding = 0, scalar) restrict readonly buffer MeshletDescBuffer {
     Meshlet meshlets[];
 };
 
-layout(set = 1, binding = 1, scalar) readonly buffer VertexIndexBuffer {
+layout(set = 1, binding = 1, scalar) restrict readonly buffer VertexIndexBuffer {
     uint vertexIndices[];
 };
 
-layout(set = 1, binding = 2, scalar) readonly buffer PrimitiveIndexBuffer {
+layout(set = 1, binding = 2, scalar) restrict readonly buffer PrimitiveIndexBuffer {
     uint8_t primitiveIndices[];
 };
 
-layout(set = 1, binding = 3, scalar) readonly buffer VertexBuffer {
+layout(set = 1, binding = 3, scalar) restrict readonly buffer VertexBuffer {
     Vertex vertices[];
 };
 
-layout(set = 1, binding = 4, scalar) readonly buffer PrimitiveDrawBuffer {
+layout(set = 1, binding = 4, scalar) restrict readonly buffer PrimitiveDrawBuffer {
     PrimitiveDraw primitives[];
 };
 
-layout(set = 2, binding = 0, scalar) readonly buffer Materials {
+layout(set = 2, binding = 0, scalar) restrict readonly buffer Materials {
     Material materials[];
 };
 
 taskPayloadSharedEXT TaskPayload taskPayload;
 
-layout(location = 0) out u8vec4 colors[];
-layout(location = 1) out vec2 uvs[];
-layout(location = 2) out vec3 worldSpacePos[];
-layout(location = 3) out u8vec3 normals[];
-layout(location = 4) perprimitiveEXT flat out uint materialIndex[];
+layout(location = 0) out uint outputVertexIndices[];
+layout(location = 1) out vec3 worldSpacePos[];
+layout(location = 2) perprimitiveEXT flat out uint materialIndex[];
 
 shared vec3 clipVertices[maxPrimitives];
 
@@ -80,16 +78,14 @@ void main() {
         vidx = min(vidx, meshlet.vertexCount - 1);
 
         uint vertexIndex = vertexIndices[primitive.vertexIndicesOffset + meshlet.vertexOffset + vidx];
-        Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
+        restrict const Vertex vertex = vertices[primitive.verticesOffset + vertexIndex];
 
         vec4 pos = mvp * vec4(vertex.position, 1.0f);
         gl_MeshVerticesEXT[vidx].gl_Position = pos;
         worldSpacePos[vidx] = (primitive.modelMatrix * vec4(vertex.position, 1.0f)).xyz;
         clipVertices[vidx] = pos.xyw;
 
-        colors[vidx] = vertex.color;
-        uvs[vidx] = vertex.uv;
-        normals[vidx] = vertex.normal;
+        outputVertexIndices[vidx] = primitive.verticesOffset + vertexIndex;
     }
 
     const float transformDet = determinant(primitive.modelMatrix);

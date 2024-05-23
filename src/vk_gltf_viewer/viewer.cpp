@@ -1213,7 +1213,7 @@ void Viewer::loadGltfMeshes() {
 			.binding = 3,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT,
+			.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		},
 		// The (indirect) draw commands
 		{
