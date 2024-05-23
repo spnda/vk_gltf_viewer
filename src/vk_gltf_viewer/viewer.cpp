@@ -3331,11 +3331,35 @@ void Viewer::renderUi() {
 			createShadowMap();
 		}
 
-		ImGui::Separator();
+		ImGui::SeparatorText("Performance");
 
 		ImGui::Text("Frametime: %.2f ms", deltaTime * 1000);
 		ImGui::Text("FPS: %.2f", 1.f / deltaTime);
 		ImGui::Text("AFPS: %.2f rad/s", 2 * std::numbers::pi_v<float> / deltaTime); // Angular FPS
+
+		// Show Vulkan memory usage
+		{
+			//std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets;
+			//vmaGetHeapBudgets(allocator, budgets.data());
+			VmaTotalStatistics statistics;
+			vmaCalculateStatistics(allocator, &statistics);
+
+			auto formatBytesValue = [](VkDeviceSize bytes) -> std::pair<double, std::string_view> {
+				if (bytes >= 1'000'000'000) {
+					return std::make_pair(double(bytes) / 1'000'000'000.0, "GB\0");
+				} else if (bytes >= 1'000'000) {
+					return std::make_pair(double(bytes) / 1'000'000.0, "MB\0");
+				} else if (bytes >= 1'000) {
+					return std::make_pair(double(bytes) / 1'000.0, "KB\0");
+				} else {
+					return std::make_pair(double(bytes), "B\0");
+				}
+			};
+
+			auto [allocatedBytes, allocatedSuffix] = formatBytesValue(statistics.total.statistics.blockBytes);
+			auto [usedBytes, usedSuffix] = formatBytesValue(statistics.total.statistics.allocationBytes);
+			ImGui::Text("%.2f %s used, %.2f %s allocated", usedBytes, usedSuffix.data(), allocatedBytes, allocatedSuffix.data());
+		}
 
 		ImGui::SeparatorText("Debug options");
 
