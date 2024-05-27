@@ -44,22 +44,32 @@ foreach(SHADER_FILE ${SHADER_FILES})
     set(SHADER_TIMESTAMP_NAME "${PATH_HASH}.timestamp")
     cmake_path(GET SHADER_FILE PARENT_PATH SHADER_FOLDER)
 
-    # Parse includes and add them as a dependency
-    # TODO: Make this recursive?
+    # Recursively parses file includes
+    function(parse_includes RETURN_LIST CONTENTS)
+        foreach(LINE IN LISTS ${CONTENTS})
+            if (LINE MATCHES "^#include ")
+                string(LENGTH ${LINE} LINE_LENGTH)
+                math(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
+                string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
+                set(INCLUDED_FILE "${SHADER_FOLDER}/${INCLUDED_FILE}")
+                if(EXISTS ${INCLUDED_FILE})
+                    list(APPEND ${RETURN_LIST} ${INCLUDED_FILE})
+
+                    # Load the included file, and parse it recursively
+                    file(STRINGS ${INCLUDED_FILE} INCLUDED_FILE_CONTENTS)
+                    parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
+                endif()
+            endif()
+        endforeach()
+
+        return(PROPAGATE ${RETURN_LIST})
+    endfunction()
+
+    # Read the file and parse includes recursively
     file(STRINGS ${SHADER_FILE} FILE_CONTENTS)
     set(FILE_INCLUDES "")
-    foreach(LINE IN LISTS FILE_CONTENTS)
-        # Search for potential includes
-        if (LINE MATCHES "^#include ")
-            string(LENGTH ${LINE} LINE_LENGTH)
-            MATH(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
-            string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
-            set(INCLUDED_FILE "${SHADER_FOLDER}/${INCLUDED_FILE}")
-            if(EXISTS ${INCLUDED_FILE})
-                list(APPEND FILE_INCLUDES ${INCLUDED_FILE})
-            endif()
-        endif()
-    endforeach()
+    parse_includes(FILE_INCLUDES FILE_CONTENTS)
+    list(REMOVE_DUPLICATES FILE_INCLUDES)
 
     cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
     add_custom_command(
