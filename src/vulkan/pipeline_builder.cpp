@@ -7,6 +7,7 @@
 #include <vulkan/pipeline_builder.hpp>
 
 VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, VkShaderModule *pShaderModule) {
+	ZoneScoped;
     std::error_code error;
     auto length = static_cast<std::streamsize>(std::filesystem::file_size(filePath, error));
     if (error) {
@@ -30,7 +31,6 @@ VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, V
     auto result = vkCreateShaderModule(device, &createInfo, &vk::allocationCallbacks, pShaderModule);
 	if (result != VK_SUCCESS) {
 		throw vulkan_error("Failed to create shader module: {}", result);
-		return result;
 	}
 
 	vk::setDebugUtilsName(device, *pShaderModule, filePath.string());
@@ -226,14 +226,14 @@ vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::setDepthState(std::uin
                                                                         VkCompareOp depthCompareOp) {
     assert(idx < pipelineBuildInfos.size());
     pipelineBuildInfos[idx].depthState = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-            .depthTestEnable = depthTestEnable,
-            .depthWriteEnable = depthWriteEnable,
-            .depthCompareOp = depthCompareOp,
-			.depthBoundsTestEnable = VK_FALSE,
-            .stencilTestEnable = VK_FALSE, // TODO: Expose.
-            .minDepthBounds = 0.0f,
-            .maxDepthBounds = 1.0f,
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = depthTestEnable,
+		.depthWriteEnable = depthWriteEnable,
+		.depthCompareOp = depthCompareOp,
+		.depthBoundsTestEnable = VK_FALSE,
+		.stencilTestEnable = VK_FALSE, // TODO: Expose.
+		.minDepthBounds = 0.0f,
+		.maxDepthBounds = 1.0f,
     };
     return *this;
 }

@@ -37,11 +37,11 @@ message(STATUS "vk_gltf_viewer: Found glslangValidator: ${GLSLANG_EXECUTABLE}")
 # This piece of code is largely copied/refactored from my shader_processor project.
 # https://github.com/spnda/shader_processor/blob/a4a2fe2a60549b245503c4c9f6c2a4dfff19eb44/CMakeLists.txt#L9-L71
 file(GLOB_RECURSE SHADER_FILES "shaders/*.glsl" "shaders/**/*.glsl")
+set(SHADER_C_NAMES "") # List holding all compiled shader names
 foreach(SHADER_FILE ${SHADER_FILES})
     message(STATUS "vk_gltf_viewer: Found shader: ${SHADER_FILE}")
     string(SHA1 PATH_HASH ${SHADER_FILE})
-    set(SHADER_TARGET_NAME "build_shader_${PATH_HASH}")
-    set(SHADER_TIMESTAMP_NAME "${PATH_HASH}.timestamp")
+    set(SHADER_TIMESTAMP_NAME "shaders/${PATH_HASH}.timestamp")
     cmake_path(GET SHADER_FILE PARENT_PATH SHADER_FOLDER)
 
     # Recursively parses file includes
@@ -71,16 +71,41 @@ foreach(SHADER_FILE ${SHADER_FILES})
     parse_includes(FILE_INCLUDES FILE_CONTENTS)
     list(REMOVE_DUPLICATES FILE_INCLUDES)
 
+    # Add a custom command to compile the shader
     cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
+    set(COMPILED_SHADER_FILE "shaders/${PATH_HASH}.spv")
     add_custom_command(
-        OUTPUT ${SHADER_TIMESTAMP_NAME}
-        COMMAND ${GLSLANG_EXECUTABLE} $<$<CONFIG:DEBUG>:-g> --target-env vulkan1.3 -o ${SHADER_FILENAME}.spv ${SHADER_FILE}
+        OUTPUT ${SHADER_TIMESTAMP_NAME} ${COMPILED_SHADER_FILE}
+        COMMAND ${GLSLANG_EXECUTABLE} $<$<CONFIG:DEBUG>:-g> --target-env vulkan1.3 -o ${COMPILED_SHADER_FILE} ${SHADER_FILE}
         COMMAND ${CMAKE_COMMAND} -E touch ${SHADER_TIMESTAMP_NAME}
         DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
-        WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
-        # VERBATIM
         COMMENT "Processing ${SHADER_FILE}"
     )
-    add_custom_target(${SHADER_TARGET_NAME} DEPENDS ${SHADER_TIMESTAMP_NAME})
-    add_dependencies(vk_gltf_viewer ${SHADER_TARGET_NAME})
+
+    # Add a custom command that copies the generated SPIR-V into a .cpp file
+    set(SPIRV_CPP_FILE "shaders/${PATH_HASH}.cpp")
+    string(MAKE_C_IDENTIFIER ${SHADER_FILENAME} SHADER_FILENAME_C)
+    add_custom_command(
+        OUTPUT ${SPIRV_CPP_FILE}
+        COMMAND ${CMAKE_COMMAND} -DPROCESSED_FILE_NAME=${SHADER_FILENAME_C} -DINPUT_FILE=${COMPILED_SHADER_FILE} -DOUTPUT_FILE=${SPIRV_CPP_FILE} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/configure_spirv.cmake
+        DEPENDS ${SHADER_TIMESTAMP_NAME} ${COMPILED_SHADER_FILE}
+        COMMENT "Packaging ${SHADER_FILE}"
+    )
+
+    list(APPEND SHADER_C_NAMES ${SHADER_FILENAME_C})
+
+    # Finally, add the generated source file as a target source
+    target_sources(vk_gltf_viewer PRIVATE ${SPIRV_CPP_FILE})
 endforeach()
+
+# Create a single header acting as a shader manifest which holds references to all shader data
+# This effectively creates a list of "extern std::span" for each shader, which are all defined in
+# their respective cpp files, as generated above.
+message(STATUS "Runtime output dir: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+set(SHADER_DATA_SPANS "")
+foreach(SHADER_NAME IN LISTS SHADER_C_NAMES)
+    list(APPEND SHADER_DATA_SPANS "\nextern const std::span<const std::uint32_t> ${SHADER_NAME}")
+endforeach()
+
+configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/spirv_manifest.hpp.in" "${CMAKE_CURRENT_LIST_DIR}/generated/spirv_manifest.hpp")
+target_include_directories(vk_gltf_viewer PRIVATE ${CMAKE_CURRENT_LIST_DIR}/generated)

@@ -1,0 +1,6 @@
+#pragma once
+
+#include <cstdint>
+#include <span>
+
+@SHADER_DATA_SPANS@;

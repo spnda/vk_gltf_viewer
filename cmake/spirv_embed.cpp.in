@@ -1,0 +1,10 @@
+#include <array>
+#include <cstdint>
+#include <span>
+
+constexpr auto @PROCESSED_FILE_NAME@_data = std::to_array<std::uint32_t>({
+	@FILE_CONTENTS@
+});
+
+extern const std::span<const std::uint32_t> @PROCESSED_FILE_NAME@ = std::span<const std::uint32_t>{
+	@PROCESSED_FILE_NAME@_data.data(), @PROCESSED_FILE_NAME@_data.size()};
