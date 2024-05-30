@@ -51,13 +51,33 @@ foreach(SHADER_FILE ${SHADER_FILES})
                 string(LENGTH ${LINE} LINE_LENGTH)
                 math(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
                 string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
-                set(INCLUDED_FILE "${SHADER_FOLDER}/${INCLUDED_FILE}")
-                if(EXISTS ${INCLUDED_FILE})
-                    list(APPEND ${RETURN_LIST} ${INCLUDED_FILE})
+                string(SUBSTRING ${LINE} 9 1 INCLUDE_CHAR)
+
+                # We'll ignore files which are included with <> instead of "".
+                # We consider these to be C++ header includes wrapped in defined(__cplusplus) guards.
+                string(SUBSTRING ${LINE} 9 1 INCLUDE_CHAR)
+                if (${INCLUDE_CHAR} STREQUAL "<")
+                    continue()
+                endif()
+
+                # Match glslang's behaviour by first searching the shader's directory, and then
+                # searching the root shaders directory. TODO: Can we somehow merge the two branches?
+                set(INCLUDED_FILE_REL "${SHADER_FOLDER}/${INCLUDED_FILE}")
+                set(INCLUDED_FILE_ROOT ${CMAKE_CURRENT_LIST_DIR}/shaders/${INCLUDED_FILE})
+                if(EXISTS ${INCLUDED_FILE_REL})
+                    list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_REL})
 
                     # Load the included file, and parse it recursively
-                    file(STRINGS ${INCLUDED_FILE} INCLUDED_FILE_CONTENTS)
+                    file(STRINGS ${INCLUDED_FILE_REL} INCLUDED_FILE_CONTENTS)
                     parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
+                elseif(EXISTS ${INCLUDED_FILE_ROOT})
+                    list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_ROOT})
+
+                    # Load the included file, and parse it recursively
+                    file(STRINGS ${INCLUDED_FILE_ROOT} INCLUDED_FILE_CONTENTS)
+                    parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
+                else()
+                    message(STATUS "Failed to find included file: ${INCLUDED_FILE}")
                 endif()
             endif()
         endforeach()
@@ -76,7 +96,7 @@ foreach(SHADER_FILE ${SHADER_FILES})
     set(COMPILED_SHADER_FILE "shaders/${PATH_HASH}.spv")
     add_custom_command(
         OUTPUT ${SHADER_TIMESTAMP_NAME} ${COMPILED_SHADER_FILE}
-        COMMAND ${GLSLANG_EXECUTABLE} $<$<CONFIG:DEBUG>:-g> --target-env vulkan1.3 -o ${COMPILED_SHADER_FILE} ${SHADER_FILE}
+        COMMAND ${GLSLANG_EXECUTABLE} $<$<CONFIG:DEBUG>:-g> --target-env vulkan1.3 -I${CMAKE_CURRENT_LIST_DIR}/shaders -o ${COMPILED_SHADER_FILE} ${SHADER_FILE}
         COMMAND ${CMAKE_COMMAND} -E touch ${SHADER_TIMESTAMP_NAME}
         DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
         COMMENT "Processing ${SHADER_FILE}"
@@ -101,7 +121,6 @@ endforeach()
 # Create a single header acting as a shader manifest which holds references to all shader data
 # This effectively creates a list of "extern std::span" for each shader, which are all defined in
 # their respective cpp files, as generated above.
-message(STATUS "Runtime output dir: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 set(SHADER_DATA_SPANS "")
 foreach(SHADER_NAME IN LISTS SHADER_C_NAMES)
     list(APPEND SHADER_DATA_SPANS "\nextern const std::span<const std::uint32_t> ${SHADER_NAME}")
