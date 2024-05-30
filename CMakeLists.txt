@@ -5,18 +5,33 @@ include(cmake/add_source_directory.cmake)
 add_subdirectory(submodules)
 
 add_executable(vk_gltf_viewer EXCLUDE_FROM_ALL)
-target_compile_features(vk_gltf_viewer PUBLIC cxx_std_20)
+target_compile_features(vk_gltf_viewer PUBLIC cxx_std_23)
 target_link_libraries(vk_gltf_viewer PRIVATE fastgltf wuffs dds_image ktx_read::ktx_read meshoptimizer)
 target_link_libraries(vk_gltf_viewer PRIVATE glfw::glfw imgui::imgui enkiTS::enkiTS Tracy::Client fmt::fmt glm::glm)
 target_link_libraries(vk_gltf_viewer PRIVATE Vulkan::Headers Vulkan::Utils volk::volk_headers vk-bootstrap::vk-bootstrap Vulkan::MemoryAllocator)
+if (TARGET nv::aftermath)
+    target_link_libraries(vk_gltf_viewer PRIVATE nv::aftermath)
+    target_compile_definitions(vk_gltf_viewer PRIVATE "VKV_NV_AFTERMATH=1")
+endif()
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vk_gltf_viewer")
+add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vk_gltf_viewer/nvidia")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vulkan")
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vk_gltf_viewer")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vulkan")
 target_include_directories(vk_gltf_viewer PRIVATE "include")
+
+# Set compile flags. We target AVX2 as a minimum
+fastgltf_compiler_flags(vk_gltf_viewer)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(vk_gltf_viewer PRIVATE "-mavx2")
+    elseif(MSVC)
+        target_compile_options(vk_gltf_viewer PRIVATE "/arch:AVX")
+    endif()
+endif()
 
 # Add the shaders directory as an include directory
 target_include_directories(vk_gltf_viewer PRIVATE "shaders")
@@ -93,10 +108,11 @@ foreach(SHADER_FILE ${SHADER_FILES})
 
     # Add a custom command to compile the shader
     cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
-    set(COMPILED_SHADER_FILE "shaders/${PATH_HASH}.spv")
+    set(COMPILED_SHADER_FILE "shaders/${PATH_HASH}.spirv")
     add_custom_command(
         OUTPUT ${SHADER_TIMESTAMP_NAME} ${COMPILED_SHADER_FILE}
         COMMAND ${GLSLANG_EXECUTABLE} $<$<CONFIG:DEBUG>:-g> --target-env vulkan1.3 -I${CMAKE_CURRENT_LIST_DIR}/shaders -o ${COMPILED_SHADER_FILE} ${SHADER_FILE}
+        COMMAND ${CMAKE_COMMAND} -E copy ${COMPILED_SHADER_FILE} shaders/${SHADER_FILENAME}.spirv
         COMMAND ${CMAKE_COMMAND} -E touch ${SHADER_TIMESTAMP_NAME}
         DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
         COMMENT "Processing ${SHADER_FILE}"
@@ -128,3 +144,9 @@ endforeach()
 
 configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/spirv_manifest.hpp.in" "${CMAKE_CURRENT_LIST_DIR}/generated/spirv_manifest.hpp")
 target_include_directories(vk_gltf_viewer PRIVATE ${CMAKE_CURRENT_LIST_DIR}/generated)
+
+# Copy all required runtime DLLs into the build directory
+add_custom_command(TARGET vk_gltf_viewer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_RUNTIME_DLLS:vk_gltf_viewer> $<TARGET_FILE_DIR:vk_gltf_viewer>
+  COMMAND_EXPAND_LISTS
+)

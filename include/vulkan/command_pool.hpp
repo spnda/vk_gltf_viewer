@@ -5,6 +5,8 @@
 #include <queue>
 #include <span>
 
+#include <tracy/Tracy.hpp>
+
 #include <vulkan/vk.hpp>
 
 namespace vk {
@@ -102,6 +104,10 @@ namespace vk {
 			std::lock_guard lock(poolMutex);
 			vkResetCommandBuffer(handle, 0);
 			availableCommandBuffers.emplace(handle);
+		}
+
+		operator VkCommandPool() const noexcept {
+			return handle();
 		}
 	};
 } // namespace vk

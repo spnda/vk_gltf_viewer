@@ -1,5 +1,21 @@
 set(VKV_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
+if (EXISTS "${VKV_DEPS_DIR}/tracy")
+    message(STATUS "vk_gltf_viewer: Found tracy")
+    add_library(tracy_client "${VKV_DEPS_DIR}/tracy/public/TracyClient.cpp")
+    add_library(Tracy::Client ALIAS tracy_client)
+
+    find_package(Threads REQUIRED)
+    target_compile_features(tracy_client PUBLIC cxx_std_11)
+    target_include_directories(tracy_client SYSTEM PUBLIC "${VKV_DEPS_DIR}/tracy/public")
+    target_link_libraries(tracy_client PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+
+    # Tracy only cares if the macro is defined, not its value. Use PUBLIC to propagate the value.
+    if (TRACY_ENABLE)
+        target_compile_definitions(tracy_client PUBLIC "TRACY_ENABLE=1")
+    endif()
+endif()
+
 if(EXISTS "${VKV_DEPS_DIR}/glfw")
     message(STATUS "vk_gltf_viewer: Found glfw")
     # copied from glfw's CMakeLists. We seriously don't want any examples/tests/docs.
@@ -95,22 +111,6 @@ if (EXISTS "${VKV_DEPS_DIR}/fastgltf")
     add_subdirectory("${VKV_DEPS_DIR}/fastgltf")
 endif()
 
-if (EXISTS "${VKV_DEPS_DIR}/tracy")
-    message(STATUS "vk_gltf_viewer: Found tracy")
-    add_library(tracy_client "${VKV_DEPS_DIR}/tracy/public/TracyClient.cpp")
-    add_library(Tracy::Client ALIAS tracy_client)
-
-    find_package(Threads REQUIRED)
-    target_compile_features(tracy_client PUBLIC cxx_std_11)
-    target_include_directories(tracy_client SYSTEM PUBLIC "${VKV_DEPS_DIR}/tracy/public")
-    target_link_libraries(tracy_client PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
-
-    # Tracy only cares if the macro is defined, not its value. Use PUBLIC to propagate the value.
-    if (TRACY_ENABLE)
-        target_compile_definitions(tracy_client PUBLIC "TRACY_ENABLE=1")
-    endif()
-endif()
-
 if (EXISTS "${VKV_DEPS_DIR}/meshoptimizer")
     add_subdirectory("${VKV_DEPS_DIR}/meshoptimizer")
 endif()
@@ -165,4 +165,21 @@ if (EXISTS "${VKV_DEPS_DIR}/ktx-software")
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${TEMPORARY_ARCHIVE_OUTPUT_DIRECTORY})
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${TEMPORARY_LIBRARY_OUTPUT_DIRECTORY})
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${TEMPORARY_RUNTIME_OUTPUT_DIRECTORY})
+endif()
+
+if (EXISTS "${VKV_DEPS_DIR}/nv-aftermath")
+    message(STATUS "vk_gltf_viewer: Found NVIDIA Aftermath")
+
+    add_library(nv_aftermath SHARED IMPORTED GLOBAL)
+    add_library(nv::aftermath ALIAS nv_aftermath)
+    target_include_directories(nv_aftermath INTERFACE "${VKV_DEPS_DIR}/nv-aftermath/include")
+    if(WIN32)
+        set_target_properties(nv_aftermath PROPERTIES
+            IMPORTED_LOCATION "${VKV_DEPS_DIR}/nv-aftermath/lib/x64/GFSDK_Aftermath_Lib.x64.dll"
+            IMPORTED_IMPLIB "${VKV_DEPS_DIR}/nv-aftermath/lib/x64/GFSDK_Aftermath_Lib.x64.lib"
+            IMPORTED_CONFIGURATIONS "RELEASE"
+        )
+    else()
+        # TODO: NVIDIA Aftermath support for Linux?
+    endif()
 endif()

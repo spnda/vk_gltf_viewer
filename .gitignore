@@ -10,3 +10,6 @@ build/
 
 # Generated files
 generated/
+
+# Dependencies not in Git submodules
+submodules/nv-aftermath

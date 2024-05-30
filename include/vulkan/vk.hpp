@@ -22,6 +22,8 @@
 
 #include <vulkan/fmt.hpp>
 
+#include <tracy/Tracy.hpp>
+
 class vulkan_error : public std::runtime_error {
 	VkResult result;
 
@@ -33,30 +35,32 @@ public:
 };
 
 namespace vk {
-    template <typename R, typename Vector = std::vector<R>, typename F, typename... Args>
-    requires std::is_constructible_v<R> && requires(F func, Args... args, std::uint32_t count) {
-        { func(args..., &count, nullptr) };
-    }
-    Vector enumerateVector(F func, Args... args) {
-        std::uint32_t count = 0;
-        func(args..., &count, nullptr);
-        Vector ret(count);
-        func(args..., &count, ret.data());
-        return ret;
-    }
+	template <typename R, typename Vector = std::vector<R>, typename F, typename... Args>
+	requires std::is_constructible_v<R> && requires(F func, Args... args, std::uint32_t count) {
+		{ func(args..., &count, nullptr) };
+	}
+	Vector enumerateVector(F func, Args... args) {
+		ZoneScoped;
+		std::uint32_t count = 0;
+		func(args..., &count, nullptr);
+		Vector ret(count);
+		func(args..., &count, ret.data());
+		return ret;
+	}
 
-    [[gnu::always_inline]] inline void checkResult(VkResult result, const char* message) noexcept(false) {
-        if (result != VK_SUCCESS) {
+	[[gnu::always_inline]] inline void checkResult(VkResult result, const char* message) noexcept(false) {
+		if (result != VK_SUCCESS) {
 			throw vulkan_error(message, result);
-        }
-    }
+		}
+	}
 
-    [[gnu::always_inline]] inline void checkResult(VkResult result, const std::string& message) noexcept(false) {
-        if (result != VK_SUCCESS) {
+	[[gnu::always_inline]] inline void checkResult(VkResult result, const std::string& message) noexcept(false) {
+		if (result != VK_SUCCESS) {
 			throw vulkan_error(message, result);
-        }
-    }
+		}
+	}
 
 	/** Global allocation callbacks value */
 	inline VkAllocationCallbacks allocationCallbacks;
+	void initVulkanAllocationCallbacks();
 } // namespace vk

@@ -9,37 +9,32 @@
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
 
-#include <GLFW/glfw3.h>
-
-struct Viewer;
-
 #include <ui/ui.glsl.h>
+
+#include <vk_gltf_viewer/device.hpp>
+#include <vk_gltf_viewer/image.hpp>
+#include <vk_gltf_viewer/buffer.hpp>
 
 namespace imgui {
 	struct PerFrameBuffers {
-		VkBuffer vertexBuffer = VK_NULL_HANDLE;
-		VmaAllocation vertexAllocation = VK_NULL_HANDLE;
-		VkDeviceSize vertexBufferSize = 0;
+		std::unique_ptr<ScopedBuffer> vertexBuffer;
 		VkDeviceAddress vertexBufferAddress = 0;
 
-		VkBuffer indexBuffer = VK_NULL_HANDLE;
-		VmaAllocation indexAllocation = VK_NULL_HANDLE;
-		VkDeviceSize indexBufferSize = 0;
+		std::unique_ptr<ScopedBuffer> indexBuffer;
 	};
 
 	class Renderer final {
 		friend class ShaderLoadTask;
 
-		Viewer* viewer = nullptr;
+		std::reference_wrapper<Device> device;
 
-		glsl::PushConstants pushConstants = {};
+		glsl::UiPushConstants pushConstants = {};
 		std::vector<PerFrameBuffers> buffers;
 
 		VkBuffer fontAtlasStagingBuffer = VK_NULL_HANDLE;
 		VmaAllocation fontAtlasStagingAllocation = VK_NULL_HANDLE;
 
-		VkImage fontAtlas = VK_NULL_HANDLE;
-		VmaAllocation fontAtlasAllocation = VK_NULL_HANDLE;
+		std::unique_ptr<ScopedImage> fontAtlas;
 		VkImageView fontAtlasView = VK_NULL_HANDLE;
 		VkSampler fontAtlasSampler = VK_NULL_HANDLE;
 		glm::u32vec2 fontAtlasExtent = {};
@@ -62,9 +57,12 @@ namespace imgui {
 		std::unordered_map<ImTextureID, std::uint32_t> imageDescriptorIndices;
 		void addTextureToDescriptorSet(ImTextureID textureId);
 
-		VkResult createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize);
+		void createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize);
 
 	public:
+		explicit Renderer(Device& device, GLFWwindow* window, VkFormat swapchainImageFormat);
+		~Renderer();
+
 		/**
 		 * Creates the sampler, texture, and shader parameter for the font atlas. If the font data
 		 * changes, this will upload the data again and resize the texture if necessary. This will
@@ -72,9 +70,7 @@ namespace imgui {
 		 * in flight.
 		 */
 		void createFontAtlas();
-		void destroy();
 		void draw(VkCommandBuffer commandBuffer, VkImageView swapchainImageView, glm::u32vec2 framebufferSize, std::size_t currentFrame);
-		auto init(Viewer* viewer) -> VkResult;
 		auto initFrameData(std::uint32_t frameCount) -> VkResult;
 		void newFrame();
 	};

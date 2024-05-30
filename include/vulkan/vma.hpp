@@ -25,28 +25,9 @@
 #include <vk_mem_alloc.h>
 // clang-format on
 
+#include <tracy/Tracy.hpp>
+
 namespace vk {
-	template<typename T = void>
-	class ScopedMap {
-		VmaAllocator allocator;
-		VmaAllocation allocation;
-		void* data;
-
-	public:
-		ScopedMap(VmaAllocator allocator, VmaAllocation allocation) : allocator(allocator), allocation(allocation),
-																	  data(nullptr) {
-			vmaMapMemory(allocator, allocation, &data);
-		}
-
-		T *get() {
-			return static_cast<T*>(data);
-		}
-
-		~ScopedMap() {
-			vmaUnmapMemory(allocator, allocation);
-		}
-	};
-
 	[[gnu::always_inline]] inline void setAllocationName(VmaAllocator allocator, VmaAllocation allocation, std::string string) {
 		vmaSetAllocationName(allocator, allocation, string.c_str());
 	}

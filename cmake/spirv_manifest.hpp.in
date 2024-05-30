@@ -3,4 +3,21 @@
 #include <cstdint>
 #include <span>
 
+#include <vulkan/vk.hpp>
+#include <vk_gltf_viewer/device.hpp>
+
 @SHADER_DATA_SPANS@;
+
+/** Loads a shader from the embedded SPIR-V words */
+inline void loadShader(const Device& device, const std::span<const std::uint32_t> data, VkShaderModule* shaderModule) {
+    ZoneScoped;
+    const VkShaderModuleCreateInfo createInfo = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = data.size() * sizeof(std::uint32_t),
+        .pCode = data.data(),
+    };
+    auto result = vkCreateShaderModule(device, &createInfo, &vk::allocationCallbacks, shaderModule);
+    if (result != VK_SUCCESS) {
+        throw vulkan_error("Failed to create shader module: {}", result);
+    }
+}

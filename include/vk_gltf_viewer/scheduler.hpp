@@ -4,6 +4,14 @@
 
 inline enki::TaskScheduler taskScheduler;
 
+enum class PinnedThreadId : std::uint32_t {
+	FileIO,
+	Count,
+};
+
+void initializeScheduler();
+std::uint32_t getPinnedThreadNum(PinnedThreadId id);
+
 /** Simple wrapper around another TaskSet that catches any exceptions in the ExecuteRange function. */
 struct ExceptionTaskSet : public enki::ITaskSet {
 	std::exception_ptr exception;

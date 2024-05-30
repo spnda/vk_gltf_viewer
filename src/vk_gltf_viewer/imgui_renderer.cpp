@@ -4,14 +4,14 @@
 #include <fstream>
 #include <utility>
 
+#include <GLFW/glfw3.h>
+
 #include <TaskScheduler.h>
 #include <fmt/format.h>
 #include <imgui_impl_glfw.h>
 #include <tracy/Tracy.hpp>
 
 #include <vk_gltf_viewer/scheduler.hpp>
-#include <vk_gltf_viewer/util.hpp>
-#include <vk_gltf_viewer/viewer.hpp>
 #include <vk_gltf_viewer/imgui_renderer.hpp>
 
 #include <vulkan/vk.hpp>
@@ -20,24 +20,199 @@
 #include <vulkan/pipeline_builder.hpp>
 #include <vulkan/cache.hpp>
 
+#include <fastgltf/util.hpp>
+
+#include <spirv_manifest.hpp>
+
 namespace fs = std::filesystem;
 
 namespace imgui {
 	const auto pipelineCacheFile = std::filesystem::current_path() / "cache/imgui.cache";
-
-	class ShaderLoadTask : public enki::ITaskSet {
-		Renderer* renderer;
-
-	public:
-		explicit ShaderLoadTask(Renderer* renderer) : renderer(renderer) {}
-
-		void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override {
-			ZoneScoped;
-			vk::loadShaderModule("ui.frag.glsl.spv", renderer->viewer->device, &renderer->fragmentShader);
-			vk::loadShaderModule("ui.vert.glsl.spv", renderer->viewer->device, &renderer->vertexShader);
-		}
-	};
 } // namespace imgui
+
+imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchainImageFormat) : device(_device) {
+	ZoneScoped;
+	vk::PipelineCacheLoadTask cacheLoadTask(device.get(), &pipelineCache, pipelineCacheFile);
+	taskScheduler.AddTaskSetToPipe(&cacheLoadTask);
+
+	loadShader(device.get(), ui_frag_glsl, &fragmentShader);
+	vk::setDebugUtilsName(device.get(), fragmentShader, "ui_frag_glsl");
+	loadShader(device.get(), ui_vert_glsl, &vertexShader);
+	vk::setDebugUtilsName(device.get(), vertexShader, "ui_vert_glsl");
+
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGui::StyleColorsDark();
+	ImGui_ImplGlfw_InitForVulkan(window, true);
+
+	auto& io = ImGui::GetIO();
+	io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+	io.BackendRendererName = "imgui::ImGuiRenderer";
+	io.BackendPlatformName = "Vulkan";
+
+	// Create the sampler. It is static, therefore we will pass it as an immutable sampler to the
+	// descriptor layout.
+	const VkSamplerCreateInfo samplerInfo = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+	};
+	auto samplerResult = vkCreateSampler(device.get(), &samplerInfo, &vk::allocationCallbacks, &fontAtlasSampler);
+	vk::checkResult(samplerResult, "Failed to create ImGui font-atlas sampler");
+	vk::setDebugUtilsName(device.get(), fontAtlasSampler, "ImGui font-atlas sampler");
+
+	// Create the descriptor layout
+	std::vector<VkSampler> immutableSamplers(maxBindlessImages, fontAtlasSampler); // TODO: Perhaps we don't need immutable samplers?
+	const VkDescriptorSetLayoutBinding binding = {
+		.binding = 0,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.descriptorCount = maxBindlessImages, // Is this a sane max value for displayed images?
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		.pImmutableSamplers = immutableSamplers.data(),
+	};
+	const VkDescriptorBindingFlags bindingFlags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+	const VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+		.bindingCount = 1,
+		.pBindingFlags = &bindingFlags,
+	};
+	const VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.pNext = &bindingFlagsInfo,
+		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+		.bindingCount = 1,
+		.pBindings = &binding,
+	};
+	auto descriptorLayoutResult = vkCreateDescriptorSetLayout(device.get(), &descriptorLayoutInfo, &vk::allocationCallbacks, &descriptorLayout);
+	vk::checkResult(descriptorLayoutResult, "Failed to create ImGui font atlas descriptor set layout: {}");
+
+	// Create the descriptor pool to hold exactly the amount of descriptors the backend supports.
+	std::array<VkDescriptorPoolSize, 1> descriptorPoolSizes = {{
+		{
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = maxBindlessImages,
+		}
+	}};
+	const VkDescriptorPoolCreateInfo descriptorPoolInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+		.maxSets = 1,
+		.poolSizeCount = static_cast<std::uint32_t>(descriptorPoolSizes.size()),
+		.pPoolSizes = descriptorPoolSizes.data(),
+	};
+	auto descriptorPoolResult = vkCreateDescriptorPool(device.get(), &descriptorPoolInfo, &vk::allocationCallbacks, &descriptorPool);
+	vk::checkResult(descriptorPoolResult, "Failed to create ImGui descriptor pool: {}");
+
+	// Create the single descriptor set
+	const VkDescriptorSetAllocateInfo descriptorSetInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = descriptorPool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &descriptorLayout,
+	};
+	auto allocateResult = vkAllocateDescriptorSets(device.get(), &descriptorSetInfo, &descriptorSet);
+	vk::checkResult(allocateResult, "Failed to create ImGui frame descriptor sets: {}");
+
+	// Create the pipeline layout
+	const VkPushConstantRange pushConstantRange = {
+		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		.offset = 0,
+		.size = sizeof(glsl::UiPushConstants),
+	};
+	const VkPipelineLayoutCreateInfo layoutCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &descriptorLayout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &pushConstantRange,
+	};
+	auto result = vkCreatePipelineLayout(device.get(), &layoutCreateInfo, &vk::allocationCallbacks, &pipelineLayout);
+	if (result != VK_SUCCESS) {
+		throw vulkan_error("Failed to create imgui pipeline layout", result);
+	}
+
+	// Create the pipeline
+	const VkFormat colorAttachmentFormat = swapchainImageFormat;
+	const VkPipelineRenderingCreateInfo renderingCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+		.colorAttachmentCount = 1,
+		.pColorAttachmentFormats = &colorAttachmentFormat,
+	};
+
+	const VkPipelineColorBlendAttachmentState blendAttachment = {
+		.blendEnable = VK_TRUE,
+		.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+		.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+		.colorBlendOp = VK_BLEND_OP_ADD,
+		.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+		.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+		.alphaBlendOp = VK_BLEND_OP_ADD,
+		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+	};
+
+	auto builder = vk::GraphicsPipelineBuilder(device.get(), 1)
+		.setPipelineLayout(0, pipelineLayout)
+		.addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
+		.addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
+		.pushPNext(0, &renderingCreateInfo)
+		.setBlendAttachment(0, &blendAttachment)
+		.setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		.setDepthState(0, VK_FALSE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL)
+		.setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
+		.setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
+		.setScissorCount(0, 1U)
+		.setViewportCount(0, 1U);
+
+	builder.addShaderStage(0, VK_SHADER_STAGE_VERTEX_BIT, vertexShader, "main")
+		.addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragmentShader, "main");
+
+	taskScheduler.WaitforTask(&cacheLoadTask);
+	if (cacheLoadTask.getResult() == VK_SUCCESS) {
+		fmt::print("Successfully created ImGui pipeline cache\n");
+		builder.setPipelineCache(pipelineCache);
+	} else {
+		fmt::print(stderr, "Failed to load ImGui pipeline cache: {}\n", cacheLoadTask.getResult());
+	}
+
+	result = builder.build(&pipeline);
+	if (result != VK_SUCCESS)
+		throw vulkan_error("Failed to create imgui pipeline", result);
+}
+
+imgui::Renderer::~Renderer() {
+	ZoneScoped;
+	vk::PipelineCacheSaveTask cacheSaveTask(device.get(), &pipelineCache, pipelineCacheFile);
+
+	if (volkGetLoadedDevice() != nullptr) {
+		taskScheduler.AddTaskSetToPipe(&cacheSaveTask);
+
+		for (auto& buf : buffers) {
+			buf.vertexBuffer.reset();
+			buf.indexBuffer.reset();
+		}
+
+		vmaDestroyBuffer(device.get().allocator, fontAtlasStagingBuffer, fontAtlasStagingAllocation);
+		vkDestroySampler(device.get(), fontAtlasSampler, &vk::allocationCallbacks);
+		vkDestroyImageView(device.get(), fontAtlasView, &vk::allocationCallbacks);
+		fontAtlas.reset();
+
+		vkResetDescriptorPool(device.get(), descriptorPool, 0);
+		vkDestroyDescriptorPool(device.get(), descriptorPool, &vk::allocationCallbacks);
+		vkDestroyDescriptorSetLayout(device.get(), descriptorLayout, &vk::allocationCallbacks);
+
+		vkDestroyPipeline(device.get(), pipeline, &vk::allocationCallbacks);
+		vkDestroyPipelineLayout(device.get(), pipelineLayout, &vk::allocationCallbacks);
+
+		vkDestroyShaderModule(device.get(), fragmentShader, &vk::allocationCallbacks);
+		vkDestroyShaderModule(device.get(), vertexShader, &vk::allocationCallbacks);
+	}
+
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
+
+	if (volkGetLoadedDevice() != nullptr) {
+		taskScheduler.WaitforTask(&cacheSaveTask);
+		vkDestroyPipelineCache(device.get(), pipelineCache, &vk::allocationCallbacks);
+	}
+}
 
 void imgui::Renderer::createFontAtlas() {
 	ZoneScoped;
@@ -45,12 +220,10 @@ void imgui::Renderer::createFontAtlas() {
 	fonts->Build();
 
 	if (fontAtlas != VK_NULL_HANDLE) {
-		// destroy should only destroy the texture data.
-		vmaDestroyImage(viewer->allocator, fontAtlas, fontAtlasAllocation);
-		fontAtlas = VK_NULL_HANDLE;
-		fontAtlasAllocation = VK_NULL_HANDLE;
+		fontAtlas.reset();
 	}
 
+	// Get the texture data. We don't care about coloured fonts for now, so we'll just use single channel alpha values.
 	auto& io = ImGui::GetIO();
 	unsigned char* pixels = nullptr;
 	int width = 0;
@@ -78,15 +251,14 @@ void imgui::Renderer::createFontAtlas() {
 	const VmaAllocationCreateInfo allocationCreateInfo = {
 		.usage = VMA_MEMORY_USAGE_AUTO,
 	};
-	auto result = vmaCreateImage(viewer->allocator, &imageCreateInfo, &allocationCreateInfo,
-				   &fontAtlas, &fontAtlasAllocation, VK_NULL_HANDLE);
-	vk::checkResult(result, "Failed to create ImGui font atlas: {}");
-	vk::setDebugUtilsName(viewer->device, fontAtlas, "ImGui font atlas");
-	vk::setAllocationName(viewer->allocator, fontAtlasAllocation, "ImGui font atlas allocation");
+	fontAtlas = std::make_unique<ScopedImage>(device.get(), &imageCreateInfo, &allocationCreateInfo);
+	vk::setDebugUtilsName(device.get(), fontAtlas->getHandle(), "ImGui font atlas");
+	vk::setAllocationName(device.get().allocator, fontAtlas->getAllocation(), "ImGui font atlas allocation");
 
+	// Create the atlas image view with a custom swizzle to only affect the alpha value
 	const VkImageViewCreateInfo imageViewCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.image = fontAtlas,
+		.image = *fontAtlas,
 		.viewType = VK_IMAGE_VIEW_TYPE_2D,
 		.format = VK_FORMAT_R8_UNORM,
 		.components = {
@@ -103,27 +275,22 @@ void imgui::Renderer::createFontAtlas() {
 			.layerCount = 1,
 		}
 	};
-	vkCreateImageView(viewer->device, &imageViewCreateInfo, &vk::allocationCallbacks, &fontAtlasView);
-	vk::setDebugUtilsName(viewer->device, fontAtlasView, "ImGui font atlas view");
+	vkCreateImageView(device.get(), &imageViewCreateInfo, &vk::allocationCallbacks, &fontAtlasView);
+	vk::setDebugUtilsName(device.get(), fontAtlasView, "ImGui font atlas view");
 	io.Fonts->SetTexID(static_cast<ImTextureID>(fontAtlasView));
 
 	auto data = std::span<const std::byte> { reinterpret_cast<std::byte*>(pixels), width * height * sizeof(std::byte) };
-	VkBuffer stagingBuffer;
-	VmaAllocation stagingAllocation;
-	result = viewer->createHostStagingBuffer(data.size_bytes(), &stagingBuffer, &stagingAllocation);
-	vk::checkResult(result, "Failed to create host staging buffer: {}");
+
+	auto stagingBuffer = device.get().createHostStagingBuffer(data.size_bytes());
 
 	{
-		vk::ScopedMap map(viewer->allocator, stagingAllocation);
+		ScopedMap map(*stagingBuffer);
 		std::memcpy(map.get(), data.data(), data.size_bytes());
 	}
 
-	viewer->immediateSubmit(viewer->getNextTransferQueueHandle(), viewer->uploadCommandPools[taskScheduler.GetThreadNum()], [&](VkCommandBuffer cmd) {
-		{
-			vk::ScopedMap map(viewer->allocator, stagingAllocation);
-			std::memcpy(map.get(), data.data(), data.size_bytes());
-		}
-
+	device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
+								 device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
+								 [&](auto cmd) {
 		// Transition the image to TRANSFER_DST_OPTIMAL
 		VkImageMemoryBarrier2 imageBarrier {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -135,7 +302,7 @@ void imgui::Renderer::createFontAtlas() {
 			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = fontAtlas,
+			.image = *fontAtlas,
 			.subresourceRange = {
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 				.baseMipLevel = 0,
@@ -167,7 +334,7 @@ void imgui::Renderer::createFontAtlas() {
 			},
 			.imageExtent = imageCreateInfo.extent,
 		};
-		vkCmdCopyBufferToImage(cmd, stagingBuffer, fontAtlas,
+		vkCmdCopyBufferToImage(cmd, stagingBuffer->getHandle(), *fontAtlas,
 							   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
 		// Transition the image into the destinationLayout
@@ -178,49 +345,10 @@ void imgui::Renderer::createFontAtlas() {
 		imageBarrier.oldLayout = imageBarrier.newLayout;
 		imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		vkCmdPipelineBarrier2(cmd, &dependencyInfo);
-	}, [allocator = viewer->allocator, buffer = stagingBuffer, allocation = stagingAllocation]() {
-		vmaDestroyBuffer(allocator, buffer, allocation);
 	});
 }
 
-void imgui::Renderer::destroy() {
-	ZoneScoped;
-	vk::PipelineCacheSaveTask cacheSaveTask(viewer->device, &pipelineCache, pipelineCacheFile);
-
-	if (volkGetLoadedDevice() != nullptr) {
-		taskScheduler.AddTaskSetToPipe(&cacheSaveTask);
-
-		for (auto& buf : buffers) {
-			vmaDestroyBuffer(viewer->allocator, buf.vertexBuffer, buf.vertexAllocation);
-			vmaDestroyBuffer(viewer->allocator, buf.indexBuffer, buf.indexAllocation);
-		}
-
-		vmaDestroyBuffer(viewer->allocator, fontAtlasStagingBuffer, fontAtlasStagingAllocation);
-		vkDestroySampler(viewer->device, fontAtlasSampler, &vk::allocationCallbacks);
-		vkDestroyImageView(viewer->device, fontAtlasView, &vk::allocationCallbacks);
-		vmaDestroyImage(viewer->allocator, fontAtlas, fontAtlasAllocation);
-
-		vkResetDescriptorPool(viewer->device, descriptorPool, 0);
-		vkDestroyDescriptorPool(viewer->device, descriptorPool, &vk::allocationCallbacks);
-		vkDestroyDescriptorSetLayout(viewer->device, descriptorLayout, &vk::allocationCallbacks);
-
-		vkDestroyPipeline(viewer->device, pipeline, &vk::allocationCallbacks);
-		vkDestroyPipelineLayout(viewer->device, pipelineLayout, &vk::allocationCallbacks);
-
-		vkDestroyShaderModule(viewer->device, fragmentShader, &vk::allocationCallbacks);
-		vkDestroyShaderModule(viewer->device, vertexShader, &vk::allocationCallbacks);
-	}
-
-	ImGui_ImplGlfw_Shutdown();
-	ImGui::DestroyContext();
-
-	if (volkGetLoadedDevice() != nullptr) {
-		taskScheduler.WaitforTask(&cacheSaveTask);
-		vkDestroyPipelineCache(viewer->device, pipelineCache, &vk::allocationCallbacks);
-	}
-}
-
-VkResult imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize) {
+void imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize) {
 	ZoneScoped;
 	// We will allocate at least space for 10.000 vertices, which is already more than most UIs will use.
 	constexpr VkDeviceSize minimumVertexCount = 10'000;
@@ -228,55 +356,32 @@ VkResult imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize 
 	auto& current = buffers[index];
 
 	constexpr auto bufferUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-	const VmaAllocationCreateInfo allocationCreateInfo = {
+	constexpr VmaAllocationCreateInfo allocationCreateInfo = {
 		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
 		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
 	};
 
-	VkResult result = VK_SUCCESS;
-	if (current.vertexBufferSize < vertexSize) {
-		vmaDestroyBuffer(viewer->allocator, current.vertexBuffer, current.vertexAllocation);
-
-		current.vertexBufferSize = util::max(sizeof(ImDrawVert) * minimumVertexCount, vertexSize * increaseFactor);
+	if (!current.vertexBuffer || current.vertexBuffer->getBufferSize() < vertexSize) {
 		const VkBufferCreateInfo vertexBufferCreateInfo = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = current.vertexBufferSize,
+			.size = fastgltf::max(sizeof(ImDrawVert) * minimumVertexCount, vertexSize * increaseFactor),
 			.usage = bufferUsage | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		};
-		result = vmaCreateBuffer(viewer->allocator, &vertexBufferCreateInfo, &allocationCreateInfo, &current.vertexBuffer,
-								 &current.vertexAllocation, VK_NULL_HANDLE);
-		if (result != VK_SUCCESS) {
-			return result;
-		}
-		vk::setDebugUtilsName(viewer->device, current.vertexBuffer, fmt::format("ImGui Vertex Buffer {}", index));
+		current.vertexBuffer = std::make_unique<ScopedBuffer>(device.get(), &vertexBufferCreateInfo, &allocationCreateInfo);
+		vk::setDebugUtilsName(device.get(), current.vertexBuffer->getHandle(), fmt::format("ImGui Vertex Buffer {}", index));
 
-		// TODO: Check for BDA availability
-		const VkBufferDeviceAddressInfo bdaInfo = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-			.buffer = current.vertexBuffer,
-		};
-		current.vertexBufferAddress = vkGetBufferDeviceAddress(viewer->device, &bdaInfo);
+		current.vertexBufferAddress = current.vertexBuffer->getDeviceAddress();
 	}
 
-	if (current.indexBufferSize < indexSize) {
-		vmaDestroyBuffer(viewer->allocator, current.indexBuffer, current.indexAllocation);
-
-		current.indexBufferSize = util::max(sizeof(ImDrawIdx) * minimumVertexCount, indexSize * increaseFactor);
-
+	if (!current.indexBuffer || current.indexBuffer->getBufferSize() < indexSize) {
 		const VkBufferCreateInfo indexBufferCreateInfo = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = current.indexBufferSize,
+			.size = fastgltf::max(sizeof(ImDrawIdx) * minimumVertexCount, indexSize * increaseFactor),
 			.usage = bufferUsage | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
 		};
-		result = vmaCreateBuffer(viewer->allocator, &indexBufferCreateInfo, &allocationCreateInfo, &current.indexBuffer, &current.indexAllocation,
-								 VK_NULL_HANDLE);
-		if (result != VK_SUCCESS) {
-			return result;
-		}
-		vk::setDebugUtilsName(viewer->device, current.indexBuffer, fmt::format("ImGui Index Buffer {}", index));
+		current.indexBuffer = std::make_unique<ScopedBuffer>(device.get(), &indexBufferCreateInfo, &allocationCreateInfo);
+		vk::setDebugUtilsName(device.get(), current.indexBuffer->getHandle(), fmt::format("ImGui Index Buffer {}", index));
 	}
-
-	return result;
 }
 
 void imgui::Renderer::addTextureToDescriptorSet(ImTextureID textureId) {
@@ -302,7 +407,7 @@ void imgui::Renderer::addTextureToDescriptorSet(ImTextureID textureId) {
 		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		.pImageInfo = &textureInfo,
 	};
-	vkUpdateDescriptorSets(viewer->device, 1, &write, 0, nullptr);
+	vkUpdateDescriptorSets(device.get(), 1, &write, 0, nullptr);
 }
 
 void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainImageView, glm::u32vec2 framebufferSize, std::size_t currentFrame) {
@@ -326,15 +431,14 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 	const std::size_t indexBufferSize = drawData->TotalIdxCount * sizeof(ImDrawIdx);
 
 	// We will have to resize the buffers if they're not large enough for all the data.
-	if (vertexBufferSize > frameBuffers.vertexBufferSize || indexBufferSize > frameBuffers.indexBufferSize) {
-		auto result = createGeometryBuffers(currentFrame, vertexBufferSize, indexBufferSize);
-		vk::checkResult(result, "Failed to create ImGui geometry buffers: {}");
+	if (vertexBufferSize > frameBuffers.vertexBuffer->getBufferSize() || indexBufferSize > frameBuffers.indexBuffer->getBufferSize()) {
+		createGeometryBuffers(currentFrame, vertexBufferSize, indexBufferSize);
 	}
 
 	// Copy the vertex and index buffers
 	{
-		vk::ScopedMap<ImDrawVert> vtxData(viewer->allocator, frameBuffers.vertexAllocation);
-		vk::ScopedMap<ImDrawIdx> idxData(viewer->allocator, frameBuffers.indexAllocation);
+		ScopedMap<ImDrawVert> vtxData(*frameBuffers.vertexBuffer);
+		ScopedMap<ImDrawIdx> idxData(*frameBuffers.indexBuffer);
 
 		auto* vertexDestination = vtxData.get();
 		auto* indexDestination = idxData.get();
@@ -357,9 +461,9 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 				.srcAccessMask = VK_ACCESS_2_NONE,
 				.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
 				.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-				.buffer = frameBuffers.vertexBuffer,
+				.buffer = *frameBuffers.vertexBuffer,
 				.offset = 0,
-				.size = frameBuffers.vertexBufferSize,
+				.size = frameBuffers.vertexBuffer->getBufferSize(),
 			},
 			{
 				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -367,9 +471,9 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 				.srcAccessMask = VK_ACCESS_2_NONE,
 				.dstStageMask = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
 				.dstAccessMask = VK_ACCESS_2_INDEX_READ_BIT,
-				.buffer = frameBuffers.indexBuffer,
+				.buffer = *frameBuffers.indexBuffer,
 				.offset = 0,
-				.size = frameBuffers.indexBufferSize,
+				.size = frameBuffers.indexBuffer->getBufferSize(),
 			}
 		}};
 		const VkDependencyInfo geometryBufferDependency = {
@@ -387,7 +491,9 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 		.resolveMode = VK_RESOLVE_MODE_NONE,
 		.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-		.clearValue = { 0.0F, 0.0F, 0.0F, 0.0F },
+		.clearValue = { .color { .float32 = {
+			0.0F, 0.0F, 0.0F, 0.0F
+		}}},
 	};
 	const VkRenderingInfo renderingInfo = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -412,8 +518,6 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 	}
 
-	// TODO: Bind descriptor set
-
 	const ImVec2& clipOffset = drawData->DisplayPos;      // (0,0) unless using multi-viewports
 	const ImVec2& clipScale = drawData->FramebufferScale; // (1,1) unless using retina display which are often (2,2)
 
@@ -436,12 +540,12 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 			}
 
 			const glm::u32vec2 clipMin = {
-				util::max(0U, static_cast<std::uint32_t>((cmd.ClipRect.x - clipOffset.x) * clipScale.x)),
-				util::max(0U, static_cast<std::uint32_t>((cmd.ClipRect.y - clipOffset.y) * clipScale.y))
+				fastgltf::max(0U, static_cast<std::uint32_t>((cmd.ClipRect.x - clipOffset.x) * clipScale.x)),
+				fastgltf::max(0U, static_cast<std::uint32_t>((cmd.ClipRect.y - clipOffset.y) * clipScale.y))
 			};
 			const glm::u32vec2 clipMax = {
-				util::min(framebufferWidth, static_cast<std::uint32_t>((cmd.ClipRect.z - clipOffset.x) * clipScale.x)),
-				util::min(framebufferHeight, static_cast<std::uint32_t>((cmd.ClipRect.w - clipOffset.y) * clipScale.y))
+				fastgltf::min(framebufferWidth, static_cast<std::uint32_t>((cmd.ClipRect.z - clipOffset.x) * clipScale.x)),
+				fastgltf::min(framebufferHeight, static_cast<std::uint32_t>((cmd.ClipRect.w - clipOffset.y) * clipScale.y))
 			};
 
 			if (clipMax.x <= clipMin.x || clipMax.y <= clipMin.y) {
@@ -469,11 +573,11 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 
 				pushConstants.imageIndex = imageDescriptorIndices[cmd.GetTexID()];
 			}
-			pushConstants.vertexBufferAddress = frameBuffers.vertexBufferAddress + (vertexOffset + cmd.VtxOffset) * sizeof(ImDrawVert);
+			pushConstants.vertices = frameBuffers.vertexBufferAddress + (vertexOffset + cmd.VtxOffset) * sizeof(ImDrawVert);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-							   0, sizeof(glsl::PushConstants), &pushConstants);
+							   0, sizeof(glsl::UiPushConstants), &pushConstants);
 
-			vkCmdBindIndexBuffer(commandBuffer, frameBuffers.indexBuffer,
+			vkCmdBindIndexBuffer(commandBuffer, *frameBuffers.indexBuffer,
 								 (cmd.IdxOffset + static_cast<std::uint32_t>(indexOffset)) * sizeof(ImDrawIdx),
 								 sizeof(ImDrawIdx) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 
@@ -485,152 +589,6 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 	}
 
 	vkCmdEndRendering(commandBuffer);
-}
-
-VkResult imgui::Renderer::init(Viewer* pViewer) {
-	ZoneScoped;
-	viewer = pViewer;
-
-	vk::PipelineCacheLoadTask cacheLoadTask(viewer->device, &pipelineCache, pipelineCacheFile);
-	taskScheduler.AddTaskSetToPipe(&cacheLoadTask);
-
-	ShaderLoadTask shaderLoadTask(this);
-	taskScheduler.AddTaskSetToPipe(&shaderLoadTask);
-
-	IMGUI_CHECKVERSION();
-	ImGui::CreateContext();
-	ImGui::StyleColorsDark();
-	ImGui_ImplGlfw_InitForVulkan(viewer->window, true);
-
-	auto& io = ImGui::GetIO();
-	io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
-	io.BackendRendererName = "imgui::ImGuiRenderer";
-	io.BackendPlatformName = "Vulkan";
-
-	// Create the sampler. It is static, therefore we will pass it as an immutable sampler to the
-	// descriptor layout.
-	const VkSamplerCreateInfo samplerInfo = {
-		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-	};
-	auto samplerResult = vkCreateSampler(viewer->device, &samplerInfo, &vk::allocationCallbacks, &fontAtlasSampler);
-	vk::checkResult(samplerResult, "Failed to create ImGui font-atlas sampler");
-	vk::setDebugUtilsName(viewer->device, fontAtlasSampler, "ImGui font-atlas sampler");
-
-	// Create the descriptor layout
-	std::vector<VkSampler> immutableSamplers(maxBindlessImages, fontAtlasSampler); // TODO: Perhaps we don't need immutable samplers?
-	const VkDescriptorSetLayoutBinding binding = {
-		.binding = 0,
-		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.descriptorCount = maxBindlessImages, // Is this a sane max value for displayed images?
-		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		.pImmutableSamplers = immutableSamplers.data(),
-	};
-	const VkDescriptorBindingFlags bindingFlags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-	const VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-		.bindingCount = 1,
-		.pBindingFlags = &bindingFlags,
-	};
-	const VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.pNext = &bindingFlagsInfo,
-		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-		.bindingCount = 1,
-		.pBindings = &binding,
-	};
-	auto descriptorLayoutResult = vkCreateDescriptorSetLayout(viewer->device, &descriptorLayoutInfo, &vk::allocationCallbacks, &descriptorLayout);
-	vk::checkResult(descriptorLayoutResult, "Failed to create ImGui font atlas descriptor set layout: {}");
-
-	// Create the descriptor pool to hold exactly the amount of descriptors the backend supports.
-	std::array<VkDescriptorPoolSize, 1> descriptorPoolSizes = {{
-		{
-			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = maxBindlessImages,
-		}
-	}};
-	const VkDescriptorPoolCreateInfo descriptorPoolInfo = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-		.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
-		.maxSets = 1,
-		.poolSizeCount = static_cast<std::uint32_t>(descriptorPoolSizes.size()),
-		.pPoolSizes = descriptorPoolSizes.data(),
-	};
-	auto descriptorPoolResult = vkCreateDescriptorPool(viewer->device, &descriptorPoolInfo, &vk::allocationCallbacks, &descriptorPool);
-	vk::checkResult(descriptorPoolResult, "Failed to create ImGui descriptor pool: {}");
-
-	// Create the single descriptor set
-	const VkDescriptorSetAllocateInfo descriptorSetInfo = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		.descriptorPool = descriptorPool,
-		.descriptorSetCount = 1,
-		.pSetLayouts = &descriptorLayout,
-	};
-	auto allocateResult = vkAllocateDescriptorSets(viewer->device, &descriptorSetInfo, &descriptorSet);
-	vk::checkResult(allocateResult, "Failed to create ImGui frame descriptor sets: {}");
-
-	// Create the pipeline layout
-	const VkPushConstantRange pushConstantRange = {
-		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		.offset = 0,
-		.size = sizeof(glsl::PushConstants),
-	};
-	const VkPipelineLayoutCreateInfo layoutCreateInfo = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = &descriptorLayout,
-		.pushConstantRangeCount = 1,
-		.pPushConstantRanges = &pushConstantRange,
-	};
-	auto result = vkCreatePipelineLayout(viewer->device, &layoutCreateInfo, &vk::allocationCallbacks, &pipelineLayout);
-	if (result != VK_SUCCESS) {
-		return result;
-	}
-
-	// Create the pipeline
-	const VkFormat colorAttachmentFormat = viewer->swapchain.image_format;
-	const VkPipelineRenderingCreateInfo renderingCreateInfo = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-		.colorAttachmentCount = 1,
-		.pColorAttachmentFormats = &colorAttachmentFormat,
-	};
-
-	const VkPipelineColorBlendAttachmentState blendAttachment = {
-		.blendEnable = VK_TRUE,
-		.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-		.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-		.colorBlendOp = VK_BLEND_OP_ADD,
-		.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-		.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-		.alphaBlendOp = VK_BLEND_OP_ADD,
-		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-	};
-
-	auto builder = vk::GraphicsPipelineBuilder(viewer->device, 1)
-		.setPipelineLayout(0, pipelineLayout)
-		.addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
-		.addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
-		.pushPNext(0, &renderingCreateInfo)
-		.setBlendAttachment(0, &blendAttachment)
-		.setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-		.setDepthState(0, VK_FALSE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL)
-		.setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
-		.setMultisampleCount(0, VK_SAMPLE_COUNT_1_BIT)
-		.setScissorCount(0, 1U)
-		.setViewportCount(0, 1U);
-
-	taskScheduler.WaitforTask(&shaderLoadTask);
-	builder.addShaderStage(0, VK_SHADER_STAGE_VERTEX_BIT, vertexShader, "main")
-		.addShaderStage(0, VK_SHADER_STAGE_FRAGMENT_BIT, fragmentShader, "main");
-
-	taskScheduler.WaitforTask(&cacheLoadTask);
-	if (cacheLoadTask.getResult() == VK_SUCCESS) {
-		fmt::print("Successfully created ImGui pipeline cache\n");
-		builder.setPipelineCache(pipelineCache);
-	} else {
-		fmt::print(stderr, "Failed to load ImGui pipeline cache: {}\n", cacheLoadTask.getResult());
-	}
-
-	return builder.build(&pipeline);
 }
 
 VkResult imgui::Renderer::initFrameData(std::uint32_t frameCount) {

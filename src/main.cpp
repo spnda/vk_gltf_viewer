@@ -4,24 +4,20 @@
 #include <fmt/std.h> // For std::filesystem::path
 
 #include <vk_gltf_viewer/scheduler.hpp>
-#include <vk_gltf_viewer/viewer.hpp>
+#include <vk_gltf_viewer/application.hpp>
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #include <windows.h>
 #elif defined(__APPLE__) || defined(unix)
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER)
 int wmain(int argc, wchar_t* argv[]) {
 	if (argc < 2) {
 		fmt::print("No glTF file specified\n");
 		return -1;
-	}
-	std::vector<std::filesystem::path> gltfs(argc - 1);
-	for (std::size_t i = 0; i < gltfs.size(); ++i) {
-		gltfs[i] = argv[i + 1];
 	}
 #else
 int main(int argc, char* argv[]) {
@@ -29,11 +25,12 @@ int main(int argc, char* argv[]) {
 		fmt::print("No glTF file specified\n");
 		return -1;
 	}
+#endif
+
 	std::vector<std::filesystem::path> gltfs(argc - 1);
 	for (std::size_t i = 0; i < gltfs.size(); ++i) {
 		gltfs[i] = argv[i + 1];
 	}
-#endif
 
 	for (auto& path : gltfs) {
 		if (!std::filesystem::is_regular_file(path)) {
@@ -49,22 +46,20 @@ int main(int argc, char* argv[]) {
 	setpriority(PRIO_PROCESS, getpid(), PRIO_MAX);
 #endif
 
-	taskScheduler.Initialize();
+	initializeScheduler();
 
-	Viewer viewer;
-
+	// Create the application. We only use the unique_ptr here to be able to run the ctor within
+	// the try scope, but have the destroy functions outside of it.
+	std::unique_ptr<Application> application;
 	try {
-		for (auto& path : gltfs) {
-			viewer.loadGltf(path);
-		}
-		viewer.run();
-	} catch (const vulkan_error& error) {
-		fmt::print("{}: {}\n", error.what(), error.what_result());
-	} catch (const std::runtime_error& error) {
-		fmt::print("{}\n", error.what());
+		application = std::make_unique<Application>(gltfs);
+		application->run();
+	} catch (vulkan_error& error) {
+		fmt::print(stderr, "{}: {}", error.what(), error.what_result());
+	} catch (std::runtime_error& error) {
+		fmt::print(stderr, "{}", error.what());
 	}
-
-	viewer.destroy();
+	application.reset();
 
 	taskScheduler.WaitforAllAndShutdown();
 

@@ -8,7 +8,7 @@ namespace vk {
 	template <typename T>
 	[[gnu::always_inline]] inline void setDebugUtilsName(VkDevice device, T handle, std::string string) {
 		ZoneScoped;
-		if (vkSetDebugUtilsObjectNameEXT == nullptr || handle == nullptr) {
+		if (vkSetDebugUtilsObjectNameEXT == nullptr || handle == VK_NULL_HANDLE) {
 			return;
 		}
 
