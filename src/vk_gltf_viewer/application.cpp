@@ -120,24 +120,24 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 		constexpr VkSemaphoreCreateInfo semaphoreCreateInfo = {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
 		};
-		vk::checkResult(vkCreateSemaphore(*device, &semaphoreCreateInfo, &vk::allocationCallbacks, &frame.imageAvailable), "Failed to create image semaphore");
+		vk::checkResult(vkCreateSemaphore(*device, &semaphoreCreateInfo, vk::allocationCallbacks.get(), &frame.imageAvailable), "Failed to create image semaphore");
 		vk::setDebugUtilsName(*device, frame.imageAvailable, "Image acquire semaphore");
 
-        vk::checkResult(vkCreateSemaphore(*device, &semaphoreCreateInfo, &vk::allocationCallbacks, &frame.renderingFinished), "Failed to create rendering semaphore");
+        vk::checkResult(vkCreateSemaphore(*device, &semaphoreCreateInfo, vk::allocationCallbacks.get(), &frame.renderingFinished), "Failed to create rendering semaphore");
 		vk::setDebugUtilsName(*device, frame.renderingFinished, "Rendering finished semaphore");
 
 		constexpr VkFenceCreateInfo fenceCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
 		};
-        vk::checkResult(vkCreateFence(*device, &fenceCreateInfo, &vk::allocationCallbacks, &frame.presentFinished), "Failed to create present fence: {}");
+        vk::checkResult(vkCreateFence(*device, &fenceCreateInfo, vk::allocationCallbacks.get(), &frame.presentFinished), "Failed to create present fence: {}");
 		vk::setDebugUtilsName(*device, frame.presentFinished, "Present fence");
 	}
 	deletionQueue.push([this] {
 		for (auto& frame : frameSyncData) {
-			vkDestroyFence(*device, frame.presentFinished, &vk::allocationCallbacks);
-			vkDestroySemaphore(*device, frame.renderingFinished, &vk::allocationCallbacks);
-			vkDestroySemaphore(*device, frame.imageAvailable, &vk::allocationCallbacks);
+			vkDestroyFence(*device, frame.presentFinished, vk::allocationCallbacks.get());
+			vkDestroySemaphore(*device, frame.renderingFinished, vk::allocationCallbacks.get());
+			vkDestroySemaphore(*device, frame.imageAvailable, vk::allocationCallbacks.get());
 		}
 	});
 
@@ -245,13 +245,13 @@ void Application::initVisbufferPass() {
 			.pushConstantRangeCount = 1,
 			.pPushConstantRanges = &pushConstantRange,
 		};
-		vk::checkResult(vkCreatePipelineLayout(*device, &layoutCreateInfo, &vk::allocationCallbacks,
+		vk::checkResult(vkCreatePipelineLayout(*device, &layoutCreateInfo, vk::allocationCallbacks.get(),
 											   &visbufferPass.pipelineLayout),
 						"Failed to create visbuffer pipeline layout");
 		vk::setDebugUtilsName(*device, visbufferPass.pipelineLayout, "Visbuffer pipeline layout");
 
 		deletionQueue.push([this]() {
-			vkDestroyPipelineLayout(*device, visbufferPass.pipelineLayout, &vk::allocationCallbacks);
+			vkDestroyPipelineLayout(*device, visbufferPass.pipelineLayout, vk::allocationCallbacks.get());
 		});
 
 		VkShaderModule fragModule;
@@ -294,12 +294,12 @@ void Application::initVisbufferPass() {
 		vk::checkResult(builder.build(&visbufferPass.pipeline), "Failed to create visbuffer raster pipeline");
 		vk::setDebugUtilsName(*device, visbufferPass.pipeline, "Visibility buffer mesh pipeline");
 
-		vkDestroyShaderModule(*device, fragModule, &vk::allocationCallbacks);
-		vkDestroyShaderModule(*device, meshModule, &vk::allocationCallbacks);
-		vkDestroyShaderModule(*device, taskModule, &vk::allocationCallbacks);
+		vkDestroyShaderModule(*device, fragModule, vk::allocationCallbacks.get());
+		vkDestroyShaderModule(*device, meshModule, vk::allocationCallbacks.get());
+		vkDestroyShaderModule(*device, taskModule, vk::allocationCallbacks.get());
 
 		deletionQueue.push([this]() {
-			vkDestroyPipeline(*device, visbufferPass.pipeline, &vk::allocationCallbacks);
+			vkDestroyPipeline(*device, visbufferPass.pipeline, vk::allocationCallbacks.get());
 		});
 	}
 }
@@ -319,7 +319,7 @@ void Application::initVisbufferResolvePass() {
 			.pushConstantRangeCount = 1,
 			.pPushConstantRanges = &pushConstantRange,
 		};
-		vk::checkResult(vkCreatePipelineLayout(*device, &layoutCreateInfo, &vk::allocationCallbacks,
+		vk::checkResult(vkCreatePipelineLayout(*device, &layoutCreateInfo, vk::allocationCallbacks.get(),
 											   &visbufferResolvePass.pipelineLayout),
 						"Failed to create visbuffer resolve pipeline layout");
 		vk::setDebugUtilsName(*device, visbufferResolvePass.pipelineLayout,
@@ -327,7 +327,7 @@ void Application::initVisbufferResolvePass() {
 
 		deletionQueue.push([this]() {
 			vkDestroyPipelineLayout(*device, visbufferResolvePass.pipelineLayout,
-									&vk::allocationCallbacks);
+									vk::allocationCallbacks.get());
 		});
 
 		VkShaderModule compModule;
@@ -341,10 +341,10 @@ void Application::initVisbufferResolvePass() {
 		vk::setDebugUtilsName(*device, visbufferResolvePass.pipeline,
 							  "Visibility buffer resolve pipeline");
 
-		vkDestroyShaderModule(*device, compModule, &vk::allocationCallbacks);
+		vkDestroyShaderModule(*device, compModule, vk::allocationCallbacks.get());
 
 		deletionQueue.push([this]() {
-			vkDestroyPipeline(*device, visbufferResolvePass.pipeline, &vk::allocationCallbacks);
+			vkDestroyPipeline(*device, visbufferResolvePass.pipeline, vk::allocationCallbacks.get());
 		});
 	}
 }
@@ -499,9 +499,6 @@ void Application::run() {
 			auto totalMeshletCount = drawBuffer.meshletDrawBuffer
 				? static_cast<std::uint32_t>(drawBuffer.meshletDrawBuffer->getBufferSize() / sizeof(glsl::MeshletDraw))
 				: 0U;
-
-			auto zoneText = fmt::format("Meshlet draws: {}", totalMeshletCount);
-			ZoneText(zoneText.c_str(), zoneText.size());
 
 			const VkRenderingAttachmentInfo visbufferAttachment {
 				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -838,14 +835,14 @@ void Application::updateDrawBuffer(std::size_t currentFrame) {
 		}
 	});
 
+	constexpr auto bufferUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	constexpr VmaAllocationCreateInfo allocationCreateInfo = {
+		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+
 	const auto requiredDrawBufferSize = draws.size() * sizeof(glsl::MeshletDraw);
 	if (currentDrawBufferSize < requiredDrawBufferSize) {
-		constexpr auto bufferUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-		constexpr VmaAllocationCreateInfo allocationCreateInfo = {
-			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-		};
-
 		const VkBufferCreateInfo bufferCreateInfo = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = requiredDrawBufferSize,
@@ -857,12 +854,6 @@ void Application::updateDrawBuffer(std::size_t currentFrame) {
 
 	const auto requiredTransformBufferSize = transforms.size() * sizeof(glm::mat4);
 	if (currentTransformBufferSize < requiredTransformBufferSize) {
-		constexpr auto bufferUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-		constexpr VmaAllocationCreateInfo allocationCreateInfo = {
-			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-		};
-
 		const VkBufferCreateInfo bufferCreateInfo = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = requiredTransformBufferSize,

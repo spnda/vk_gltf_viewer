@@ -12,11 +12,11 @@ target_link_libraries(vk_gltf_viewer PRIVATE Vulkan::Headers Vulkan::Utils volk:
 if (TARGET nv::aftermath)
     target_link_libraries(vk_gltf_viewer PRIVATE nv::aftermath)
     target_compile_definitions(vk_gltf_viewer PRIVATE "VKV_NV_AFTERMATH=1")
+    add_source_directory(TARGET vk_gltf_viewer FOLDER "src/nvidia")
 endif()
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vk_gltf_viewer")
-add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vk_gltf_viewer/nvidia")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vulkan")
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vk_gltf_viewer")

@@ -55,7 +55,7 @@ imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchai
 	const VkSamplerCreateInfo samplerInfo = {
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 	};
-	auto samplerResult = vkCreateSampler(device.get(), &samplerInfo, &vk::allocationCallbacks, &fontAtlasSampler);
+	auto samplerResult = vkCreateSampler(device.get(), &samplerInfo, vk::allocationCallbacks.get(), &fontAtlasSampler);
 	vk::checkResult(samplerResult, "Failed to create ImGui font-atlas sampler");
 	vk::setDebugUtilsName(device.get(), fontAtlasSampler, "ImGui font-atlas sampler");
 
@@ -81,7 +81,7 @@ imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchai
 		.bindingCount = 1,
 		.pBindings = &binding,
 	};
-	auto descriptorLayoutResult = vkCreateDescriptorSetLayout(device.get(), &descriptorLayoutInfo, &vk::allocationCallbacks, &descriptorLayout);
+	auto descriptorLayoutResult = vkCreateDescriptorSetLayout(device.get(), &descriptorLayoutInfo, vk::allocationCallbacks.get(), &descriptorLayout);
 	vk::checkResult(descriptorLayoutResult, "Failed to create ImGui font atlas descriptor set layout: {}");
 
 	// Create the descriptor pool to hold exactly the amount of descriptors the backend supports.
@@ -98,7 +98,7 @@ imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchai
 		.poolSizeCount = static_cast<std::uint32_t>(descriptorPoolSizes.size()),
 		.pPoolSizes = descriptorPoolSizes.data(),
 	};
-	auto descriptorPoolResult = vkCreateDescriptorPool(device.get(), &descriptorPoolInfo, &vk::allocationCallbacks, &descriptorPool);
+	auto descriptorPoolResult = vkCreateDescriptorPool(device.get(), &descriptorPoolInfo, vk::allocationCallbacks.get(), &descriptorPool);
 	vk::checkResult(descriptorPoolResult, "Failed to create ImGui descriptor pool: {}");
 
 	// Create the single descriptor set
@@ -124,7 +124,7 @@ imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchai
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &pushConstantRange,
 	};
-	auto result = vkCreatePipelineLayout(device.get(), &layoutCreateInfo, &vk::allocationCallbacks, &pipelineLayout);
+	auto result = vkCreatePipelineLayout(device.get(), &layoutCreateInfo, vk::allocationCallbacks.get(), &pipelineLayout);
 	if (result != VK_SUCCESS) {
 		throw vulkan_error("Failed to create imgui pipeline layout", result);
 	}
@@ -190,19 +190,19 @@ imgui::Renderer::~Renderer() {
 		}
 
 		vmaDestroyBuffer(device.get().allocator, fontAtlasStagingBuffer, fontAtlasStagingAllocation);
-		vkDestroySampler(device.get(), fontAtlasSampler, &vk::allocationCallbacks);
-		vkDestroyImageView(device.get(), fontAtlasView, &vk::allocationCallbacks);
+		vkDestroySampler(device.get(), fontAtlasSampler, vk::allocationCallbacks.get());
+		vkDestroyImageView(device.get(), fontAtlasView, vk::allocationCallbacks.get());
 		fontAtlas.reset();
 
 		vkResetDescriptorPool(device.get(), descriptorPool, 0);
-		vkDestroyDescriptorPool(device.get(), descriptorPool, &vk::allocationCallbacks);
-		vkDestroyDescriptorSetLayout(device.get(), descriptorLayout, &vk::allocationCallbacks);
+		vkDestroyDescriptorPool(device.get(), descriptorPool, vk::allocationCallbacks.get());
+		vkDestroyDescriptorSetLayout(device.get(), descriptorLayout, vk::allocationCallbacks.get());
 
-		vkDestroyPipeline(device.get(), pipeline, &vk::allocationCallbacks);
-		vkDestroyPipelineLayout(device.get(), pipelineLayout, &vk::allocationCallbacks);
+		vkDestroyPipeline(device.get(), pipeline, vk::allocationCallbacks.get());
+		vkDestroyPipelineLayout(device.get(), pipelineLayout, vk::allocationCallbacks.get());
 
-		vkDestroyShaderModule(device.get(), fragmentShader, &vk::allocationCallbacks);
-		vkDestroyShaderModule(device.get(), vertexShader, &vk::allocationCallbacks);
+		vkDestroyShaderModule(device.get(), fragmentShader, vk::allocationCallbacks.get());
+		vkDestroyShaderModule(device.get(), vertexShader, vk::allocationCallbacks.get());
 	}
 
 	ImGui_ImplGlfw_Shutdown();
@@ -210,7 +210,7 @@ imgui::Renderer::~Renderer() {
 
 	if (volkGetLoadedDevice() != nullptr) {
 		taskScheduler.WaitforTask(&cacheSaveTask);
-		vkDestroyPipelineCache(device.get(), pipelineCache, &vk::allocationCallbacks);
+		vkDestroyPipelineCache(device.get(), pipelineCache, vk::allocationCallbacks.get());
 	}
 }
 
@@ -275,7 +275,7 @@ void imgui::Renderer::createFontAtlas() {
 			.layerCount = 1,
 		}
 	};
-	vkCreateImageView(device.get(), &imageViewCreateInfo, &vk::allocationCallbacks, &fontAtlasView);
+	vkCreateImageView(device.get(), &imageViewCreateInfo, vk::allocationCallbacks.get(), &fontAtlasView);
 	vk::setDebugUtilsName(device.get(), fontAtlasView, "ImGui font atlas view");
 	io.Fonts->SetTexID(static_cast<ImTextureID>(fontAtlasView));
 

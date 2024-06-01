@@ -36,7 +36,7 @@ Swapchain::~Swapchain() noexcept {
 	for (auto& handle : imageViewHandles)
 		device.get().resourceTable->removeStorageImageHandle(handle);
 	for (auto& view : imageViews)
-		vkDestroyImageView(device.get(), view, &vk::allocationCallbacks);
+		vkDestroyImageView(device.get(), view, vk::allocationCallbacks.get());
 	vkb::destroy_swapchain(swapchain);
 }
 

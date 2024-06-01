@@ -61,6 +61,6 @@ namespace vk {
 	}
 
 	/** Global allocation callbacks value */
-	inline VkAllocationCallbacks allocationCallbacks;
+	inline std::unique_ptr<VkAllocationCallbacks> allocationCallbacks;
 	void initVulkanAllocationCallbacks();
 } // namespace vk

@@ -16,7 +16,7 @@ inline void loadShader(const Device& device, const std::span<const std::uint32_t
         .codeSize = data.size() * sizeof(std::uint32_t),
         .pCode = data.data(),
     };
-    auto result = vkCreateShaderModule(device, &createInfo, &vk::allocationCallbacks, shaderModule);
+    auto result = vkCreateShaderModule(device, &createInfo, vk::allocationCallbacks.get(), shaderModule);
     if (result != VK_SUCCESS) {
         throw vulkan_error("Failed to create shader module: {}", result);
     }

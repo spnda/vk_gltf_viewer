@@ -67,7 +67,7 @@ Instance::Instance() {
 		.request_validation_layers()
 		.set_debug_callback(vulkanDebugCallback)
 #endif
-		.set_allocation_callbacks(&vk::allocationCallbacks)
+		.set_allocation_callbacks(vk::allocationCallbacks.get())
 		.build();
 	if (!result)
 		throw vulkan_error(result.error().message(), result.vk_result());
@@ -182,7 +182,7 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 	auto buildResult = builder
 		.custom_queue_setup(queues)
 		.add_pNext(&diagnosticsConfig)
-		.set_allocation_callbacks(&vk::allocationCallbacks)
+		.set_allocation_callbacks(vk::allocationCallbacks.get())
 		.build();
 	if (!buildResult)
 		throw vulkan_error(buildResult.error().message(), buildResult.vk_result());
@@ -209,7 +209,7 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 		.flags = allocatorFlags | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
 		.physicalDevice = physicalDevice,
 		.device = device,
-		.pAllocationCallbacks = &vk::allocationCallbacks,
+		.pAllocationCallbacks = vk::allocationCallbacks.get(),
 		.pVulkanFunctions = &vmaFunctions,
 		.instance = instance,
 		.vulkanApiVersion = VK_API_VERSION_1_3,

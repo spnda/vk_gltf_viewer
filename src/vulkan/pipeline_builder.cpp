@@ -28,7 +28,7 @@ VkResult vk::loadShaderModule(std::filesystem::path filePath, VkDevice device, V
 		.pCode = buffer.get(),
 	};
 
-	auto result = vkCreateShaderModule(device, &createInfo, &vk::allocationCallbacks, pShaderModule);
+	auto result = vkCreateShaderModule(device, &createInfo, vk::allocationCallbacks.get(), pShaderModule);
 	if (result != VK_SUCCESS) {
 		throw vulkan_error("Failed to create shader module: {}", result);
 	}
@@ -66,7 +66,7 @@ VkResult vk::ComputePipelineBuilder::build(VkPipeline* pipeline) noexcept {
 
 	return vkCreateComputePipelines(device, pipelineCache,
 									static_cast<std::uint32_t>(pipelineInfos.size()), pipelineInfos.data(),
-									&vk::allocationCallbacks, pipeline);
+									vk::allocationCallbacks.get(), pipeline);
 }
 
 vk::ComputePipelineBuilder& vk::ComputePipelineBuilder::pushPNext(std::uint32_t idx, const void* pNext) {
@@ -190,7 +190,7 @@ VkResult vk::GraphicsPipelineBuilder::build(VkPipeline* pipeline) noexcept {
 	}
 
 	return vkCreateGraphicsPipelines(
-			device, pipelineCache, static_cast<std::uint32_t>(pipelineInfos.size()), pipelineInfos.data(), &vk::allocationCallbacks, pipeline);
+			device, pipelineCache, static_cast<std::uint32_t>(pipelineInfos.size()), pipelineInfos.data(), vk::allocationCallbacks.get(), pipeline);
 }
 
 vk::GraphicsPipelineBuilder& vk::GraphicsPipelineBuilder::pushPNext(std::uint32_t idx, const void* pNext) {

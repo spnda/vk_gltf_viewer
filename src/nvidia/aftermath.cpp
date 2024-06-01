@@ -1,11 +1,13 @@
 #include <fmt/format.h>
 
 #include <fstream>
+#include <functional>
+#include <thread>
 
 #include <tracy/Tracy.hpp>
 
 #include <vulkan/vk.hpp>
-#include <vk_gltf_viewer/nvidia/aftermath.hpp>
+#include <nvidia/aftermath.hpp>
 
 #include <GFSDK_Aftermath.h>
 #include <GFSDK_Aftermath_GpuCrashDump.h>

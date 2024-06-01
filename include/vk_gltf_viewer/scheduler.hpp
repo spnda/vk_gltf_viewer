@@ -1,5 +1,8 @@
 #pragma once
 
+#include <exception>
+#include <memory>
+
 #include <TaskScheduler.h>
 
 inline enki::TaskScheduler taskScheduler;

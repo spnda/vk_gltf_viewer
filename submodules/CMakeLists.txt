@@ -24,7 +24,12 @@ if(EXISTS "${VKV_DEPS_DIR}/glfw")
     option(GLFW_BUILD_DOCS "Build the GLFW documentation" OFF)
     option(GLFW_INSTALL "Generate installation target" OFF)
 
+    option(GLFW_BUILD_WAYLAND "" OFF)
+
     add_subdirectory("${VKV_DEPS_DIR}/glfw")
+
+    # We only want and need Vulkan.
+    target_compile_definitions(glfw INTERFACE "GLFW_INCLUDE_NONE=1")
 
     set_target_properties(glfw PROPERTIES EXCLUDE_FROM_ALL 1)
     set_target_properties(update_mappings PROPERTIES EXCLUDE_FROM_ALL 1)
@@ -180,6 +185,7 @@ if (EXISTS "${VKV_DEPS_DIR}/nv-aftermath")
             IMPORTED_CONFIGURATIONS "RELEASE"
         )
     else()
-        # TODO: NVIDIA Aftermath support for Linux?
+        set_property(TARGET nv_aftermath
+            PROPERTY IMPORTED_LOCATION "${VKV_DEPS_DIR}/nv-aftermath/lib/x64/libGFSDK_Aftermath_Lib.x64.so")
     endif()
 endif()

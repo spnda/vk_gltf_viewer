@@ -35,12 +35,12 @@ namespace vk {
 				.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
 				.queueFamilyIndex = queueFamilyIndex,
 			};
-			auto createResult = vkCreateCommandPool(device, &commandPoolInfo, &vk::allocationCallbacks, &pool);
+			auto createResult = vkCreateCommandPool(device, &commandPoolInfo, vk::allocationCallbacks.get(), &pool);
 			vk::checkResult(createResult, "Failed to allocate command pool: {}");
 		}
 
 		void destroy() noexcept {
-			vkDestroyCommandPool(device, pool, &vk::allocationCallbacks);
+			vkDestroyCommandPool(device, pool, vk::allocationCallbacks.get());
 		}
 
 		[[nodiscard]] VkCommandPool handle() const noexcept {

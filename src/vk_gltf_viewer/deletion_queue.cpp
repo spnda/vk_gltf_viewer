@@ -31,13 +31,13 @@ TimelineDeletionQueue::TimelineDeletionQueue(const Device& _device) : device(_de
 		.flags = 0,
 	};
 
-	vk::checkResult(vkCreateSemaphore(device.get(), &createInfo, &vk::allocationCallbacks, &timelineSemaphore),
+	vk::checkResult(vkCreateSemaphore(device.get(), &createInfo, vk::allocationCallbacks.get(), &timelineSemaphore),
 					"Failed to create timeline semaphore for deletion queue: {}");
 	vk::setDebugUtilsName(device.get(), timelineSemaphore, "Deletion queue timeline semaphore");
 }
 
 TimelineDeletionQueue::~TimelineDeletionQueue() {
-	vkDestroySemaphore(device.get(), timelineSemaphore, &vk::allocationCallbacks);
+	vkDestroySemaphore(device.get(), timelineSemaphore, vk::allocationCallbacks.get());
 }
 
 void TimelineDeletionQueue::check() {

@@ -23,7 +23,7 @@ ResourceTable::ResourceTable(Device& _device) : device(_device) {
 		.poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
 		.pPoolSizes = sizes.data(),
 	};
-	vk::checkResult(vkCreateDescriptorPool(device.get(), &poolCreateInfo, &vk::allocationCallbacks, &pool),
+	vk::checkResult(vkCreateDescriptorPool(device.get(), &poolCreateInfo, vk::allocationCallbacks.get(), &pool),
 					"Failed to create descriptor pool");
 
 	// This needs to match what resource_table.glsl.h has.
@@ -57,7 +57,7 @@ ResourceTable::ResourceTable(Device& _device) : device(_device) {
 		.bindingCount = static_cast<std::uint32_t>(layoutBindings.size()),
 		.pBindings = layoutBindings.data(),
 	};
-	vk::checkResult(vkCreateDescriptorSetLayout(device.get(), &layoutCreateInfo, &vk::allocationCallbacks, &layout),
+	vk::checkResult(vkCreateDescriptorSetLayout(device.get(), &layoutCreateInfo, vk::allocationCallbacks.get(), &layout),
 					"Failed to create descriptor set layout");
 
 	const VkDescriptorSetAllocateInfo allocateInfo {
@@ -74,8 +74,8 @@ ResourceTable::ResourceTable(Device& _device) : device(_device) {
 
 ResourceTable::~ResourceTable() noexcept {
 	ZoneScoped;
-	vkDestroyDescriptorSetLayout(device.get(), layout, &vk::allocationCallbacks);
-	vkDestroyDescriptorPool(device.get(), pool, &vk::allocationCallbacks);
+	vkDestroyDescriptorSetLayout(device.get(), layout, vk::allocationCallbacks.get());
+	vkDestroyDescriptorPool(device.get(), pool, vk::allocationCallbacks.get());
 }
 
 glsl::ResourceTableHandle ResourceTable::findFirstFreeHandle(std::vector<std::uint64_t>& bitmap) {

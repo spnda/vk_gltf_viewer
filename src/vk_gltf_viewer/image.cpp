@@ -40,12 +40,12 @@ ScopedImage::ScopedImage(const Device& _device, const VkImageCreateInfo* imageIn
 			.layerCount = imageInfo->arrayLayers,
 		},
 	};
-	vk::checkResult(vkCreateImageView(device.get(), &imageViewInfo, &vk::allocationCallbacks, &defaultView),
+	vk::checkResult(vkCreateImageView(device.get(), &imageViewInfo, vk::allocationCallbacks.get(), &defaultView),
 					"Failed to create default image view: {}");
 }
 
 ScopedImage::~ScopedImage() noexcept {
 	if (defaultView != VK_NULL_HANDLE)
-		vkDestroyImageView(device.get(), defaultView, &vk::allocationCallbacks);
+		vkDestroyImageView(device.get(), defaultView, vk::allocationCallbacks.get());
 	vmaDestroyImage(device.get().allocator, handle, allocation);
 }

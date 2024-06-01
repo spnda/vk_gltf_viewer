@@ -19,12 +19,12 @@ namespace vk {
 				.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 				.flags = flags,
 			};
-			auto result = vkCreateFence(device, &fenceCreateInfo, &vk::allocationCallbacks, &handle);
+			auto result = vkCreateFence(device, &fenceCreateInfo, vk::allocationCallbacks.get(), &handle);
 			vk::checkResult(result, "Failed to create fence");
 		}
 
 		~Fence() noexcept {
-			vkDestroyFence(device, handle, &vk::allocationCallbacks);
+			vkDestroyFence(device, handle, vk::allocationCallbacks.get());
 		}
 
 		[[nodiscard]] VkResult wait(std::uint64_t timeout = std::numeric_limits<std::uint64_t>::max()) noexcept {
@@ -87,12 +87,12 @@ namespace vk {
 			const VkSemaphoreCreateInfo semaphoreInfo{
 				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
 			};
-			auto result = vkCreateSemaphore(device, &semaphoreInfo, &vk::allocationCallbacks, &handle);
+			auto result = vkCreateSemaphore(device, &semaphoreInfo, vk::allocationCallbacks.get(), &handle);
 			vk::checkResult(result, "Failed to create semaphore");
 		}
 
 		~Semaphore() noexcept {
-			vkDestroySemaphore(device, handle, &vk::allocationCallbacks);
+			vkDestroySemaphore(device, handle, vk::allocationCallbacks.get());
 		}
 	};
 

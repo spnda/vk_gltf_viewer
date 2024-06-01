@@ -1,5 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <memory>
+#include <vector>
+
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
 #include <VkBootstrap.h>
@@ -13,7 +17,7 @@
 #include <vk_gltf_viewer/deletion_queue.hpp>
 #include <vk_gltf_viewer/resource_table.hpp>
 #if defined(VKV_NV_AFTERMATH)
-#include <vk_gltf_viewer/nvidia/aftermath.hpp>
+#include <nvidia/aftermath.hpp>
 #endif
 
 class ScopedBuffer;
