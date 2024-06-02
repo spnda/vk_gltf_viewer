@@ -68,6 +68,8 @@ class Application {
 	std::unique_ptr<Swapchain> swapchain;
 
 	double deltaTime = 0., lastFrame = 0.;
+	double animationTime = 0.;
+	bool freezeAnimations = false;
 
 	std::vector<FrameSyncData> frameSyncData;
 	std::vector<FrameCommandPool> frameCommandPools;
@@ -85,6 +87,8 @@ class Application {
 
 	void renderUi();
 
+	void iterateNode(fastgltf::Asset& asset, std::size_t sceneIndex, fastgltf::math::fmat4x4 parent,
+					 std::function<void(fastgltf::Node&, const fastgltf::math::fmat4x4&)>& callback);
 	void updateDrawBuffer(std::size_t currentFrame);
 
 public:

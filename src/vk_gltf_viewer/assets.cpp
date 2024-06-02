@@ -35,6 +35,9 @@ void BufferLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, st
 			continue;
 		}
 
+		if (std::holds_alternative<fg::sources::Fallback>(buffer.data))
+			continue; // Ignore these.
+
 		// We only support loading from local URIs.
 		assert(std::holds_alternative<fg::sources::URI>(buffer.data));
 
@@ -446,7 +449,8 @@ struct ImageLoadTask : ExceptionTaskSet {
 
 void ImageLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
 	ZoneScoped;
-
+	for (auto i = range.start; i < range.end; ++i) {
+	}
 }
 
 AssetLoadTask::AssetLoadTask(Device& device, fs::path path) : device(device), assetPath(std::move(path)) {
@@ -460,7 +464,8 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 		throw std::runtime_error("Failed to open glTF file");
 	}
 
-	static constexpr auto gltfOptions = fg::Options::GenerateMeshIndices;
+	static constexpr auto gltfOptions = fg::Options::GenerateMeshIndices
+		| fg::Options::DecomposeNodeMatrices;
 
 	static constexpr auto gltfExtensions = fg::Extensions::EXT_meshopt_compression
 		| fg::Extensions::KHR_mesh_quantization
@@ -527,6 +532,17 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	loadedAsset->primitiveBuffers.reserve(primitiveTask.primitives.size());
 	for (auto& [buffers, primitive] : primitiveTask.primitives)
 		loadedAsset->primitiveBuffers.emplace_back(std::move(buffers));
+
+	loadedAsset->animations.resize(asset->animations.size());
+	for (std::size_t i = 0; i < asset->animations.size(); ++i) {
+		auto& gltfAnimation = asset->animations[i];
+		auto& animation = loadedAsset->animations[i];
+
+		animation.samplers.reserve(gltfAnimation.samplers.size());
+		for (auto& sampler : gltfAnimation.samplers) {
+			animation.samplers.emplace_back(asset.get(), sampler);
+		}
+	}
 
 	taskScheduler.WaitforTask(&imageLoadTask);
 
