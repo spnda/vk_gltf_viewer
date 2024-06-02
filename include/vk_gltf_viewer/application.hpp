@@ -31,11 +31,6 @@ struct FrameCommandPool {
 	VkCommandBuffer commandBuffer;
 };
 
-struct DrawBuffers {
-	std::unique_ptr<ScopedBuffer> meshletDrawBuffer;
-	std::unique_ptr<ScopedBuffer> transformBuffer;
-};
-
 struct VisibilityBufferPass {
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
@@ -55,7 +50,7 @@ class Application {
 	friend void glfwResizeCallback(GLFWwindow* window, int width, int height);
 
 	std::vector<std::shared_ptr<AssetLoadTask>> assetLoadTasks;
-	std::vector<std::unique_ptr<Asset>> loadedAssets;
+	std::unique_ptr<World> world;
 
 	/** The global deletion queue for all sorts of objects */
 	DeletionQueue deletionQueue;
@@ -68,8 +63,6 @@ class Application {
 	std::unique_ptr<Swapchain> swapchain;
 
 	double deltaTime = 0., lastFrame = 0.;
-	double animationTime = 0.;
-	bool freezeAnimations = false;
 
 	std::vector<FrameSyncData> frameSyncData;
 	std::vector<FrameCommandPool> frameCommandPools;
@@ -77,7 +70,6 @@ class Application {
 	std::unique_ptr<imgui::Renderer> imguiRenderer;
 
 	std::unique_ptr<Camera> camera;
-	std::vector<DrawBuffers> drawBuffers;
 
 	VisibilityBufferPass visbufferPass;
 	VisibilityBufferResolvePass visbufferResolvePass;
@@ -86,10 +78,6 @@ class Application {
 	void initVisbufferResolvePass();
 
 	void renderUi();
-
-	void iterateNode(fastgltf::Asset& asset, std::size_t sceneIndex, fastgltf::math::fmat4x4 parent,
-					 std::function<void(fastgltf::Node&, const fastgltf::math::fmat4x4&)>& callback);
-	void updateDrawBuffer(std::size_t currentFrame);
 
 public:
 	explicit Application(std::span<std::filesystem::path> gltfs);

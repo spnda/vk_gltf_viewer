@@ -457,7 +457,7 @@ AssetLoadTask::AssetLoadTask(Device& device, fs::path path) : device(device), as
 	m_SetSize = 1;
 }
 
-void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
+std::shared_ptr<fastgltf::Asset> AssetLoadTask::loadGltf() {
 	ZoneScoped;
 	fg::GltfFileStream file(assetPath);
 	if (!file.isOpen()) {
@@ -478,17 +478,23 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	parser.setUserPointer(this);
 
 	// Load the glTF
-	auto asset = parser.loadGltf(file, assetPath.parent_path(), gltfOptions);
-	if (!asset) {
-		throw std::runtime_error(fmt::format("Failed to load glTF: {}", fg::getErrorMessage(asset.error())));
+	auto loadedAsset = parser.loadGltf(file, assetPath.parent_path(), gltfOptions);
+	if (!loadedAsset) {
+		throw std::runtime_error(fmt::format("Failed to load glTF: {}", fg::getErrorMessage(loadedAsset.error())));
 	}
+	return std::make_shared<fg::Asset>(std::move(loadedAsset.get()));
+}
 
-	BufferLoadTask bufferLoadTask(asset.get(), assetPath.parent_path());
+void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
+	ZoneScoped;
+	asset = loadGltf();
 
-	CompressedBufferDataAdapter bufferDecompressTask(asset.get());
+	BufferLoadTask bufferLoadTask(*asset, assetPath.parent_path());
+
+	CompressedBufferDataAdapter bufferDecompressTask(*asset);
 	bufferDecompressTask.SetDependency(bufferDecompressTask.bufferLoadDependency, &bufferLoadTask);
 
-	PrimitiveProcessingTask primitiveTask(asset.get(), bufferDecompressTask, device.get());
+	PrimitiveProcessingTask primitiveTask(*asset, bufferDecompressTask, device.get());
 	primitiveTask.SetDependency(primitiveTask.bufferDecompressDependency, &bufferDecompressTask);
 
 	taskScheduler.AddTaskSetToPipe(&bufferLoadTask);
@@ -497,8 +503,6 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	taskScheduler.AddTaskSetToPipe(&imageLoadTask);
 
 	taskScheduler.WaitforTask(&primitiveTask);
-
-	loadedAsset = std::make_unique<Asset>();
 
 	// Upload the glsl::Primitive vector into the GPU buffer
 	constexpr VmaAllocationCreateInfo allocationCreateInfo {
@@ -511,8 +515,8 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 				 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 	};
-	loadedAsset->primitiveBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
-	vk::setDebugUtilsName(device.get(), loadedAsset->primitiveBuffer->getHandle(), "Primitive buffer");
+	primitiveBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
+	vk::setDebugUtilsName(device.get(), primitiveBuffer->getHandle(), "Primitive buffer");
 
 	auto primitiveStagingBuffer = device.get().createHostStagingBuffer(bufferCreateInfo.size);
 	{
@@ -525,26 +529,28 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 								 device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
 								 [&](auto cmd) {
 		const VkBufferCopy region { .size = primitiveStagingBuffer->getBufferSize(), };
-		vkCmdCopyBuffer(cmd, primitiveStagingBuffer->getHandle(), loadedAsset->primitiveBuffer->getHandle(), 1, &region);
+		vkCmdCopyBuffer(cmd, primitiveStagingBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &region);
 	});
 
-	loadedAsset->meshes = std::move(primitiveTask.meshes);
-	loadedAsset->primitiveBuffers.reserve(primitiveTask.primitives.size());
-	for (auto& [buffers, primitive] : primitiveTask.primitives)
-		loadedAsset->primitiveBuffers.emplace_back(std::move(buffers));
+	meshes = std::move(primitiveTask.meshes);
+	primitives = std::move(primitiveTask.primitives);
 
-	loadedAsset->animations.resize(asset->animations.size());
+	animations.resize(asset->animations.size());
 	for (std::size_t i = 0; i < asset->animations.size(); ++i) {
 		auto& gltfAnimation = asset->animations[i];
-		auto& animation = loadedAsset->animations[i];
+		auto& animation = animations[i];
+
+
+		animation.channels.reserve(gltfAnimation.channels.size());
+		for (auto& channel : gltfAnimation.channels) {
+			animation.channels.emplace_back(channel);
+		}
 
 		animation.samplers.reserve(gltfAnimation.samplers.size());
 		for (auto& sampler : gltfAnimation.samplers) {
-			animation.samplers.emplace_back(asset.get(), sampler);
+			animation.samplers.emplace_back(asset, sampler);
 		}
 	}
 
 	taskScheduler.WaitforTask(&imageLoadTask);
-
-	loadedAsset->asset = std::move(asset.get());
 }

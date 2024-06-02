@@ -112,9 +112,6 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 	camera = std::make_unique<Camera>(*device, frameOverlap);
 	deletionQueue.push([this]() { camera.reset(); });
 
-	drawBuffers.resize(frameOverlap);
-	deletionQueue.push([this]() { drawBuffers.clear(); });
-
 	// Create the per-frame sync primitives
 	frameSyncData.resize(frameOverlap);
 	for (auto& frame : frameSyncData) {
@@ -148,13 +145,14 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 
 	initVisbufferPass();
 	initVisbufferResolvePass();
+
+	world = std::make_unique<World>(*device, frameOverlap);
 }
 
 Application::~Application() noexcept {
 	ZoneScoped;
 	if (volkGetLoadedDevice() != VK_NULL_HANDLE) {
-		for (auto& asset : loadedAssets)
-			asset.reset();
+		world.reset();
 
 		vkDeviceWaitIdle(*device);
 	}
@@ -362,7 +360,7 @@ void Application::run() {
 			if (task->GetIsComplete()) {
 				if (task->exception)
 					std::rethrow_exception(task->exception);
-				loadedAssets.emplace_back(task->getLoadedAsset());
+				world->addAsset(task);
 				task.reset();
 			}
 		}
@@ -373,10 +371,6 @@ void Application::run() {
 		auto currentTime = glfwGetTime();
 		deltaTime = currentTime - lastFrame;
 		lastFrame = currentTime;
-
-		if (!freezeAnimations) {
-			animationTime += deltaTime;
-		}
 
 		imguiRenderer->newFrame();
 		ImGui::NewFrame();
@@ -395,7 +389,7 @@ void Application::run() {
 		device->timelineDeletionQueue->check();
 
 		camera->updateCamera(currentFrame, window, deltaTime, swapchain->swapchain.extent);
-		updateDrawBuffer(currentFrame);
+		world->updateDrawBuffers(currentFrame, static_cast<float>(deltaTime));
 
 		auto& cmdPool = frameCommandPools[currentFrame];
 		vkResetCommandPool(*device, cmdPool.commandPool, 0);
@@ -495,11 +489,6 @@ void Application::run() {
 			};
 			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
 
-			auto& drawBuffer = drawBuffers[currentFrame];
-			auto totalMeshletCount = drawBuffer.meshletDrawBuffer
-				? static_cast<std::uint32_t>(drawBuffer.meshletDrawBuffer->getBufferSize() / sizeof(glsl::MeshletDraw))
-				: 0U;
-
 			const VkRenderingAttachmentInfo visbufferAttachment {
 				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 				.imageView = visbufferPass.image->getDefaultView(),
@@ -540,10 +529,6 @@ void Application::run() {
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, visbufferPass.pipelineLayout,
 									0, 1, &device->resourceTable->getSet(), 0, nullptr);
 
-			// TODO: Add support for rendering multiple assets
-			//       This will require a merged primitive buffer, or some adjustment in the MeshletDraw
-			//       structure, to identify to which asset a primitive belongs.
-			assert(loadedAssets.size() <= 1);
 			const VkViewport viewport = {
 				.x = 0.0F,
 				.y = 0.0F,
@@ -557,12 +542,17 @@ void Application::run() {
 			const VkRect2D scissor = renderingInfo.renderArea;
 			vkCmdSetScissor(cmd, 0, 1, &scissor);
 
+			auto& drawBuffer = world->drawBuffers[currentFrame];
+			auto totalMeshletCount = drawBuffer.meshletDrawBuffer
+				? static_cast<std::uint32_t>(drawBuffer.meshletDrawBuffer->getBufferSize() / sizeof(glsl::MeshletDraw))
+				: 0U;
+
 			if (totalMeshletCount > 0) {
 				glsl::VisbufferPushConstants pushConstants {
-					.drawBuffer = drawBuffers[currentFrame].meshletDrawBuffer->getDeviceAddress(),
+					.drawBuffer = drawBuffer.meshletDrawBuffer->getDeviceAddress(),
 					.meshletDrawCount = totalMeshletCount,
-					.transformBuffer = drawBuffers[currentFrame].transformBuffer->getDeviceAddress(),
-					.primitiveBuffer = loadedAssets.front()->primitiveBuffer->getDeviceAddress(),
+					.transformBuffer = drawBuffer.transformBuffer->getDeviceAddress(),
+					.primitiveBuffer = world->primitiveBuffer->getDeviceAddress(),
 					.cameraBuffer = camera->getCameraDeviceAddress(currentFrame),
 					.materialBuffer = 0,
 				};
@@ -792,142 +782,11 @@ void Application::renderUi() {
 
 		ImGui::SeparatorText("Debug");
 
-		ImGui::Checkbox("Freeze animations", &freezeAnimations);
+		ImGui::Checkbox("Freeze animations", &world->freezeAnimations);
 	}
 	ImGui::End();
 
 	// ImGui::ShowDemoWindow();
 
 	ImGui::Render();
-}
-
-void Application::iterateNode(fastgltf::Asset& asset, std::size_t nodeIndex, fastgltf::math::fmat4x4 parent,
-							  std::function<void(fastgltf::Node&, const fastgltf::math::fmat4x4&)>& callback) {
-	ZoneScoped;
-	auto& node = asset.nodes[nodeIndex];
-
-	// Compute the animations
-	fastgltf::TRS trs = std::get<fastgltf::TRS>(node.transform); // We specify DecomposeNodeMatrices, so it should always be this.
-	for (std::size_t ai = 0; auto& animation : asset.animations) {
-		for (auto& channel : animation.channels) {
-			if (!channel.nodeIndex.has_value() || *channel.nodeIndex != nodeIndex)
-				continue;
-
-			// TODO: I don't want to see a reference to loadedAsstes in here anymore.
-			auto& sampler = loadedAssets.front()->animations[ai].samplers[channel.samplerIndex];
-			switch (channel.path) {
-				case fg::AnimationPath::Translation: {
-					trs.translation = sampler.sample<fg::AnimationPath::Translation>(asset, static_cast<float>(animationTime));
-					break;
-				}
-				case fg::AnimationPath::Scale: {
-					trs.scale = sampler.sample<fg::AnimationPath::Scale>(asset, static_cast<float>(animationTime));
-					break;
-				}
-				case fastgltf::AnimationPath::Rotation: {
-					trs.rotation = sampler.sample<fg::AnimationPath::Rotation>(asset, static_cast<float>(animationTime));
-					break;
-				}
-				case fastgltf::AnimationPath::Weights:
-					break;
-			}
-		}
-		++ai;
-	}
-
-	// Compute the matrix with the animated values
-	auto matrix = parent
-		* translate(fg::math::fmat4x4(), trs.translation)
-		* fg::math::fmat4x4(asMatrix(trs.rotation))
-		* scale(fg::math::fmat4x4(), trs.scale);
-
-	callback(node, matrix);
-
-	for (auto& child : node.children) {
-		iterateNode(asset, child, matrix, callback);
-	}
-}
-
-void Application::updateDrawBuffer(std::size_t currentFrame) {
-	ZoneScoped;
-	if (loadedAssets.empty())
-		return;
-
-	auto& drawBuffer = drawBuffers[currentFrame];
-	VkDeviceSize currentDrawBufferSize = drawBuffer.meshletDrawBuffer ? drawBuffer.meshletDrawBuffer->getBufferSize() : 0;
-	VkDeviceSize currentTransformBufferSize = drawBuffer.transformBuffer ? drawBuffer.meshletDrawBuffer->getBufferSize() : 0;
-
-	std::vector<glsl::MeshletDraw> draws;
-	draws.reserve(currentDrawBufferSize / sizeof(glsl::MeshletDraw));
-
-	std::vector<glm::mat4> transforms;
-	transforms.reserve(currentTransformBufferSize / sizeof(glm::mat4));
-
-	auto& asset = loadedAssets.front();
-	auto& scene = asset->asset.scenes[0];
-	for (auto& nodes : scene.nodeIndices) {
-		std::function<void(fg::Node&, const fg::math::fmat4x4&)> callback = [&](fg::Node& node, const fg::math::fmat4x4& matrix) {
-			ZoneScoped;
-			if (!node.meshIndex.has_value()) {
-				return;
-			}
-
-			auto transformIndex = static_cast<std::uint32_t>(transforms.size());
-			transforms.emplace_back(glm::make_mat4x4(matrix.data()));
-
-			for (auto& primitive : asset->meshes[*node.meshIndex].primitiveIndices) {
-				auto& buffers = asset->primitiveBuffers[primitive];
-				for (std::uint32_t i = 0; i < buffers.meshletCount; ++i) {
-					draws.emplace_back(glsl::MeshletDraw {
-						.primitiveIndex = static_cast<std::uint32_t>(primitive),
-						.meshletIndex = i,
-						.transformIndex = transformIndex,
-					});
-				}
-			}
-		};
-		iterateNode(asset->asset, nodes, fg::math::fmat4x4(1.f), callback);
-	}
-
-	constexpr auto bufferUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-	constexpr VmaAllocationCreateInfo allocationCreateInfo = {
-		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-	};
-
-	const auto requiredDrawBufferSize = draws.size() * sizeof(glsl::MeshletDraw);
-	if (currentDrawBufferSize < requiredDrawBufferSize) {
-		const VkBufferCreateInfo bufferCreateInfo = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = requiredDrawBufferSize,
-			.usage = bufferUsage,
-		};
-		drawBuffer.meshletDrawBuffer = std::make_unique<ScopedBuffer>(*device, &bufferCreateInfo, &allocationCreateInfo);
-		vk::setDebugUtilsName(*device, drawBuffer.meshletDrawBuffer->getHandle(), fmt::format("Meshlet draw buffer {}", currentFrame));
-	}
-
-	const auto requiredTransformBufferSize = transforms.size() * sizeof(glm::mat4);
-	if (currentTransformBufferSize < requiredTransformBufferSize) {
-		const VkBufferCreateInfo bufferCreateInfo = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = requiredTransformBufferSize,
-			.usage = bufferUsage,
-		};
-		drawBuffer.transformBuffer = std::make_unique<ScopedBuffer>(*device, &bufferCreateInfo, &allocationCreateInfo);
-		vk::setDebugUtilsName(*device, drawBuffer.transformBuffer->getHandle(), fmt::format("Transform buffer {}", currentFrame));
-	}
-
-	// TODO: This currently takes 2x longer than the visbuffer raster itself.
-	//       This should probably be refactored so that the meshlet draw commands are built upfront, or whenever the scene changes.
-	{
-		ZoneScopedN("Draw buffer copy");
-		ScopedMap drawMap(*drawBuffer.meshletDrawBuffer);
-		std::memcpy(drawMap.get(), draws.data(), drawBuffer.meshletDrawBuffer->getBufferSize());
-	}
-
-	{
-		ZoneScopedN("Transform buffer copy");
-		ScopedMap transformMap(*drawBuffer.transformBuffer);
-		std::memcpy(transformMap.get(), transforms.data(), drawBuffer.transformBuffer->getBufferSize());
-	}
 }
