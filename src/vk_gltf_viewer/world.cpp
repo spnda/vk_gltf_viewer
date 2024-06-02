@@ -6,32 +6,129 @@ World::World(Device& _device, std::size_t frameOverlap) noexcept : device(_devic
 	drawBuffers.resize(frameOverlap);
 }
 
+/** This remaps the data from the loaded asset, which essentially fuses the assets together to one. */
 void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 	ZoneScoped;
-	assert(assets.empty()); // Remove when we support more than one asset.
+	auto nodeOffset = nodes.size();
+	auto meshOffset = meshes.size();
+	auto primitiveOffset = primitiveBuffers.size();
 
-	// TODO: Add support for rendering multiple assets
-	//       This will require a merged primitive buffer, or some adjustment in the MeshletDraw
-	//       structure, to identify to which asset a primitive belongs.
 	assets.emplace_back(task->asset);
 
 	// Append all the data to the back of our data, and adjust all indices correctly.
-	meshes = std::move(task->meshes);
-	primitiveBuffers.reserve(task->primitives.size());
+	meshes.reserve(meshes.size() + task->meshes.size());
+	for (auto& mesh : task->meshes) {
+		auto indices = mesh.primitiveIndices;
+		for (auto& index : indices)
+			index += primitiveOffset;
+
+		meshes.emplace_back(Mesh {
+			.primitiveIndices = std::move(indices),
+		});
+	}
+
+	primitiveBuffers.reserve(primitiveBuffers.size() + task->primitives.size());
 	for (auto& [buffers, primitive] : task->primitives)
 		primitiveBuffers.emplace_back(std::move(buffers));
 
-	animations = std::move(task->animations);
+	animations.reserve(animations.size() + task->animations.size());
+	for (auto& animation : task->animations) {
+		auto channels = animation.channels;
+		for (auto& channel : channels)
+			if (channel.nodeIndex.has_value())
+				*channel.nodeIndex += nodeOffset;
 
-	// TODO: This needs updating, too
-	nodes = assets.back()->nodes;
-	scenes = assets.back()->scenes;
+		animations.emplace_back(Animation {
+			.channels = std::move(channels),
+			// The AnimationSampler object has an internal reference to the Asset, and therefore doesn't need remapping.
+			.samplers = std::move(animation.samplers),
+		});
+	}
 
-	// TODO: We need to append to a new, bigger buffer, and then delete the old one.
-	device.get().timelineDeletionQueue->push([buffer = std::move(primitiveBuffer)]() mutable {
-		buffer.reset();
+	nodes.reserve(nodes.size() + assets.back()->nodes.size());
+	for (auto& node : assets.back()->nodes) {
+		auto children = node.children;
+		for (auto& child : children)
+			child += nodeOffset;
+
+		nodes.emplace_back(fastgltf::Node {
+			.meshIndex = node.meshIndex.transform([&](std::size_t v) { return meshOffset + v; }),
+			//.skinIndex = node.skinIndex.transform([&](std::size_t v) { return skinOffset + v; }),
+			//.cameraIndex = node.cameraIndex.transform([&](std::size_t v) { return cameraOffset + v; }),
+			//.lightIndex = node.lightIndex.transform([&](std::size_t v) { return lightOffset + v; }),
+			.children = std::move(children),
+			.transform = node.transform,
+			.name = node.name,
+		});
+	}
+
+	// TODO: Scene management?
+	if (scenes.empty()) {
+		scenes.emplace_back();
+	}
+	for (auto& node : task->asset->scenes.front().nodeIndices)
+		scenes.front().nodeIndices.emplace_back(node + nodeOffset);
+
+	// Upload the glsl::Primitive vector into the GPU buffer, and copy
+	constexpr VmaAllocationCreateInfo allocationCreateInfo {
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+	std::array<std::uint32_t, 2> queueFamilies {{
+		device.get().graphicsQueueFamily,
+		device.get().transferQueueFamily,
+	}};
+	const VkBufferCreateInfo bufferCreateInfo {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = primitiveBuffers.size() * sizeof(glsl::Primitive),
+		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+				 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		// We need to use CONCURRENT since we're using the old buffer to copy while it still may be in use
+		.sharingMode = VK_SHARING_MODE_CONCURRENT,
+		.queueFamilyIndexCount = static_cast<std::uint32_t>(queueFamilies.size()),
+		.pQueueFamilyIndices = queueFamilies.data(),
+	};
+	auto oldPrimitiveBuffer = std::move(primitiveBuffer);
+	primitiveBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
+	vk::setDebugUtilsName(device.get(), primitiveBuffer->getHandle(), "Primitive buffer");
+
+	auto primitiveStagingBuffer = device.get().createHostStagingBuffer(
+		task->primitives.size() * sizeof(glsl::Primitive));
+	{
+		ScopedMap<glsl::Primitive> map(*primitiveStagingBuffer);
+		for (std::size_t i = 0; auto& primitive : task->primitives) {
+			map.get()[i++] = primitive.second;
+		}
+	}
+	device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
+								 device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
+								 [&](auto cmd) {
+		VkDeviceSize dstOffset = 0;
+		if (oldPrimitiveBuffer) {
+			const VkBufferCopy copyRegion {
+				.size = oldPrimitiveBuffer->getBufferSize(),
+			};
+			dstOffset = copyRegion.size;
+			vkCmdCopyBuffer(cmd, oldPrimitiveBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &copyRegion);
+		}
+
+		const VkBufferCopy uploadRegion {
+			.dstOffset = dstOffset,
+			.size = primitiveStagingBuffer->getBufferSize(),
+		};
+		vkCmdCopyBuffer(cmd, primitiveStagingBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &uploadRegion);
 	});
-	primitiveBuffer = std::move(task->primitiveBuffer);
+
+	if (oldPrimitiveBuffer) {
+		device.get().timelineDeletionQueue->push([buffer = std::move(oldPrimitiveBuffer)]() mutable {
+			buffer.reset();
+		});
+	}
+
+	// Invalidate old draw buffers
+	for (auto& drawBuffer : drawBuffers)
+		drawBuffer.isMeshletBufferBuilt = false;
+
+	fmt::print(stderr, "Finished loading asset\n");
 }
 
 void World::iterateNode(std::size_t nodeIndex, fg::math::fmat4x4 parent,
@@ -135,10 +232,10 @@ void World::rebuildDrawBuffer(std::size_t frameIndex) {
 
 	// This copy takes quite a while, often multiple milliseconds, which is why
 	// this should be updated as rarely as possible, and especially not every frame.
-	{
+	if (requiredDrawBufferSize > 0) {
 		ZoneScopedN("Draw buffer copy");
 		ScopedMap drawMap(*drawBuffer.meshletDrawBuffer);
-		std::memcpy(drawMap.get(), draws.data(), drawBuffer.meshletDrawBuffer->getBufferSize());
+		std::memcpy(drawMap.get(), draws.data(), requiredDrawBufferSize);
 	}
 
 	drawBuffer.isMeshletBufferBuilt = true;
@@ -150,7 +247,7 @@ void World::updateTransformBuffer(std::size_t frameIndex) {
 		return;
 
 	auto& drawBuffer = drawBuffers[frameIndex];
-	VkDeviceSize currentTransformBufferSize = drawBuffer.transformBuffer ? drawBuffer.meshletDrawBuffer->getBufferSize() : 0;
+	VkDeviceSize currentTransformBufferSize = drawBuffer.transformBuffer ? drawBuffer.transformBuffer->getBufferSize() : 0;
 
 	std::vector<fastgltf::math::fmat4x4> transforms;
 	transforms.reserve(currentTransformBufferSize / sizeof(fastgltf::math::fmat4x4));
@@ -187,7 +284,7 @@ void World::updateTransformBuffer(std::size_t frameIndex) {
 		vk::setDebugUtilsName(device.get(), drawBuffer.transformBuffer->getHandle(), fmt::format("Transform buffer {}", frameIndex));
 	}
 
-	{
+	if (requiredTransformBufferSize > 0) {
 		ZoneScopedN("Transform buffer copy");
 		ScopedMap<fastgltf::math::fmat4x4> transformMap(*drawBuffer.transformBuffer);
 		// memcpy would technically also work, but fmat4x4 is technically not TriviallyCopyable,

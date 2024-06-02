@@ -4,7 +4,7 @@
 #include <vk_gltf_viewer/buffer.hpp>
 
 ScopedBuffer::ScopedBuffer(const Device& _device, const VkBufferCreateInfo* bufferInfo,
-						   const VmaAllocationCreateInfo* allocationInfo) : device(_device), allocationSize(bufferInfo->size) {
+						   const VmaAllocationCreateInfo* allocationInfo) : device(_device), bufferSize(bufferInfo->size) {
 	ZoneScoped;
 	vk::checkResult(vmaCreateBuffer(device.get().allocator, bufferInfo, allocationInfo,
 									&handle, &allocation, &this->allocationInfo),

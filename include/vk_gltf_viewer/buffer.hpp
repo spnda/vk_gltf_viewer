@@ -12,7 +12,7 @@ class ScopedBuffer {
 
 	VkBuffer handle = VK_NULL_HANDLE;
 	VmaAllocation allocation = VK_NULL_HANDLE;
-	VkDeviceSize allocationSize = 0;
+	VkDeviceSize bufferSize = 0;
 
 	VmaAllocationInfo allocationInfo;
 	bool persistentlyMapped = false;
@@ -35,7 +35,7 @@ public:
 	}
 	[[nodiscard]] VkDeviceAddress getDeviceAddress() const noexcept;
 	[[nodiscard]] VkDeviceSize getBufferSize() const noexcept {
-		return allocationSize;
+		return bufferSize;
 	}
 
 	operator VkBuffer() const noexcept {

@@ -168,7 +168,6 @@ class AssetLoadTask : public ExceptionTaskSet {
 	std::shared_ptr<fastgltf::Asset> asset;
 	std::vector<Mesh> meshes;
 	std::vector<std::pair<PrimitiveBuffers, glsl::Primitive>> primitives;
-	std::unique_ptr<ScopedBuffer> primitiveBuffer;
 	std::vector<Animation> animations;
 
 	std::shared_ptr<fastgltf::Asset> loadGltf();

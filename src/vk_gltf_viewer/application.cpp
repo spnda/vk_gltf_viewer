@@ -152,9 +152,9 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 Application::~Application() noexcept {
 	ZoneScoped;
 	if (volkGetLoadedDevice() != VK_NULL_HANDLE) {
-		world.reset();
-
 		vkDeviceWaitIdle(*device);
+
+		world.reset();
 	}
 
 	deletionQueue.flush();
@@ -360,6 +360,7 @@ void Application::run() {
 			if (task->GetIsComplete()) {
 				if (task->exception)
 					std::rethrow_exception(task->exception);
+				vkQueueWaitIdle(device->graphicsQueue);
 				world->addAsset(task);
 				task.reset();
 			}

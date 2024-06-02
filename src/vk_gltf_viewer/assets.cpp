@@ -504,34 +504,6 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 
 	taskScheduler.WaitforTask(&primitiveTask);
 
-	// Upload the glsl::Primitive vector into the GPU buffer
-	constexpr VmaAllocationCreateInfo allocationCreateInfo {
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-	};
-	const VkBufferCreateInfo bufferCreateInfo {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.size = primitiveTask.primitives.size() * sizeof(glsl::Primitive),
-		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-				 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-	};
-	primitiveBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
-	vk::setDebugUtilsName(device.get(), primitiveBuffer->getHandle(), "Primitive buffer");
-
-	auto primitiveStagingBuffer = device.get().createHostStagingBuffer(bufferCreateInfo.size);
-	{
-		ScopedMap<glsl::Primitive> map(*primitiveStagingBuffer);
-		for (std::size_t i = 0; auto& primitive : primitiveTask.primitives) {
-			map.get()[i++] = primitive.second;
-		}
-	}
-	device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
-								 device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
-								 [&](auto cmd) {
-		const VkBufferCopy region { .size = primitiveStagingBuffer->getBufferSize(), };
-		vkCmdCopyBuffer(cmd, primitiveStagingBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &region);
-	});
-
 	meshes = std::move(primitiveTask.meshes);
 	primitives = std::move(primitiveTask.primitives);
 
