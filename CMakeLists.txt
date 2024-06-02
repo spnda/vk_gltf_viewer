@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.27)
 project(vk_gltf_viewer)
 
+set(SHADER_INCLUDE_DIRS "") # So that the submodule script can update the variable
+
 include(cmake/add_source_directory.cmake)
 add_subdirectory(submodules)
 
@@ -48,6 +50,8 @@ endif()
 
 message(STATUS "vk_gltf_viewer: Found glslangValidator: ${GLSLANG_EXECUTABLE}")
 
+list(APPEND SHADER_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/shaders")
+
 # Get a list of all GLSL shaders in the shaders directory and generate CMake targets for them
 # This piece of code is largely copied/refactored from my shader_processor project.
 # https://github.com/spnda/shader_processor/blob/a4a2fe2a60549b245503c4c9f6c2a4dfff19eb44/CMakeLists.txt#L9-L71
@@ -58,6 +62,10 @@ foreach(SHADER_FILE ${SHADER_FILES})
     string(SHA1 PATH_HASH ${SHADER_FILE})
     set(SHADER_TIMESTAMP_NAME "shaders/${PATH_HASH}.timestamp")
     cmake_path(GET SHADER_FILE PARENT_PATH SHADER_FOLDER)
+
+    # Match glslang's behaviour by first searching the shader's directory, and then
+    # searching the root shaders directory and other include directories.
+    set(LOCAL_INCLUDE_DIRS "${SHADER_FOLDER};${SHADER_INCLUDE_DIRS}")
 
     # Recursively parses file includes
     function(parse_includes RETURN_LIST CONTENTS)
@@ -75,23 +83,19 @@ foreach(SHADER_FILE ${SHADER_FILES})
                     continue()
                 endif()
 
-                # Match glslang's behaviour by first searching the shader's directory, and then
-                # searching the root shaders directory. TODO: Can we somehow merge the two branches?
-                set(INCLUDED_FILE_REL "${SHADER_FOLDER}/${INCLUDED_FILE}")
-                set(INCLUDED_FILE_ROOT ${CMAKE_CURRENT_LIST_DIR}/shaders/${INCLUDED_FILE})
-                if(EXISTS ${INCLUDED_FILE_REL})
-                    list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_REL})
+                # Search for the shader in the include directories (note that these are ordered).
+                foreach(INCL_DIR IN LISTS ${LOCAL_INCLUDE_DIRS})
+                    if(EXISTS ${INCL_DIR}/${INCLUDED_FILE_REL})
+                        list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_REL})
 
-                    # Load the included file, and parse it recursively
-                    file(STRINGS ${INCLUDED_FILE_REL} INCLUDED_FILE_CONTENTS)
-                    parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
-                elseif(EXISTS ${INCLUDED_FILE_ROOT})
-                    list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_ROOT})
+                        # Load the included file, and parse it recursively
+                        file(STRINGS ${INCLUDED_FILE_REL} INCLUDED_FILE_CONTENTS)
+                        parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
+                        set(SHADER_FOUND TRUE)
+                    endif()
+                endforeach()
 
-                    # Load the included file, and parse it recursively
-                    file(STRINGS ${INCLUDED_FILE_ROOT} INCLUDED_FILE_CONTENTS)
-                    parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
-                else()
+                if (NOT ${SHADER_FOUND})
                     message(STATUS "Failed to find included file: ${INCLUDED_FILE}")
                 endif()
             endif()
@@ -111,10 +115,11 @@ foreach(SHADER_FILE ${SHADER_FILES})
     set(COMPILED_SHADER_FILE "shaders/${PATH_HASH}.spirv")
     add_custom_command(
         OUTPUT ${SHADER_TIMESTAMP_NAME} ${COMPILED_SHADER_FILE}
-        COMMAND ${GLSLANG_EXECUTABLE} $<$<CONFIG:DEBUG>:-g> --target-env vulkan1.3 -I${CMAKE_CURRENT_LIST_DIR}/shaders -o ${COMPILED_SHADER_FILE} ${SHADER_FILE}
+        COMMAND ${GLSLANG_EXECUTABLE} $<$<CONFIG:DEBUG>:-g> --target-env vulkan1.3 "-I$<JOIN:${LOCAL_INCLUDE_DIRS},;-I>" -o ${COMPILED_SHADER_FILE} ${SHADER_FILE}
         COMMAND ${CMAKE_COMMAND} -E copy ${COMPILED_SHADER_FILE} shaders/${SHADER_FILENAME}.spirv
         COMMAND ${CMAKE_COMMAND} -E touch ${SHADER_TIMESTAMP_NAME}
         DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
+        COMMAND_EXPAND_LISTS
         COMMENT "Processing ${SHADER_FILE}"
     )
 

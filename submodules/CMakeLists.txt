@@ -189,3 +189,5 @@ if (EXISTS "${VKV_DEPS_DIR}/nv-aftermath")
             PROPERTY IMPORTED_LOCATION "${VKV_DEPS_DIR}/nv-aftermath/lib/x64/libGFSDK_Aftermath_Lib.x64.so")
     endif()
 endif()
+
+return(PROPAGATE SHADER_INCLUDE_DIRS)
