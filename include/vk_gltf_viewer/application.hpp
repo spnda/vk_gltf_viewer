@@ -20,9 +20,9 @@
 
 /** Sync primitives required for frame synchronization around presenting and work submission */
 struct FrameSyncData {
-    VkSemaphore imageAvailable;
-    VkSemaphore renderingFinished;
-    VkFence presentFinished;
+	std::unique_ptr<vk::Semaphore> imageAvailable;
+	std::unique_ptr<vk::Semaphore> renderingFinished;
+	std::unique_ptr<vk::Fence> presentFinished;
 };
 
 /** A CommandPool for each frame, together with pre-allocated command buffers */

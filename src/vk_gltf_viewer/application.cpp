@@ -25,20 +25,20 @@
 namespace fg = fastgltf;
 
 void glfwErrorCallback(int errorCode, const char* description) {
-    if (errorCode != GLFW_NO_ERROR) {
+	if (errorCode != GLFW_NO_ERROR) {
 		fmt::print(stderr, "GLFW error: 0x{:x} {}\n", errorCode, description);
-    }
+	}
 }
 
 void glfwResizeCallback(GLFWwindow* window, int width, int height) {
 	ZoneScoped;
-    if (width > 0 && height > 0) {
-        decltype(auto) app = *static_cast<Application*>(glfwGetWindowUserPointer(window));
+	if (width > 0 && height > 0) {
+		decltype(auto) app = *static_cast<Application*>(glfwGetWindowUserPointer(window));
 		app.swapchain = Swapchain::recreate(std::move(app.swapchain));
 
 		app.initVisbufferPass();
 		app.initVisbufferResolvePass();
-    }
+	}
 }
 
 Application::Application(std::span<std::filesystem::path> gltfs) {
@@ -118,27 +118,20 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 	// Create the per-frame sync primitives
 	frameSyncData.resize(frameOverlap);
 	for (auto& frame : frameSyncData) {
-		constexpr VkSemaphoreCreateInfo semaphoreCreateInfo = {
-			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-		};
-		vk::checkResult(vkCreateSemaphore(*device, &semaphoreCreateInfo, vk::allocationCallbacks.get(), &frame.imageAvailable), "Failed to create image semaphore");
-		vk::setDebugUtilsName(*device, frame.imageAvailable, "Image acquire semaphore");
+		frame.imageAvailable = std::make_unique<vk::Semaphore>(*device);
+		vk::setDebugUtilsName(*device, frame.imageAvailable->handle, "Image acquire semaphore");
 
-        vk::checkResult(vkCreateSemaphore(*device, &semaphoreCreateInfo, vk::allocationCallbacks.get(), &frame.renderingFinished), "Failed to create rendering semaphore");
-		vk::setDebugUtilsName(*device, frame.renderingFinished, "Rendering finished semaphore");
+		frame.renderingFinished = std::make_unique<vk::Semaphore>(*device);
+		vk::setDebugUtilsName(*device, frame.renderingFinished->handle, "Rendering finished semaphore");
 
-		constexpr VkFenceCreateInfo fenceCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
-		};
-        vk::checkResult(vkCreateFence(*device, &fenceCreateInfo, vk::allocationCallbacks.get(), &frame.presentFinished), "Failed to create present fence: {}");
-		vk::setDebugUtilsName(*device, frame.presentFinished, "Present fence");
+		frame.presentFinished = std::make_unique<vk::Fence>(*device, VK_FENCE_CREATE_SIGNALED_BIT);
+		vk::setDebugUtilsName(*device, frame.presentFinished->handle, "Present fence");
 	}
 	deletionQueue.push([this] {
 		for (auto& frame : frameSyncData) {
-			vkDestroyFence(*device, frame.presentFinished, vk::allocationCallbacks.get());
-			vkDestroySemaphore(*device, frame.renderingFinished, vk::allocationCallbacks.get());
-			vkDestroySemaphore(*device, frame.imageAvailable, vk::allocationCallbacks.get());
+			frame.presentFinished.reset();
+			frame.renderingFinished.reset();
+			frame.imageAvailable.reset();
 		}
 	});
 
@@ -395,8 +388,8 @@ void Application::run() {
 
 		// Wait for the last render for this frame index to finish, so that we can use
 		// the associated resources again.
-		vkWaitForFences(*device, 1, &syncData.presentFinished, VK_TRUE, std::numeric_limits<std::uint64_t>::max());
-		vkResetFences(*device, 1, &syncData.presentFinished);
+		syncData.presentFinished->wait(std::numeric_limits<std::uint64_t>::max());
+		syncData.presentFinished->reset();
 
 		// Check if anything can be deleted this frame.
 		device->timelineDeletionQueue->check();
@@ -412,7 +405,7 @@ void Application::run() {
 		std::uint32_t swapchainImageIndex = 0;
 		{
 			auto result = vkAcquireNextImageKHR(*device, *swapchain, std::numeric_limits<std::uint64_t>::max(),
-												syncData.imageAvailable,
+												syncData.imageAvailable->handle,
 												VK_NULL_HANDLE, &swapchainImageIndex);
 			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
 				swapchainNeedsRebuild = true;
@@ -729,7 +722,7 @@ void Application::run() {
 		{
 			const VkSemaphoreSubmitInfo waitSemaphoreInfo {
 				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-				.semaphore = syncData.imageAvailable,
+				.semaphore = syncData.imageAvailable->handle,
 				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			};
 			const VkCommandBufferSubmitInfo bufferSubmitInfo {
@@ -739,7 +732,7 @@ void Application::run() {
 			std::array<VkSemaphoreSubmitInfo, 2> signalSemaphoreInfos = {{
 				{
 					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-					.semaphore = syncData.renderingFinished,
+					.semaphore = syncData.renderingFinished->handle,
 					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 				},
 				{
@@ -758,14 +751,14 @@ void Application::run() {
 				.signalSemaphoreInfoCount = static_cast<std::uint32_t>(signalSemaphoreInfos.size()),
 				.pSignalSemaphoreInfos = signalSemaphoreInfos.data(),
 			};
-			vk::checkResult(device->graphicsQueue.submit(submitInfo, syncData.presentFinished),
+			vk::checkResult(device->graphicsQueue.submit(submitInfo, *syncData.presentFinished),
 							"Failed to submit frame command buffer to queue");
 
 			// Lastly, present the swapchain image as soon as rendering is done
 			const VkPresentInfoKHR presentInfo {
 				.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 				.waitSemaphoreCount = 1,
-				.pWaitSemaphores = &syncData.renderingFinished,
+				.pWaitSemaphores = &syncData.renderingFinished->handle,
 				.swapchainCount = 1,
 				.pSwapchains = &swapchain->swapchain.swapchain,
 				.pImageIndices = &swapchainImageIndex,
@@ -927,10 +920,13 @@ void Application::updateDrawBuffer(std::size_t currentFrame) {
 	// TODO: This currently takes 2x longer than the visbuffer raster itself.
 	//       This should probably be refactored so that the meshlet draw commands are built upfront, or whenever the scene changes.
 	{
-		ZoneScopedN("Map draw buffer & copy");
+		ZoneScopedN("Draw buffer copy");
 		ScopedMap drawMap(*drawBuffer.meshletDrawBuffer);
 		std::memcpy(drawMap.get(), draws.data(), drawBuffer.meshletDrawBuffer->getBufferSize());
+	}
 
+	{
+		ZoneScopedN("Transform buffer copy");
 		ScopedMap transformMap(*drawBuffer.transformBuffer);
 		std::memcpy(transformMap.get(), transforms.data(), drawBuffer.transformBuffer->getBufferSize());
 	}

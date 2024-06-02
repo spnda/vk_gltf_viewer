@@ -31,6 +31,15 @@ namespace vk {
 			ZoneScoped;
 			return vkWaitForFences(device, 1, &handle, VK_TRUE, timeout);
 		}
+
+		[[nodiscard]] VkResult reset() noexcept {
+			ZoneScoped;
+			return vkResetFences(device, 1, &handle);
+		}
+
+		operator VkFence() const noexcept {
+			return handle;
+		}
 	};
 
 	/** A pool for ref-counted fences */
@@ -66,7 +75,7 @@ namespace vk {
 		/** This will reset the fence and the passed shared_ptr, as this is a reference. Only call this after having waited on the fence */
 		void free(std::shared_ptr<Fence>& fence) {
 			ZoneScoped;
-			vk::checkResult(vkResetFences(device, 1, &fence->handle), "Failed to reset fence");
+			vk::checkResult(fence->reset(), "Failed to reset fence");
 			std::lock_guard lock(availabilityMutex);
 			availableFences.emplace(std::move(fence));
 		}
@@ -84,7 +93,7 @@ namespace vk {
 		explicit Semaphore(VkDevice nDevice) {
 			ZoneScoped;
 			device = nDevice;
-			const VkSemaphoreCreateInfo semaphoreInfo{
+			const VkSemaphoreCreateInfo semaphoreInfo {
 				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
 			};
 			auto result = vkCreateSemaphore(device, &semaphoreInfo, vk::allocationCallbacks.get(), &handle);
