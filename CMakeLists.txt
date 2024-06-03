@@ -84,12 +84,13 @@ foreach(SHADER_FILE ${SHADER_FILES})
                 endif()
 
                 # Search for the shader in the include directories (note that these are ordered).
-                foreach(INCL_DIR IN LISTS ${LOCAL_INCLUDE_DIRS})
-                    if(EXISTS ${INCL_DIR}/${INCLUDED_FILE_REL})
-                        list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_REL})
+                foreach(INCL_DIR IN LISTS LOCAL_INCLUDE_DIRS)
+                    set(INCLUDED_FILE_ABS ${INCL_DIR}/${INCLUDED_FILE})
+                    if(EXISTS ${INCLUDED_FILE_ABS})
+                        list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_ABS})
 
                         # Load the included file, and parse it recursively
-                        file(STRINGS ${INCLUDED_FILE_REL} INCLUDED_FILE_CONTENTS)
+                        file(STRINGS ${INCLUDED_FILE_ABS} INCLUDED_FILE_CONTENTS)
                         parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
                         set(SHADER_FOUND TRUE)
                     endif()
@@ -98,6 +99,7 @@ foreach(SHADER_FILE ${SHADER_FILES})
                 if (NOT ${SHADER_FOUND})
                     message(STATUS "Failed to find included file: ${INCLUDED_FILE}")
                 endif()
+                set(SHADER_FOUND "")
             endif()
         endforeach()
 
