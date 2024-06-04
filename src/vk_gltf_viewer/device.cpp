@@ -140,9 +140,6 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 #if defined(TRACY_ENABLE)
 		.add_required_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
 #endif
-#if defined(VKV_NV_AFTERMATH)
-		.add_required_extension(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME)
-#endif
 		.require_present()
 		.require_dedicated_transfer_queue()
 		.select();
@@ -175,6 +172,8 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 			| VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV
 			| VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV,
 	};
+
+	physicalDevice.enable_extension_if_present(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 #endif
 
 	// Create the logical device
