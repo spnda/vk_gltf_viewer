@@ -107,11 +107,15 @@ void ResourceTable::freeHandle(std::vector<std::uint64_t>& bitmap, glsl::Resourc
 
 void ResourceTable::removeStorageImageHandle(glsl::ResourceTableHandle handle) noexcept {
 	ZoneScoped;
+	if (handle == glsl::invalidHandle)
+		return;
 	freeHandle(storageImageBitmap, handle);
 }
 
 void ResourceTable::removeSampledImageHandle(glsl::ResourceTableHandle handle) noexcept {
 	ZoneScoped;
+	if (handle == glsl::invalidHandle)
+		return;
 	freeHandle(sampledImageBitmap, handle);
 }
 

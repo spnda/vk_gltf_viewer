@@ -1,6 +1,6 @@
 #include <vk_gltf_viewer/image.hpp>
 
-ScopedImage::ScopedImage(const Device& _device, const VkImageCreateInfo* imageInfo, const VmaAllocationCreateInfo* allocationInfo) : device(_device) {
+ScopedImage::ScopedImage(const Device& _device, const VkImageCreateInfo* imageInfo, const VmaAllocationCreateInfo* allocationInfo) : device(_device), extent(imageInfo->extent) {
 	// Create the image itself
 	vk::checkResult(vmaCreateImage(device.get().allocator, imageInfo, allocationInfo,
 								   &handle, &allocation, nullptr),
@@ -48,4 +48,13 @@ ScopedImage::~ScopedImage() noexcept {
 	if (defaultView != VK_NULL_HANDLE)
 		vkDestroyImageView(device.get(), defaultView, vk::allocationCallbacks.get());
 	vmaDestroyImage(device.get().allocator, handle, allocation);
+}
+
+ScopedImageView::ScopedImageView(const Device& _device, const VkImageViewCreateInfo* imageViewInfo) : device(_device) {
+	vk::checkResult(vkCreateImageView(device.get(), imageViewInfo, vk::allocationCallbacks.get(), &handle),
+					"Failed to create image view");
+}
+
+ScopedImageView::~ScopedImageView() noexcept {
+	vkDestroyImageView(device.get(), handle, vk::allocationCallbacks.get());
 }

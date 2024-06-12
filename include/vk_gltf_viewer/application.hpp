@@ -31,6 +31,11 @@ struct FrameCommandPool {
 	VkCommandBuffer commandBuffer;
 };
 
+/**
+ * Visbuffer generation pass. This rasterizes the scene to a simple R32_UINT color attachment,
+ * which contains the draw index and triangle index. Just from this data we can generate all
+ * required information in the resolve pass. This is effectively a cut down gbuffer.
+ */
 struct VisibilityBufferPass {
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
@@ -40,9 +45,34 @@ struct VisibilityBufferPass {
 	std::unique_ptr<ScopedImage> depthImage;
 };
 
+/**
+ * Takes the visbuffer and calculates barycentrics to manually interpolate all vertex attributes.
+ */
 struct VisibilityBufferResolvePass {
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
+};
+
+/**
+ * The HiZ reduction pass. This takes the depth buffer generated in the visbuffer path
+ * and generates a hierarchical depth buffer. These are effectively just mipmaps, however
+ * the special thing is that each pixel has the greatest depth value from the previous mip.
+ * This way we can perform occlusion culling in the next frame with this data.
+ */
+struct HiZReductionPass {
+	VkPipelineLayout reducePipelineLayout = VK_NULL_HANDLE;
+	VkPipeline reducePipeline = VK_NULL_HANDLE;
+
+	struct HiZImageView {
+		std::unique_ptr<ScopedImageView> view;
+		glsl::ResourceTableHandle storageHandle = glsl::invalidHandle;
+		glsl::ResourceTableHandle sampledHandle = glsl::invalidHandle;
+	};
+
+	std::unique_ptr<ScopedImage> depthPyramid;
+	std::vector<HiZImageView> depthPyramidViews;
+	glsl::ResourceTableHandle depthPyramidHandle = glsl::invalidHandle;
+	VkSampler reduceSampler = VK_NULL_HANDLE;
 };
 
 /** The main Application class */
@@ -62,6 +92,8 @@ class Application {
 	std::unique_ptr<Device> device;
 	std::unique_ptr<Swapchain> swapchain;
 
+	bool swapchainNeedsRebuild = false;
+	bool firstFrame = true;
 	double deltaTime = 0., lastFrame = 0.;
 
 	std::vector<FrameSyncData> frameSyncData;
@@ -73,9 +105,11 @@ class Application {
 
 	VisibilityBufferPass visbufferPass;
 	VisibilityBufferResolvePass visbufferResolvePass;
+	HiZReductionPass hizReductionPass;
 
 	void initVisbufferPass();
 	void initVisbufferResolvePass();
+	void initHiZReductionPass();
 
 	void renderUi();
 

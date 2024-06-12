@@ -6,6 +6,7 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #endif
@@ -16,7 +17,11 @@ GLSL_NAMESPACE_BEGIN
 GLSL_CONSTANT uint shadowMapCount = 4;
 
 struct Camera {
+	mat4 prevViewProjection;
+	mat4 prevOcclusionViewProjection;
+
 	mat4 viewProjection;
+	mat4 occlusionViewProjection;
 	GLSL_ARRAY(vec4, frustum, 6);
 };
 

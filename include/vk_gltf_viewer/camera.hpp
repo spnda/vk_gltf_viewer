@@ -8,7 +8,7 @@
 
 #include <mesh_common.glsl.h>
 
-class Camera {
+struct Camera {
 	std::reference_wrapper<const Device> device;
 
 	std::vector<std::unique_ptr<ScopedBuffer>> cameraBuffers;
@@ -22,16 +22,15 @@ class Camera {
 	float yaw = 0.f;
 	float pitch = 0.f;
 
+	bool freezeCameraFrustum = false;
+	bool freezeCullingMatrix = false;
 	float speedMultiplier = 5.f;
 
 	static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 	static constexpr auto cameraRight = glm::vec3(0.0f, 0.0f, 1.0f);
 
-public:
 	explicit Camera(const Device& device, std::size_t frameOverlap);
 	~Camera() noexcept;
-
-	bool freezeCameraFrustum = false;
 
 	/** Updates the camera position and rotation using the last known window inputs */
 	void updateCamera(std::size_t currentFrame, GLFWwindow* window, double deltaTime, VkExtent2D framebufferExtent);

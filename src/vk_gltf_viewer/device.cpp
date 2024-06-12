@@ -106,6 +106,7 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 		.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE,
 		.descriptorBindingPartiallyBound = VK_TRUE,
 		.runtimeDescriptorArray = VK_TRUE,
+		.samplerFilterMinmax = VK_TRUE,
 		.scalarBlockLayout = VK_TRUE,
 #if defined(TRACY_ENABLE)
 		.hostQueryReset = VK_TRUE,

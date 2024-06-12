@@ -170,16 +170,24 @@ void Camera::updateCamera(std::size_t currentFrame, GLFWwindow* window, double d
 	auto view = glm::lookAtRH(position, position + direction, cameraUp);
 
 	// glm::perspectiveRH_ZO is correct, see https://johannesugb.github.io/gpu-programming/setting-up-a-proper-vulkan-projection-matrix/
-	static constexpr auto zNear = 0.01f;
+	static constexpr auto zNear = 0.1f;
 	static constexpr auto zFar = 1000.0f;
 	static constexpr auto fov = glm::radians(75.0f);
 	const auto aspectRatio = static_cast<float>(framebufferExtent.width) / static_cast<float>(framebufferExtent.height);
 	auto projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
 	projectionMatrix[1][1] *= -1;
 
+	auto& camera = *mappedCamera.get();
+	camera.prevViewProjection = camera.viewProjection;
+	camera.prevOcclusionViewProjection = camera.occlusionViewProjection;
+
+	// mappedCamera.get()->projection = reverseDepth(projectionMatrix);
 	mappedCamera.get()->viewProjection = reverseDepth(projectionMatrix) * view;
 	viewProjection = mappedCamera.get()->viewProjection;
 	//mappedCamera.get()->views[0].viewProjection = reverseDepth(projectionMatrix) * mappedCamera.get()->view;
+
+	if (!freezeCullingMatrix)
+		mappedCamera.get()->occlusionViewProjection = viewProjection;
 
 	if (!freezeCameraFrustum)
 		generateCameraFrustum(mappedCamera.get()->viewProjection, mappedCamera.get()->frustum);

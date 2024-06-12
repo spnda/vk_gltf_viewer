@@ -11,6 +11,7 @@ class ScopedImage {
 	std::reference_wrapper<const Device> device;
 	VkImage handle = VK_NULL_HANDLE;
 	VmaAllocation allocation = VK_NULL_HANDLE;
+	VkExtent3D extent;
 
 	VkImageView defaultView = VK_NULL_HANDLE;
 
@@ -27,8 +28,28 @@ public:
 	[[nodiscard]] auto getDefaultView() const noexcept {
 		return defaultView;
 	}
+	[[nodiscard]] auto getExtent() const noexcept {
+		return extent;
+	}
 
 	operator VkImage() const noexcept {
+		return getHandle();
+	}
+};
+
+class ScopedImageView {
+	std::reference_wrapper<const Device> device;
+	VkImageView handle = VK_NULL_HANDLE;
+
+public:
+	explicit ScopedImageView(const Device& _device, const VkImageViewCreateInfo* imageViewInfo);
+	~ScopedImageView() noexcept;
+
+	[[nodiscard]] auto getHandle() const noexcept {
+		return handle;
+	}
+
+	operator VkImageView() const noexcept {
 		return getHandle();
 	}
 };

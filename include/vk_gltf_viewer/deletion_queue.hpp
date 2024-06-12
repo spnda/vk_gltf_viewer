@@ -13,6 +13,9 @@ class DeletionQueue {
 	std::vector<std::move_only_function<void()>> deletors;
 
 public:
+	explicit DeletionQueue() = default;
+	~DeletionQueue();
+
 	void push(std::move_only_function<void()>&& function);
 	void flush();
 };

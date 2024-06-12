@@ -38,6 +38,9 @@ void glfwResizeCallback(GLFWwindow* window, int width, int height) {
 
 		app.initVisbufferPass();
 		app.initVisbufferResolvePass();
+		app.initHiZReductionPass();
+		app.swapchainNeedsRebuild = false;
+		app.firstFrame = true;
 	}
 }
 
@@ -145,6 +148,7 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 
 	initVisbufferPass();
 	initVisbufferResolvePass();
+	initHiZReductionPass();
 
 	world = std::make_unique<World>(*device, frameOverlap);
 }
@@ -341,10 +345,152 @@ void Application::initVisbufferResolvePass() {
 	}
 }
 
+void Application::initHiZReductionPass() {
+	ZoneScoped;
+	if (hizReductionPass.reduceSampler == VK_NULL_HANDLE) {
+		const VkSamplerReductionModeCreateInfo reductionModeInfo {
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+			.reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN,
+		};
+		const VkSamplerCreateInfo samplerInfo {
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.pNext = &reductionModeInfo,
+			.magFilter = VK_FILTER_LINEAR,
+			.minFilter = VK_FILTER_LINEAR,
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.minLod = 0.f,
+			.maxLod = 16.f,
+		};
+		vk::checkResult(vkCreateSampler(*device, &samplerInfo, vk::allocationCallbacks.get(), &hizReductionPass.reduceSampler),
+						"Failed to create HiZ reduction sampler");
+		vk::setDebugUtilsName(*device, hizReductionPass.reduceSampler, "HiZ reduction sampler");
+		deletionQueue.push([this]() { vkDestroySampler(*device, hizReductionPass.reduceSampler, vk::allocationCallbacks.get()); });
+	}
+
+	if (hizReductionPass.depthPyramid) {
+		device->timelineDeletionQueue->push([this, handle = hizReductionPass.depthPyramidHandle, image = std::move(hizReductionPass.depthPyramid), views = std::move(hizReductionPass.depthPyramidViews)]() mutable {
+			for (auto& view : views) {
+				device->resourceTable->removeStorageImageHandle(view.storageHandle);
+				view.view.reset();
+			}
+			device->resourceTable->removeSampledImageHandle(handle);
+			image.reset();
+		});
+	}
+
+	auto extent = swapchain->swapchain.extent;
+	auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(fastgltf::max(extent.width, extent.height))));
+
+	const VmaAllocationCreateInfo allocationInfo {
+		.usage = VMA_MEMORY_USAGE_AUTO,
+	};
+	const VkImageCreateInfo depthPyramidInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_R32_SFLOAT,
+		.extent = {
+			.width = extent.width >> 1,
+			.height = extent.height >> 1,
+			.depth = 1,
+		},
+		.mipLevels = mipLevels,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	hizReductionPass.depthPyramid = std::make_unique<ScopedImage>(*device, &depthPyramidInfo, &allocationInfo);
+	deletionQueue.push([this]() { hizReductionPass.depthPyramid.reset(); });
+	vk::setDebugUtilsName(*device, hizReductionPass.depthPyramid->getHandle(), "HiZ Depth pyramid");
+	vk::setDebugUtilsName(*device, hizReductionPass.depthPyramid->getDefaultView(), "HiZ Depth pyramid view");
+
+	hizReductionPass.depthPyramidHandle = device->resourceTable->allocateSampledImage(
+		hizReductionPass.depthPyramid->getDefaultView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, hizReductionPass.reduceSampler);
+
+	hizReductionPass.depthPyramidViews.resize(mipLevels + 1);
+	for (std::uint32_t i = 0; i < (mipLevels + 1); ++i) {
+		auto& view = hizReductionPass.depthPyramidViews[i];
+		if (i == 0) {
+			view.sampledHandle = device->resourceTable->allocateSampledImage(visbufferPass.depthImage->getDefaultView(), VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, hizReductionPass.reduceSampler);
+			continue;
+		}
+
+		const VkImageViewCreateInfo imageViewInfo {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = hizReductionPass.depthPyramid->getHandle(),
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = VK_FORMAT_R32_SFLOAT,
+			.components = {
+				.r = VK_COMPONENT_SWIZZLE_R,
+			},
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = i - 1,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		view.view = std::make_unique<ScopedImageView>(*device, &imageViewInfo);
+		view.storageHandle = device->resourceTable->allocateStorageImage(view.view->getHandle(), VK_IMAGE_LAYOUT_GENERAL);
+		view.sampledHandle = device->resourceTable->allocateSampledImage(view.view->getHandle(), VK_IMAGE_LAYOUT_GENERAL, hizReductionPass.reduceSampler);
+	}
+
+	deletionQueue.push([this] {
+		for (auto& view : hizReductionPass.depthPyramidViews) {
+			device->resourceTable->removeSampledImageHandle(view.sampledHandle);
+			device->resourceTable->removeStorageImageHandle(view.storageHandle);
+			view.view.reset();
+		}
+	});
+
+	if (hizReductionPass.reducePipeline == VK_NULL_HANDLE) {
+		const VkPushConstantRange pushConstantRange = {
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset = 0,
+			.size = sizeof(glsl::ResourceTableHandle) * 2 + sizeof(glm::u32vec2),
+		};
+		const VkPipelineLayoutCreateInfo layoutCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &device->resourceTable->getLayout(),
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &pushConstantRange,
+		};
+		vk::checkResult(vkCreatePipelineLayout(*device, &layoutCreateInfo, vk::allocationCallbacks.get(), &hizReductionPass.reducePipelineLayout),
+						"Failed to create HiZ reduction pipeline layout");
+		vk::setDebugUtilsName(*device, hizReductionPass.reducePipelineLayout, "HiZ reduction pipeline layout");
+
+		deletionQueue.push([this]() {
+			vkDestroyPipelineLayout(*device, hizReductionPass.reducePipelineLayout, vk::allocationCallbacks.get());
+		});
+
+		VkShaderModule reduce;
+		loadShader(*device, hiz_reduce_comp_glsl, &reduce);
+
+		auto builder = vk::ComputePipelineBuilder(*device, 1)
+			.setPipelineLayout(0, hizReductionPass.reducePipelineLayout)
+			.setShaderStage(0, VK_SHADER_STAGE_COMPUTE_BIT, reduce);
+
+		vk::checkResult(builder.build(&hizReductionPass.reducePipeline), "Failed to build HiZ reduction pipeline");
+		vk::setDebugUtilsName(*device, hizReductionPass.reducePipeline,  "HiZ reduction pipeline");
+
+		vkDestroyShaderModule(*device, reduce, vk::allocationCallbacks.get());
+
+		deletionQueue.push([this] {
+			vkDestroyPipeline(*device, hizReductionPass.reducePipeline, vk::allocationCallbacks.get());
+		});
+	}
+}
+
 void Application::run() {
 	ZoneScoped;
 
-	bool swapchainNeedsRebuild = false;
+	swapchainNeedsRebuild = false;
 	std::size_t currentFrame = 0;
 	while (!glfwWindowShouldClose(window)) {
 		if (!swapchainNeedsRebuild) {
@@ -419,8 +565,9 @@ void Application::run() {
 		// Transition the swapchain image from UNDEFINED -> GENERAL
 		// Transition the visbuffer image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
 		// Transition the depth image from UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL
+		// Transition the depth pyramid from UNDEFINED/GENERAL -> SHADER_READ_ONLY_OPTIMAL
 		{
-			std::array<VkImageMemoryBarrier2, 3> imageBarriers = {{
+			std::array<VkImageMemoryBarrier2, 4> imageBarriers {{
 				{
 					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -471,7 +618,24 @@ void Application::run() {
 						.levelCount = 1,
 						.layerCount = 1,
 					},
-				}
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+					.srcAccessMask = VK_ACCESS_2_NONE,
+					.dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
+					.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+					.oldLayout = firstFrame ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
+					.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = hizReductionPass.depthPyramid->getHandle(),
+					.subresourceRange = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.levelCount = VK_REMAINING_MIP_LEVELS,
+						.layerCount = 1,
+					},
+				},
 			}};
 			const VkDependencyInfo dependencyInfo {
 				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -556,6 +720,7 @@ void Application::run() {
 					.primitiveBuffer = world->primitiveBuffer->getDeviceAddress(),
 					.cameraBuffer = camera->getCameraDeviceAddress(currentFrame),
 					.materialBuffer = 0,
+					.depthPyramid = hizReductionPass.depthPyramidHandle,
 				};
 				vkCmdPushConstants(cmd, visbufferPass.pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof pushConstants,
 								   &pushConstants);
@@ -569,28 +734,49 @@ void Application::run() {
 		}
 
 		// Image barrier for visbuffer image from visbuffer pass -> resolve pass
+		// Transition hierarchical depth pyramid from SHADER_READ_ONLY_OPTIMAL -> GENERAL
 		{
-			const VkImageMemoryBarrier2 imageBarrier {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-				.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
-				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = visbufferPass.image->getHandle(),
-				.subresourceRange = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.levelCount = 1,
-					.layerCount = 1,
+			std::array<VkImageMemoryBarrier2, 2> imageBarriers {{
+				{
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+					.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+					.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+					.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = visbufferPass.image->getHandle(),
+					.subresourceRange = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.levelCount = 1,
+						.layerCount = 1,
+					},
 				},
-			};
-			const VkDependencyInfo dependencyInfo{
+				{
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
+					.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+					.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+					.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = hizReductionPass.depthPyramid->getHandle(),
+					.subresourceRange = {
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.baseMipLevel = 0,
+						.levelCount = VK_REMAINING_MIP_LEVELS,
+						.layerCount = 1,
+					},
+				},
+			}};
+			const VkDependencyInfo dependencyInfo {
 				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &imageBarrier,
+				.imageMemoryBarrierCount = static_cast<std::uint32_t>(imageBarriers.size()),
+				.pImageMemoryBarriers = imageBarriers.data(),
 			};
 			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 		}
@@ -613,9 +799,64 @@ void Application::run() {
 			vkCmdPushConstants(cmd, visbufferResolvePass.pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof pushConstants, &pushConstants);
 
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, visbufferResolvePass.pipelineLayout,
-						0, 1, &device->resourceTable->getSet(), 0, nullptr);
+			                        0, 1, &device->resourceTable->getSet(), 0, nullptr);
 
 			vkCmdDispatch(cmd, swapchain->swapchain.extent.width / 32, swapchain->swapchain.extent.height, 1);
+
+			vkCmdEndDebugUtilsLabelEXT(cmd);
+		}
+
+		if (!camera->freezeCullingMatrix) {
+			TracyVkZone(device->tracyCtx, cmd, "HiZ reduction");
+			const VkDebugUtilsLabelEXT label {
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+				.pLabelName = "HiZ reduction",
+			};
+			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
+
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizReductionPass.reducePipelineLayout,
+			                        0, 1, &device->resourceTable->getSet(), 0, nullptr);
+
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizReductionPass.reducePipeline);
+
+			auto pyramidSize = toVector(swapchain->swapchain.extent);
+			for (std::uint32_t i = 1; i < hizReductionPass.depthPyramidViews.size(); ++i) {
+				auto levelSize = pyramidSize >> i;
+
+				struct HiZreducePushConstants {
+					glsl::ResourceTableHandle sourceImage;
+					glsl::ResourceTableHandle outputImage;
+					glm::u32vec2 imageSize;
+				} pushConstants {
+					.sourceImage = hizReductionPass.depthPyramidViews[i - 1].sampledHandle,
+					.outputImage = hizReductionPass.depthPyramidViews[i].storageHandle,
+					.imageSize = levelSize,
+				};
+				vkCmdPushConstants(cmd, hizReductionPass.reducePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+				                   0, sizeof(pushConstants), &pushConstants);
+
+				vkCmdDispatch(cmd, fg::alignUp(levelSize.x, 32) / 32, fg::alignUp(levelSize.y, 32) / 32, 1);
+
+				if (i + 1 != hizReductionPass.depthPyramidViews.size()) {
+					const VkImageMemoryBarrier barrier{
+						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+						.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+						.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+						.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+						.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+						.image = *hizReductionPass.depthPyramid,
+						.subresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.baseMipLevel = i,
+							.levelCount = 1,
+							.layerCount = 1,
+						}
+					};
+					vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr,
+					                     1, &barrier);
+				}
+			}
 
 			vkCmdEndDebugUtilsLabelEXT(cmd);
 		}
@@ -763,6 +1004,7 @@ void Application::run() {
 		}
 
 		FrameMark;
+		firstFrame = false;
 	}
 }
 
@@ -780,6 +1022,8 @@ void Application::renderUi() {
 		auto pos = camera->getPosition();
 		ImGui::Text("Position: <%.2f, %.2f, %.2f>", pos.x, pos.y, pos.z);
 		ImGui::Checkbox("Freeze Camera frustum", &camera->freezeCameraFrustum);
+		ImGui::Checkbox("Freeze Occlusion matrix", &camera->freezeCullingMatrix);
+		ImGui::DragFloat("Camera speed multiplier", &camera->speedMultiplier);
 
 		ImGui::SeparatorText("Debug");
 

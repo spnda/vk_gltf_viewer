@@ -11,6 +11,8 @@ GLSL_CONSTANT uint storageImageBinding = 1;
 layout(set = 0, binding = sampledImageBinding) uniform sampler2D sampled_textures_heap[];
 
 layout(set = 0, binding = storageImageBinding, r32ui) uniform readonly  uimage2D readonly_uimage2d_r32ui_heap[];
+layout(set = 0, binding = storageImageBinding, r32f ) uniform readonly  image2D  readonly_image2d_r32f_heap[];
+layout(set = 0, binding = storageImageBinding, r32f ) uniform writeonly image2D  writeonly_image2d_r32f_heap[];
 layout(set = 0, binding = storageImageBinding, rgba8) uniform writeonly image2D  writeonly_image2d_rgba8_heap[];
 
 #define ResourceTableHandle uint

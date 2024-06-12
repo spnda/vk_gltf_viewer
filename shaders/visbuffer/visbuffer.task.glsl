@@ -5,10 +5,11 @@
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_nonuniform_qualifier : require
 
 #include "visbuffer.glsl.h"
 #include "mesh_common.glsl.h"
-#include "frustum_culling.glsl.h"
+#include "culling.glsl.h"
 
 layout(constant_id = 0) const uint subgroupSize = 32;
 
@@ -27,6 +28,10 @@ void main() {
 	uint meshletCount = min(maxMeshlets, pushConstants.meshletDrawCount - (gl_WorkGroupID.x * maxMeshlets));
 	uint baseId = taskPayload.baseID = gl_WorkGroupID.x * maxMeshlets;
 
+	restrict Camera camera = pushConstants.cameraBuffer.camera;
+
+	ivec2 pyramidSize = textureSize(sampled_textures_heap[pushConstants.depthPyramid], 0);
+
 	// We have workgroup sizes of 32 or whatever the subgroup size is, but we designate one task
 	// shader workgroup for maxMeshlets meshlets, to fit efficiently into the task payload.
 	const uint meshletLoops = (meshletCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;
@@ -41,10 +46,23 @@ void main() {
 		restrict Primitive primitive = pushConstants.primitiveBuffer.primitives[draw.primitiveIndex];
 		restrict const Meshlet meshlet = primitive.meshletBuffer.meshlets[draw.meshletIndex];
 
-		// Do some culling
+		// Frustum culling
 		const vec3 worldAabbCenter = (transformMatrix * vec4(meshlet.aabbCenter, 1.0f)).xyz;
 		const vec3 worldAabbExtent = getWorldSpaceAabbExtent(meshlet.aabbExtents.xyz, transformMatrix);
-		const bool visible = isAabbInFrustum(worldAabbCenter, worldAabbExtent, pushConstants.cameraBuffer.camera.frustum);
+		bool visible = isAabbInFrustum(worldAabbCenter, worldAabbExtent, camera.frustum);
+
+		if (visible) {
+			// HiZ occlusion culling
+			vec3[2] projectedAabb = projectAabb(worldAabbCenter, worldAabbExtent, camera.prevOcclusionViewProjection);
+			float width = (projectedAabb[1].x - projectedAabb[0].x) * pyramidSize.x;
+			float height = (projectedAabb[1].y - projectedAabb[0].y) * pyramidSize.y;
+			float level = floor(log2(max(width, height)));
+
+			vec2 projectedCenter = (projectedAabb[0].xy + projectedAabb[1].xy) * 0.5f;
+			float depth = textureLod(sampled_textures_heap[pushConstants.depthPyramid], projectedCenter, level).r;
+			// Use the max value, since we want to know the nearest depth of the AABB is less than the farthest sampled depth
+			visible = visible && depth < projectedAabb[1].z;
+		}
 
 		// Get the index for this thread for this subgroup
 		uint payloadIndex = subgroupExclusiveAdd(uint(visible));

@@ -459,8 +459,8 @@ AssetLoadTask::AssetLoadTask(Device& device, fs::path path) : device(device), as
 
 std::shared_ptr<fastgltf::Asset> AssetLoadTask::loadGltf() {
 	ZoneScoped;
-	fg::GltfFileStream file(assetPath);
-	if (!file.isOpen()) {
+	auto file = fg::MappedGltfFile::FromPath(assetPath);
+	if (!bool(file)) {
 		throw std::runtime_error("Failed to open glTF file");
 	}
 
@@ -478,7 +478,7 @@ std::shared_ptr<fastgltf::Asset> AssetLoadTask::loadGltf() {
 	parser.setUserPointer(this);
 
 	// Load the glTF
-	auto loadedAsset = parser.loadGltf(file, assetPath.parent_path(), gltfOptions);
+	auto loadedAsset = parser.loadGltf(file.get(), assetPath.parent_path(), gltfOptions);
 	if (!loadedAsset) {
 		throw std::runtime_error(fmt::format("Failed to load glTF: {}", fg::getErrorMessage(loadedAsset.error())));
 	}

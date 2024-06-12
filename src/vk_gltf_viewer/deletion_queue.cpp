@@ -9,6 +9,10 @@ void DeletionQueue::push(std::move_only_function<void()>&& function) {
 	deletors.emplace_back(std::move(function));
 }
 
+DeletionQueue::~DeletionQueue() {
+	flush();
+}
+
 void DeletionQueue::flush() {
 	ZoneScoped;
 	for (auto& func : deletors | std::views::reverse) {

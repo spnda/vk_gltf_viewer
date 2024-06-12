@@ -3,9 +3,15 @@
 #include <vulkan/vk.hpp>
 #include <VkBootstrap.h>
 
+#include <glm/vec2.hpp>
+
 #include <vk_gltf_viewer/device.hpp>
 
 #include <resource_table.glsl.h>
+
+constexpr glm::u32vec2 toVector(VkExtent2D extent) noexcept {
+	return {extent.width, extent.height};
+}
 
 struct Swapchain {
 	vkb::Swapchain swapchain;
