@@ -8,8 +8,5 @@ build/
 *.ngfx-gputrace
 *.ngfx-gputrace.layout
 
-# Generated files
-generated/
-
 # Dependencies not in Git submodules
 submodules/nv-aftermath

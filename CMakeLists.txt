@@ -149,8 +149,8 @@ foreach(SHADER_NAME IN LISTS SHADER_C_NAMES)
     list(APPEND SHADER_DATA_SPANS "\nextern const std::span<const std::uint32_t> ${SHADER_NAME}")
 endforeach()
 
-configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/spirv_manifest.hpp.in" "${CMAKE_CURRENT_LIST_DIR}/generated/spirv_manifest.hpp")
-target_include_directories(vk_gltf_viewer PRIVATE ${CMAKE_CURRENT_LIST_DIR}/generated)
+configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/spirv_manifest.hpp.in" "${CMAKE_CURRENT_BINARY_DIR}/include/spirv_manifest.hpp")
+target_include_directories(vk_gltf_viewer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/include)
 
 # Copy all required runtime DLLs into the build directory
 add_custom_command(TARGET vk_gltf_viewer POST_BUILD
