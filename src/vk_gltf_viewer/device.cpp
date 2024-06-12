@@ -7,8 +7,10 @@
 #include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/buffer.hpp>
 
+#if defined(VKV_NV_AFTERMATH)
 #include <GFSDK_Aftermath.h>
 #include <GFSDK_Aftermath_GpuCrashDump.h>
+#endif
 
 VkBool32 vulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT          messageSeverity,
 							 VkDebugUtilsMessageTypeFlagsEXT                  messageTypes,
@@ -181,7 +183,9 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 	vkb::DeviceBuilder builder(physicalDevice);
 	auto buildResult = builder
 		.custom_queue_setup(queues)
+#if defined(VKV_NV_AFTERMATH)
 		.add_pNext(&diagnosticsConfig)
+#endif
 		.set_allocation_callbacks(vk::allocationCallbacks.get())
 		.build();
 	if (!buildResult)

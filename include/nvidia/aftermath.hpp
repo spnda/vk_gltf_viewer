@@ -1,4 +1,5 @@
 #pragma once
+#if defined(VKV_NV_AFTERMATH)
 
 #include <mutex>
 #include <unordered_map>
@@ -36,3 +37,5 @@ struct AftermathCrashTracker {
 	// We therefore need to wait before destroying the logical device.
 	void waitToFinish();
 };
+
+#endif // defined(VKV_NV_AFTERMATH)

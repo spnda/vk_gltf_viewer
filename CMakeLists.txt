@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.27)
 project(vk_gltf_viewer)
 
+option(ENABLE_NV_AFTERMATH "Enables NV Aftermath functionality" OFF)
+
 set(SHADER_INCLUDE_DIRS "") # So that the submodule script can update the variable
 
 include(cmake/add_source_directory.cmake)
@@ -11,7 +13,8 @@ target_compile_features(vk_gltf_viewer PUBLIC cxx_std_23)
 target_link_libraries(vk_gltf_viewer PRIVATE fastgltf wuffs dds_image ktx_read::ktx_read meshoptimizer)
 target_link_libraries(vk_gltf_viewer PRIVATE glfw::glfw imgui::imgui enkiTS::enkiTS Tracy::Client fmt::fmt glm::glm)
 target_link_libraries(vk_gltf_viewer PRIVATE Vulkan::Headers Vulkan::Utils volk::volk_headers vk-bootstrap::vk-bootstrap Vulkan::MemoryAllocator)
-if (TARGET nv::aftermath)
+if (ENABLE_NV_AFTERMATH AND TARGET nv::aftermath)
+    message(STATUS "vk_gltf_viewer: Enabling use of NV Aftermath")
     target_link_libraries(vk_gltf_viewer PRIVATE nv::aftermath)
     target_compile_definitions(vk_gltf_viewer PRIVATE "VKV_NV_AFTERMATH=1")
     add_source_directory(TARGET vk_gltf_viewer FOLDER "src/nvidia")
@@ -154,6 +157,6 @@ target_include_directories(vk_gltf_viewer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/in
 
 # Copy all required runtime DLLs into the build directory
 add_custom_command(TARGET vk_gltf_viewer POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_RUNTIME_DLLS:vk_gltf_viewer> $<TARGET_FILE_DIR:vk_gltf_viewer>
+  COMMAND ${CMAKE_COMMAND} -E copy -t $<TARGET_FILE_DIR:vk_gltf_viewer> $<TARGET_RUNTIME_DLLS:vk_gltf_viewer>
   COMMAND_EXPAND_LISTS
 )
