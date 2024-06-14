@@ -6,7 +6,8 @@
 #extension GL_EXT_scalar_block_layout : require
 #endif
 
-#include "../common.glsl.h"
+#include "common.glsl.h"
+#include "resource_table.glsl.h"
 GLSL_NAMESPACE_BEGIN
 
 #if !defined(__cplusplus)
@@ -27,7 +28,7 @@ struct UiPushConstants {
 	vec2 scale;
 	vec2 translate;
 	BUFFER_REF(Vertices) vertices MEMBER_INIT(0);
-	uint imageIndex;
+	ResourceTableHandle imageIndex MEMBER_INIT(invalidHandle);
 };
 
 struct FragmentInput {

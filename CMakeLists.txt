@@ -25,14 +25,17 @@ if(TARGET nv::dlss)
     target_compile_definitions(vk_gltf_viewer PRIVATE "VKV_NV_DLSS=1")
 endif()
 
-add_source_directory(TARGET vk_gltf_viewer FOLDER "src")
+add_source_directory(TARGET vk_gltf_viewer FOLDER "src/imgui")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/nvidia")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vk_gltf_viewer")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vulkan")
+add_source_directory(TARGET vk_gltf_viewer FOLDER "src")
 
+add_source_directory(TARGET vk_gltf_viewer FOLDER "include/imgui")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/nvidia")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vk_gltf_viewer")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vulkan")
+add_source_directory(TARGET vk_gltf_viewer FOLDER "include")
 target_include_directories(vk_gltf_viewer PRIVATE "include")
 
 # Set compile flags. We target AVX2 as a minimum

@@ -133,6 +133,11 @@ if (EXISTS "${VKV_DEPS_DIR}/imgui")
     add_source_directory(TARGET imgui FOLDER "${IMGUI_DIRECTORY}")
     add_source_directory(TARGET imgui FOLDER "${IMGUI_DIRECTORY}/misc/cpp/")
 
+    # This is that we can keep a custom ImGui config header in our local repository, that has accesses
+    # to other headers in our project's include directories.
+    target_include_directories(imgui SYSTEM PUBLIC "${PROJECT_SOURCE_DIR}/include")
+    target_compile_definitions(imgui PUBLIC IMGUI_USER_CONFIG=\"imgui/config.hpp\")
+
     target_include_directories(imgui SYSTEM PUBLIC "${IMGUI_DIRECTORY}")
     target_include_directories(imgui SYSTEM PUBLIC "${IMGUI_DIRECTORY}/backends")
     target_include_directories(imgui SYSTEM PUBLIC "${IMGUI_DIRECTORY}/misc/cpp")
@@ -142,7 +147,7 @@ if (EXISTS "${VKV_DEPS_DIR}/imgui")
     # We only need the GLFW implementation
     target_sources(imgui PUBLIC "${IMGUI_DIRECTORY}/backends/imgui_impl_glfw.h" "${IMGUI_DIRECTORY}/backends/imgui_impl_glfw.cpp")
 
-    target_link_libraries(imgui PUBLIC glfw::glfw)
+    target_link_libraries(imgui PUBLIC glfw::glfw glm::glm)
 endif()
 
 if (EXISTS "${VKV_DEPS_DIR}/ktx-software")

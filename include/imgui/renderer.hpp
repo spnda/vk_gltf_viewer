@@ -2,14 +2,15 @@
 
 #include <vector>
 
+#include <ui/ui.glsl.h>
+#include <resource_table.glsl.h>
+
 #include <glm/glm.hpp>
 #include <imgui.h>
 #include <TaskScheduler.h>
 
 #include <vulkan/vk.hpp>
 #include <vulkan/vma.hpp>
-
-#include <ui/ui.glsl.h>
 
 #include <vk_gltf_viewer/device.hpp>
 #include <vk_gltf_viewer/image.hpp>
@@ -28,7 +29,6 @@ namespace imgui {
 
 		std::reference_wrapper<Device> device;
 
-		glsl::UiPushConstants pushConstants = {};
 		std::vector<PerFrameBuffers> buffers;
 
 		VkBuffer fontAtlasStagingBuffer = VK_NULL_HANDLE;
@@ -38,24 +38,11 @@ namespace imgui {
 		VkImageView fontAtlasView = VK_NULL_HANDLE;
 		VkSampler fontAtlasSampler = VK_NULL_HANDLE;
 		glm::u32vec2 fontAtlasExtent = {};
+		glsl::ResourceTableHandle fontAtlasHandle = glsl::invalidHandle;
 
-		VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
-		VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-		VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 		VkPipeline pipeline = VK_NULL_HANDLE;
 		VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 		VkPipelineCache pipelineCache = VK_NULL_HANDLE;
-		VkShaderModule fragmentShader = VK_NULL_HANDLE;
-		VkShaderModule vertexShader = VK_NULL_HANDLE;
-
-		/**
-		 * The maximum amount of unique bindless images used with ImGui::Image calls, per frame.
-		 */
-		static constexpr auto maxBindlessImages = 256;
-
-		/** Maps each ImTextureID (or VkImageView) to a descriptor binding index */
-		std::unordered_map<ImTextureID, std::uint32_t> imageDescriptorIndices;
-		void addTextureToDescriptorSet(ImTextureID textureId);
 
 		void createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize);
 

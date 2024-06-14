@@ -10,8 +10,6 @@
 #include <vulkan/pipeline_builder.hpp>
 #include <GLFW/glfw3.h> // After Vulkan includes so that it detects it
 
-#include <imgui.h>
-
 #include <glm/glm.hpp>
 
 #include <nvidia/dlss.hpp>
@@ -462,6 +460,7 @@ void Application::initHiZReductionPass() {
 	if (hizReductionPass.depthPyramid) {
 		device->timelineDeletionQueue->push([this, handle = hizReductionPass.depthPyramidHandle, image = std::move(hizReductionPass.depthPyramid), views = std::move(hizReductionPass.depthPyramidViews)]() mutable {
 			for (auto& view : views) {
+				device->resourceTable->removeSampledImageHandle(view.sampledHandle);
 				device->resourceTable->removeStorageImageHandle(view.storageHandle);
 				view.view.reset();
 			}

@@ -16,7 +16,7 @@
 #include <vk_gltf_viewer/swapchain.hpp>
 #include <vk_gltf_viewer/deletion_queue.hpp>
 #include <vk_gltf_viewer/image.hpp>
-#include <vk_gltf_viewer/imgui_renderer.hpp>
+#include <imgui/renderer.hpp>
 #include <vk_gltf_viewer/assets.hpp>
 #include <vk_gltf_viewer/camera.hpp>
 
