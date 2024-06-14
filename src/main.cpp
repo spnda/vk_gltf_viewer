@@ -15,16 +15,8 @@
 
 #if defined(_MSC_VER)
 int wmain(int argc, wchar_t* argv[]) {
-	if (argc < 2) {
-		fmt::print("No glTF file specified\n");
-		return -1;
-	}
 #else
 int main(int argc, char* argv[]) {
-	if (argc < 2) {
-		fmt::print("No glTF file specified\n");
-		return -1;
-	}
 #endif
 
 	std::vector<std::filesystem::path> gltfs(argc - 1);

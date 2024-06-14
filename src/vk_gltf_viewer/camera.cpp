@@ -105,7 +105,7 @@ Camera::Camera(const Device& _device, std::size_t frameOverlap) : device(_device
 
 Camera::~Camera() noexcept = default;
 
-void Camera::updateCamera(std::size_t currentFrame, GLFWwindow* window, double deltaTime, VkExtent2D framebufferExtent) {
+void Camera::updateCamera(std::size_t currentFrame, GLFWwindow* window, double deltaTime, glm::u32vec2 framebufferExtent) {
 	ScopedMap<glsl::Camera> mappedCamera(*cameraBuffers[currentFrame]);
 
 	// Update the acceleration vector based on keyboard input
@@ -173,7 +173,7 @@ void Camera::updateCamera(std::size_t currentFrame, GLFWwindow* window, double d
 	static constexpr auto zNear = 0.1f;
 	static constexpr auto zFar = 1000.0f;
 	static constexpr auto fov = glm::radians(75.0f);
-	const auto aspectRatio = static_cast<float>(framebufferExtent.width) / static_cast<float>(framebufferExtent.height);
+	const auto aspectRatio = static_cast<float>(framebufferExtent.x) / static_cast<float>(framebufferExtent.y);
 	auto projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
 	projectionMatrix[1][1] *= -1;
 

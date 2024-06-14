@@ -7,6 +7,8 @@
 #include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/buffer.hpp>
 
+#include <nvidia/dlss.hpp>
+
 #if defined(VKV_NV_AFTERMATH)
 #include <GFSDK_Aftermath.h>
 #include <GFSDK_Aftermath_GpuCrashDump.h>
@@ -59,6 +61,16 @@ Instance::Instance() {
 		const auto* glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 		builder.enable_extensions(glfwExtensionCount, glfwExtensions);
 	}
+
+#if defined(VKV_NV_DLSS)
+	// Enable NGX/DLSS extensions
+	{
+		dlss::initFeatureInfo();
+		auto extensions = dlss::getRequiredInstanceExtensions();
+		for (auto& ext : extensions)
+			builder.enable_extension(ext.extensionName);
+	}
+#endif
 
 	builder.enable_extension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
@@ -168,6 +180,15 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 		queues.emplace_back(i, std::move(priorities));
 	}
 
+#if defined(VKV_NV_DLSS)
+	// Enable NGX/DLSS extensions
+	{
+		auto extensions = dlss::getRequiredDeviceExtensions(instance, physicalDevice);
+		for (auto& ext : extensions)
+			physicalDevice.enable_extension_if_present(ext.extensionName);
+	}
+#endif
+
 #if defined(VKV_NV_AFTERMATH)
 	VkDeviceDiagnosticsConfigCreateInfoNV diagnosticsConfig {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV,
@@ -201,6 +222,10 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 		.pNext = &vulkan12Properties,
 	};
 	vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+
+#if defined(VKV_NV_DLSS)
+	dlss::initSdk(instance, *this);
+#endif
 
 	resourceTable = std::make_unique<ResourceTable>(*this);
 
@@ -270,6 +295,9 @@ Device::~Device() noexcept {
 	aftermathCrashTracker->waitToFinish();
 #endif
 
+#if defined(VKV_NV_DLSS)
+	dlss::shutdown(device);
+#endif
 	for (auto& pool : uploadCommandPools)
 		pool.destroy();
 	globalFencePool.destroy();

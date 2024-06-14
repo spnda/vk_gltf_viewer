@@ -14,8 +14,10 @@ layout(triangles, max_vertices = maxVertices, max_primitives = maxPrimitives) ou
 // since there is no perdrawEXT.
 layout(location = 0) perprimitiveEXT out flat uint drawIndex[];
 layout(location = 1) perprimitiveEXT out flat uint materialIndex[];
-layout(location = 2) out vec4 color[];
-layout(location = 3) out vec2 uv[];
+layout(location = 2) out vec4 position[];
+layout(location = 3) out vec4 prevPosition[];
+layout(location = 4) out vec4 color[];
+layout(location = 5) out vec2 uv[];
 
 layout(push_constant, scalar) readonly uniform PushConstants {
 	VisbufferPushConstants pushConstants;
@@ -37,6 +39,7 @@ void main() {
 
 	mat4 transformMatrix = pushConstants.transformBuffer.transforms[draw.transformIndex];
 	mat4 mvp = pushConstants.cameraBuffer.camera.viewProjection * transformMatrix;
+	mat4 prevMvp = pushConstants.cameraBuffer.camera.prevViewProjection * transformMatrix; // TODO: We need the transforms from the last frame
 
 	// The max_vertices does not match the local workgroup size.
 	// Therefore, we'll have this loop that will run over all possible vertices.
@@ -52,8 +55,10 @@ void main() {
 		const uint vertexIndex = primitive.vertexIndexBuffer.vertexIndices[meshlet.vertexOffset + vidx];
 		restrict const Vertex vertex = primitive.vertexBuffer.vertices[vertexIndex];
 
-		vec4 pos = mvp * vec4(vertex.position, 1.0f);
+		vec4 pos = mvp * vec4(vertex.position, 1.f);
 		gl_MeshVerticesEXT[vidx].gl_Position = pos;
+		position[vidx] = pos;
+		prevPosition[vidx] = prevMvp * vec4(vertex.position, 1.f);
 		color[vidx] = unpackVertexColor(vertex.color);
 		uv[vidx] = vec2(vertex.uv);
 	}

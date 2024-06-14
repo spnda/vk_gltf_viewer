@@ -13,10 +13,13 @@
 
 layout(location = 0) in flat uint drawIndex;
 layout(location = 1) in flat uint materialIndex;
-layout(location = 2) in vec4 color;
-layout(location = 3) in vec2 uv;
+layout(location = 2) in vec4 position;
+layout(location = 3) in vec4 prevPosition;
+layout(location = 4) in vec4 color;
+layout(location = 5) in vec2 uv;
 
 layout(location = 0) out uint visbufferId;
+layout(location = 1) out vec2 motionVectors;
 
 layout(push_constant, scalar) readonly uniform PushConstants {
 	VisbufferPushConstants pushConstants;
@@ -31,4 +34,6 @@ void main() {
 	//    discard;
 
 	visbufferId = packVisBuffer(drawIndex, uint(gl_PrimitiveID));
+
+	motionVectors = ((prevPosition.xy / prevPosition.w) * 0.5f - 0.5f) - ((position.xy / position.w) * 0.5f - 0.5f);
 }

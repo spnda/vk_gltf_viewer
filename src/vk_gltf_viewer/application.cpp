@@ -4,6 +4,8 @@
 
 #include <tracy/Tracy.hpp>
 
+#include <fmt/xchar.h>
+
 #include <vulkan/vk.hpp>
 #include <vulkan/pipeline_builder.hpp>
 #include <GLFW/glfw3.h> // After Vulkan includes so that it detects it
@@ -11,8 +13,9 @@
 #include <imgui.h>
 
 #include <glm/glm.hpp>
-#include <glm/gtc/type_ptr.hpp>
 
+#include <nvidia/dlss.hpp>
+#include <nvsdk_ngx_helpers_vk.h>
 #include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/application.hpp>
 #include <vk_gltf_viewer/assets.hpp>
@@ -36,9 +39,8 @@ void glfwResizeCallback(GLFWwindow* window, int width, int height) {
 		decltype(auto) app = *static_cast<Application*>(glfwGetWindowUserPointer(window));
 		app.swapchain = Swapchain::recreate(std::move(app.swapchain));
 
-		app.initVisbufferPass();
-		app.initVisbufferResolvePass();
-		app.initHiZReductionPass();
+		app.updateRenderResolution();
+
 		app.swapchainNeedsRebuild = false;
 		app.firstFrame = true;
 	}
@@ -101,6 +103,20 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 	// Create the swapchain
 	swapchain = std::make_unique<Swapchain>(*device, surface);
 	deletionQueue.push([this]() { swapchain.reset(); });
+
+	renderResolution = toVector(swapchain->swapchain.extent);
+
+	availableScalingModes.emplace_back(ResolutionScalingModes::None, "None\0");
+
+#if defined(VKV_NV_DLSS)
+	if (dlss::isSupported()) {
+		availableScalingModes.emplace_back(ResolutionScalingModes::DLSS, "DLSS\0");
+
+		dlssQuality = NVSDK_NGX_PerfQuality_Value_DLAA; // TODO: Change to 'Auto' mode?
+		dlssHandle = dlss::initFeature(*device, renderResolution, toVector(swapchain->swapchain.extent));
+		deletionQueue.push([this]() { dlss::releaseFeature(dlssHandle); });
+	}
+#endif
 
 	// Initialize the ImGui renderer
 	imguiRenderer = std::make_unique<imgui::Renderer>(*device, window, swapchain->swapchain.image_format);
@@ -181,8 +197,8 @@ void Application::initVisbufferPass() {
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = VK_FORMAT_R32_UINT,
 		.extent = {
-			.width = swapchain->swapchain.extent.width,
-			.height = swapchain->swapchain.extent.height,
+			.width = renderResolution.x,
+			.height = renderResolution.y,
 			.depth = 1,
 		},
 		.mipLevels = 1,
@@ -211,8 +227,8 @@ void Application::initVisbufferPass() {
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = VK_FORMAT_D32_SFLOAT,
 		.extent = {
-			.width = swapchain->swapchain.extent.width,
-			.height = swapchain->swapchain.extent.height,
+			.width = renderResolution.x,
+			.height = renderResolution.y,
 			.depth = 1,
 		},
 		.mipLevels = 1,
@@ -227,6 +243,33 @@ void Application::initVisbufferPass() {
 	deletionQueue.push([this]() { visbufferPass.depthImage.reset(); });
 	vk::setDebugUtilsName(*device, visbufferPass.depthImage->getHandle(), "Depth image");
 	vk::setDebugUtilsName(*device, visbufferPass.depthImage->getDefaultView(), "Depth image view");
+
+	if (visbufferPass.mvImage)
+		device->timelineDeletionQueue->push([image = std::move(visbufferPass.mvImage)]() mutable {
+			image.reset();
+		});
+
+	const VkImageCreateInfo mvImageInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_R16G16_SFLOAT,
+		.extent = {
+			.width = renderResolution.x,
+			.height = renderResolution.y,
+			.depth = 1,
+		},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	visbufferPass.mvImage = std::make_unique<ScopedImage>(*device, &mvImageInfo, &allocationInfo);
+	deletionQueue.push([this]() { visbufferPass.mvImage.reset(); });
+	vk::setDebugUtilsName(*device, visbufferPass.mvImage->getHandle(), "Motion vectors");
+	vk::setDebugUtilsName(*device, visbufferPass.mvImage->getDefaultView(), "Motion vectors default view");
 
 	if (visbufferPass.pipeline == VK_NULL_HANDLE) {
 		const VkPushConstantRange pushConstantRange = {
@@ -257,26 +300,37 @@ void Application::initVisbufferPass() {
 		VkShaderModule taskModule;
 		loadShader(*device, visbuffer_task_glsl, &taskModule);
 
-		const auto colorAttachmentFormat = VK_FORMAT_R32_UINT;
+		constexpr std::array<VkFormat, 2> colorAttachmentFormats {{
+			VK_FORMAT_R32_UINT,
+			VK_FORMAT_R16G16_SFLOAT,
+		}};
 		const auto depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
 		const VkPipelineRenderingCreateInfo renderingCreateInfo{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-			.colorAttachmentCount = 1,
-			.pColorAttachmentFormats = &colorAttachmentFormat,
+			.colorAttachmentCount = static_cast<std::uint32_t>(colorAttachmentFormats.size()),
+			.pColorAttachmentFormats = colorAttachmentFormats.data(),
 			.depthAttachmentFormat = depthAttachmentFormat,
 		};
-		const VkPipelineColorBlendAttachmentState blendAttachment{
-			.blendEnable = VK_FALSE,
-			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-							  VK_COLOR_COMPONENT_A_BIT,
-		};
+
+		std::array<VkPipelineColorBlendAttachmentState, 2> blendAttachments {{
+			{
+				.blendEnable = VK_FALSE,
+				.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+								  VK_COLOR_COMPONENT_A_BIT,
+			},
+			{
+				.blendEnable = VK_FALSE,
+				.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+								  VK_COLOR_COMPONENT_A_BIT,
+			}
+		}};
 
 		auto builder = vk::GraphicsPipelineBuilder(*device, 1)
 			.setPipelineLayout(0, visbufferPass.pipelineLayout)
 			.pushPNext(0, &renderingCreateInfo)
 			.addDynamicState(0, VK_DYNAMIC_STATE_SCISSOR)
 			.addDynamicState(0, VK_DYNAMIC_STATE_VIEWPORT)
-			.setBlendAttachment(0, &blendAttachment)
+			.setBlendAttachments(0, std::span(blendAttachments.data(), blendAttachments.size()))
 			.setTopology(0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
 			.setDepthState(0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_GREATER_OR_EQUAL)
 			.setRasterState(0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE)
@@ -302,6 +356,41 @@ void Application::initVisbufferPass() {
 
 void Application::initVisbufferResolvePass() {
 	ZoneScoped;
+	if (visbufferResolvePass.colorImage) {
+		device->timelineDeletionQueue->push([this, handle = visbufferResolvePass.colorImageHandle, image = std::move(visbufferResolvePass.colorImage)]() mutable {
+			device->resourceTable->removeStorageImageHandle(handle);
+			image.reset();
+		});
+	}
+
+	const VmaAllocationCreateInfo allocationInfo {
+		.usage = VMA_MEMORY_USAGE_AUTO,
+	};
+	const VkImageCreateInfo colorImageInfo {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = swapchain->swapchain.image_format,
+		.extent = {
+			.width = renderResolution.x,
+			.height = renderResolution.y,
+			.depth = 1,
+		},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	visbufferResolvePass.colorImage = std::make_unique<ScopedImage>(*device, &colorImageInfo, &allocationInfo);
+	deletionQueue.push([this]() { visbufferResolvePass.colorImage.reset(); });
+	vk::setDebugUtilsName(*device, visbufferResolvePass.colorImage->getHandle(), "Color render image");
+	vk::setDebugUtilsName(*device, visbufferResolvePass.colorImage->getDefaultView(), "Color render image view");
+
+	visbufferResolvePass.colorImageHandle = device->resourceTable->allocateStorageImage(
+		visbufferResolvePass.colorImage->getDefaultView(), VK_IMAGE_LAYOUT_GENERAL);
+
 	if (visbufferResolvePass.pipeline == VK_NULL_HANDLE) {
 		const VkPushConstantRange pushConstantRange = {
 			.stageFlags = VK_SHADER_STAGE_ALL,
@@ -381,8 +470,8 @@ void Application::initHiZReductionPass() {
 		});
 	}
 
-	auto extent = swapchain->swapchain.extent;
-	auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(fastgltf::max(extent.width, extent.height))));
+	auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(
+		glm::max(renderResolution.x, renderResolution.y))));
 
 	const VmaAllocationCreateInfo allocationInfo {
 		.usage = VMA_MEMORY_USAGE_AUTO,
@@ -392,8 +481,8 @@ void Application::initHiZReductionPass() {
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = VK_FORMAT_R32_SFLOAT,
 		.extent = {
-			.width = extent.width >> 1,
-			.height = extent.height >> 1,
+			.width = renderResolution.x >> 1,
+			.height = renderResolution.y >> 1,
 			.depth = 1,
 		},
 		.mipLevels = mipLevels,
@@ -487,6 +576,32 @@ void Application::initHiZReductionPass() {
 	}
 }
 
+void Application::updateRenderResolution() {
+	ZoneScoped;
+	auto swapchainExtent = toVector(swapchain->swapchain.extent);
+
+#if defined(VKV_NV_DLSS)
+	if (scalingMode == ResolutionScalingModes::DLSS) {
+		auto settings = dlss::getRecommendedSettings(dlssQuality, swapchainExtent);
+		renderResolution = settings.optimalRenderSize;
+
+		device->timelineDeletionQueue->push([handle = dlssHandle]() {
+			dlss::releaseFeature(handle);
+		});
+		dlssHandle = dlss::initFeature(*device, renderResolution, swapchainExtent);
+	} else
+#endif
+	{
+		renderResolution = swapchainExtent;
+	}
+
+	initVisbufferPass();
+	initVisbufferResolvePass();
+	initHiZReductionPass();
+
+	firstFrame = true; // We need to re-transition the images since they've been recreated.
+}
+
 void Application::run() {
 	ZoneScoped;
 
@@ -494,6 +609,7 @@ void Application::run() {
 	std::size_t currentFrame = 0;
 	while (!glfwWindowShouldClose(window)) {
 		if (!swapchainNeedsRebuild) {
+			ZoneScopedN("glfwPollEvents");
 			glfwPollEvents();
 		} else {
 			// This will wait until we get an event, like the resize event which will recreate the swapchain.
@@ -535,7 +651,7 @@ void Application::run() {
 		// Check if anything can be deleted this frame.
 		device->timelineDeletionQueue->check();
 
-		camera->updateCamera(currentFrame, window, deltaTime, swapchain->swapchain.extent);
+		camera->updateCamera(currentFrame, window, deltaTime, renderResolution);
 		world->updateDrawBuffers(currentFrame, static_cast<float>(deltaTime));
 
 		auto& cmdPool = frameCommandPools[currentFrame];
@@ -654,19 +770,34 @@ void Application::run() {
 			};
 			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
 
-			const VkRenderingAttachmentInfo visbufferAttachment {
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = visbufferPass.image->getDefaultView(),
-				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.resolveMode = VK_RESOLVE_MODE_NONE,
-				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-				.clearValue = {
-					.color = {
-						.uint32 = { glsl::visbufferClearValue },
+			std::array<VkRenderingAttachmentInfo, 2> attachments {{
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = visbufferPass.image->getDefaultView(),
+					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.resolveMode = VK_RESOLVE_MODE_NONE,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {
+						.color = {
+							.uint32 = { glsl::visbufferClearValue },
+						}
 					}
-				}
-			};
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = visbufferPass.mvImage->getDefaultView(),
+					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.resolveMode = VK_RESOLVE_MODE_NONE,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {
+						.color = {
+							.float32 = { 0.f, 0.f, 0.f, 0.f },
+						}
+					}
+				},
+			}};
 			const VkRenderingAttachmentInfo depthAttachment {
 				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 				.imageView = visbufferPass.depthImage->getDefaultView(),
@@ -680,11 +811,14 @@ void Application::run() {
 				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
 				.renderArea = {
 					.offset = {},
-					.extent = swapchain->swapchain.extent,
+					.extent = {
+						.width = renderResolution.x,
+						.height = renderResolution.y,
+					},
 				},
 				.layerCount = 1,
-				.colorAttachmentCount = 1,
-				.pColorAttachments = &visbufferAttachment,
+				.colorAttachmentCount = static_cast<std::uint32_t>(attachments.size()),
+				.pColorAttachments = attachments.data(),
 				.pDepthAttachment = &depthAttachment,
 			};
 			vkCmdBeginRendering(cmd, &renderingInfo);
@@ -697,8 +831,8 @@ void Application::run() {
 			const VkViewport viewport = {
 				.x = 0.0F,
 				.y = 0.0F,
-				.width = static_cast<float>(swapchain->swapchain.extent.width),
-				.height = static_cast<float>(swapchain->swapchain.extent.height),
+				.width = static_cast<float>(renderResolution.x),
+				.height = static_cast<float>(renderResolution.y),
 				.minDepth = 0.0F,
 				.maxDepth = 1.0F,
 			};
@@ -794,14 +928,14 @@ void Application::run() {
 
 			glsl::VisbufferResolvePushConstants pushConstants {
 				.visbufferHandle = visbufferPass.imageHandle,
-				.outputImageHandle = swapchain->imageViewHandles[swapchainImageIndex],
+				.outputImageHandle = scalingMode != ResolutionScalingModes::None ? visbufferResolvePass.colorImageHandle : swapchain->imageViewHandles[swapchainImageIndex],
 			};
 			vkCmdPushConstants(cmd, visbufferResolvePass.pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof pushConstants, &pushConstants);
 
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, visbufferResolvePass.pipelineLayout,
 			                        0, 1, &device->resourceTable->getSet(), 0, nullptr);
 
-			vkCmdDispatch(cmd, swapchain->swapchain.extent.width / 32, swapchain->swapchain.extent.height, 1);
+			vkCmdDispatch(cmd, renderResolution.x / 32, renderResolution.y, 1);
 
 			vkCmdEndDebugUtilsLabelEXT(cmd);
 		}
@@ -819,9 +953,8 @@ void Application::run() {
 
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizReductionPass.reducePipeline);
 
-			auto pyramidSize = toVector(swapchain->swapchain.extent);
 			for (std::uint32_t i = 1; i < hizReductionPass.depthPyramidViews.size(); ++i) {
-				auto levelSize = pyramidSize >> i;
+				auto levelSize = renderResolution >> i;
 
 				struct HiZreducePushConstants {
 					glsl::ResourceTableHandle sourceImage;
@@ -860,6 +993,136 @@ void Application::run() {
 
 			vkCmdEndDebugUtilsLabelEXT(cmd);
 		}
+
+#if defined(VKV_NV_DLSS)
+		// DLSS pass
+		if (scalingMode == ResolutionScalingModes::DLSS) {
+			TracyVkZone(device->tracyCtx, cmd, "DLSS");
+			const VkDebugUtilsLabelEXT label {
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+				.pLabelName = "DLSS",
+			};
+			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
+
+			const VkMemoryBarrier2 memoryBarrier {
+				.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+				.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				.srcAccessMask = VK_ACCESS_2_NONE,
+				.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				.dstAccessMask = VK_ACCESS_2_NONE,
+			};
+			const VkDependencyInfo dep {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.memoryBarrierCount = 1,
+				.pMemoryBarriers = &memoryBarrier,
+			};
+			vkCmdPipelineBarrier2(cmd, &dep);
+
+			NVSDK_NGX_Parameter* params = nullptr;
+			NVSDK_NGX_VULKAN_AllocateParameters(&params);
+
+			NVSDK_NGX_Resource_VK colorInput {
+				.Resource = {
+					.ImageViewInfo = {
+						.ImageView = visbufferResolvePass.colorImage->getDefaultView(),
+						.Image = *visbufferResolvePass.colorImage,
+						.SubresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.levelCount = 1,
+							.layerCount = 1,
+						},
+						.Format = swapchain->swapchain.image_format,
+						.Width = renderResolution.x,
+						.Height = renderResolution.y,
+					}
+				},
+				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
+				.ReadWrite = true,
+			};
+			NVSDK_NGX_Resource_VK colorOutput {
+				.Resource = {
+					.ImageViewInfo = {
+						.ImageView = swapchain->imageViews[swapchainImageIndex],
+						.Image = swapchain->images[swapchainImageIndex],
+						.SubresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.levelCount = 1,
+							.layerCount = 1,
+						},
+						.Format = swapchain->swapchain.image_format,
+						.Width = swapchain->swapchain.extent.width,
+						.Height = swapchain->swapchain.extent.height,
+					}
+				},
+				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
+				.ReadWrite = true,
+			};
+			NVSDK_NGX_Resource_VK depthAttachment {
+				.Resource = {
+					.ImageViewInfo = {
+						.ImageView = visbufferPass.depthImage->getDefaultView(),
+						.Image = *visbufferPass.depthImage,
+						.SubresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+							.levelCount = 1,
+							.layerCount = 1,
+						},
+						.Format = VK_FORMAT_D32_SFLOAT,
+						.Width = renderResolution.x,
+						.Height = renderResolution.y,
+					}
+				},
+				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
+				.ReadWrite = false,
+			};
+			NVSDK_NGX_Resource_VK motionVectors {
+				.Resource = {
+					.ImageViewInfo = {
+						.ImageView = visbufferPass.mvImage->getDefaultView(),
+						.Image = *visbufferPass.mvImage,
+						.SubresourceRange = {
+							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.levelCount = 1,
+							.layerCount = 1,
+						},
+						.Format = VK_FORMAT_R16G16_SFLOAT,
+						.Width = renderResolution.x,
+						.Height = renderResolution.y,
+					}
+				},
+				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
+				.ReadWrite = true,
+			};
+
+			NVSDK_NGX_VK_DLSS_Eval_Params dlssEval {
+				.Feature = {
+					.pInColor = &colorInput,
+					.pInOutput = &colorOutput,
+					.InSharpness = 0.35f, // Some random value that works?
+				},
+				.pInDepth = &depthAttachment,
+				.pInMotionVectors = &motionVectors,
+				.InRenderSubrectDimensions = {
+					.Width = renderResolution.x,
+					.Height = renderResolution.y,
+				},
+				.InMVScaleX = 1.f,
+				.InMVScaleY = 1.f,
+				.InPreExposure = 1.f,
+				.InExposureScale = 1.f,
+				.InFrameTimeDeltaInMsec = static_cast<float>(deltaTime),
+			};
+
+			auto res = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, dlssHandle, params, &dlssEval);
+			if (NVSDK_NGX_FAILED(res)) {
+				fmt::print("Failed to NVSDK_NGX_VULKAN_EvaluateFeature for DLSS, code = {:x}, info: {}", std::to_underlying(res), res);
+			}
+
+			NVSDK_NGX_VULKAN_DestroyParameters(params);
+
+			vkCmdEndDebugUtilsLabelEXT(cmd);
+		}
+#endif
 
 		// Image barrier for swapchain image from resolve pass -> UI draw pass
 		{
@@ -912,7 +1175,7 @@ void Application::run() {
 			};
 			vkCmdPipelineBarrier2(cmd, &dependency);
 
-			auto extent = glm::u32vec2(swapchain->swapchain.extent.width, swapchain->swapchain.extent.height);
+			auto extent = glm::u32vec2(renderResolution.x, renderResolution.y);
 			imguiRenderer->draw(cmd, swapchain->imageViews[swapchainImageIndex], extent, currentFrame);
 
 			vkCmdEndDebugUtilsLabelEXT(cmd);
@@ -1011,23 +1274,76 @@ void Application::run() {
 void Application::renderUi() {
 	ZoneScoped;
 	if (ImGui::Begin("vk_gltf_viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-		ImGui::SeparatorText("Performance");
+		if (ImGui::BeginTabBar("#tabbar")) {
+			if (ImGui::BeginTabItem("General")) {
+				ImGui::SeparatorText("Performance");
 
-		ImGui::Text("Frametime: %.2f ms", deltaTime * 1000.);
-		ImGui::Text("FPS: %.2f", 1. / deltaTime);
-		ImGui::Text("AFPS: %.2f rad/s", 2. * std::numbers::pi_v<double> / deltaTime); // Angular FPS
+				ImGui::Text("Frametime: %.2f ms", deltaTime * 1000.);
+				ImGui::Text("FPS: %.2f", 1. / deltaTime);
+				ImGui::Text("AFPS: %.2f rad/s", 2. * std::numbers::pi_v<double> / deltaTime); // Angular FPS
 
-		ImGui::SeparatorText("Camera");
+				ImGui::EndTabItem();
+			}
 
-		auto pos = camera->getPosition();
-		ImGui::Text("Position: <%.2f, %.2f, %.2f>", pos.x, pos.y, pos.z);
-		ImGui::Checkbox("Freeze Camera frustum", &camera->freezeCameraFrustum);
-		ImGui::Checkbox("Freeze Occlusion matrix", &camera->freezeCullingMatrix);
-		ImGui::DragFloat("Camera speed multiplier", &camera->speedMultiplier);
+			if (ImGui::BeginTabItem("Graphics")) {
+				ImGui::SeparatorText("Resolution scaling");
 
-		ImGui::SeparatorText("Debug");
+				auto scalingModeName = std::find_if(availableScalingModes.begin(), availableScalingModes.end(), [&](auto& mode) {
+					return mode.first == scalingMode;
+				})->second;
+				if (ImGui::BeginCombo("Resolution scaling", scalingModeName.data())) {
+					for (const auto& [mode, name] : availableScalingModes) {
+						bool isSelected = mode == scalingMode;
+						if (ImGui::Selectable(name.data(), isSelected)) {
+							scalingMode = mode;
+							updateRenderResolution();
+						}
+						if (isSelected)
+							ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
 
-		ImGui::Checkbox("Freeze animations", &world->freezeAnimations);
+#if defined(VKV_NV_DLSS)
+				if (scalingMode == ResolutionScalingModes::DLSS) {
+					auto dlssQualityName = std::find_if(dlss::modes.begin(), dlss::modes.end(), [&](auto& mode) {
+						return mode.first == dlssQuality;
+					})->second;
+					if (ImGui::BeginCombo("DLSS Mode", dlssQualityName.data())) {
+						for (const auto& [quality, name]: dlss::modes) {
+							bool isSelected = quality == dlssQuality;
+							if (ImGui::Selectable(name.data(), isSelected)) {
+								dlssQuality = quality;
+								updateRenderResolution();
+							}
+							if (isSelected)
+								ImGui::SetItemDefaultFocus();
+						}
+
+						ImGui::EndCombo();
+					}
+				}
+#endif
+
+				ImGui::EndTabItem();
+			}
+
+			if (ImGui::BeginTabItem("Debug")) {
+				ImGui::SeparatorText("Camera");
+				auto pos = camera->getPosition();
+				ImGui::Text("Position: <%.2f, %.2f, %.2f>", pos.x, pos.y, pos.z);
+				ImGui::DragFloat("Camera speed multiplier", &camera->speedMultiplier);
+
+				ImGui::SeparatorText("Debug");
+				ImGui::Checkbox("Freeze Camera frustum", &camera->freezeCameraFrustum);
+				ImGui::Checkbox("Freeze Occlusion matrix", &camera->freezeCullingMatrix);
+				ImGui::Checkbox("Freeze animations", &world->freezeAnimations);
+
+				ImGui::EndTabItem();
+			}
+
+			ImGui::EndTabBar();
+		}
 	}
 	ImGui::End();
 

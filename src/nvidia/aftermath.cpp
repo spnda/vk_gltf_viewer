@@ -1,3 +1,4 @@
+#if defined(VKV_NV_AFTERMATH)
 #include <fmt/format.h>
 
 #include <fstream>
@@ -173,3 +174,4 @@ void AftermathCrashTracker::waitToFinish() {
 		AftermathCrashTracker::checkResult(GFSDK_Aftermath_GetCrashDumpStatus(&status));
 	}
 }
+#endif // defined(VKV_NV_AFTERMATH)

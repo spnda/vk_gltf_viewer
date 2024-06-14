@@ -145,29 +145,27 @@ void World::iterateNode(std::size_t nodeIndex, fg::math::fmat4x4 parent,
 
 			auto& sampler = animation.samplers[channel.samplerIndex];
 			switch (channel.path) {
-				case fg::AnimationPath::Translation: {
+				using enum fg::AnimationPath;
+				case Translation: {
 					trs.translation = sampler.sample<fg::AnimationPath::Translation>(animationTime);
 					break;
 				}
-				case fg::AnimationPath::Scale: {
+				case Scale: {
 					trs.scale = sampler.sample<fg::AnimationPath::Scale>(animationTime);
 					break;
 				}
-				case fastgltf::AnimationPath::Rotation: {
+				case Rotation: {
 					trs.rotation = sampler.sample<fg::AnimationPath::Rotation>(animationTime);
 					break;
 				}
-				case fastgltf::AnimationPath::Weights:
+				case Weights:
 					break;
 			}
 		}
 	}
 
 	// Compute the matrix with the animated values
-	auto matrix = parent
-		* translate(fg::math::fmat4x4(), trs.translation)
-		* fg::math::fmat4x4(asMatrix(trs.rotation))
-		* scale(fg::math::fmat4x4(), trs.scale);
+	auto matrix = scale(rotate(translate(parent, trs.translation), trs.rotation), trs.scale);
 
 	callback(node, matrix);
 

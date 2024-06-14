@@ -116,17 +116,18 @@ struct CompressedBufferDataAdapter : enki::ITaskSet {
 
 			int rc = -1;
 			switch (mc.mode) {
-				case fg::MeshoptCompressionMode::Attributes: {
+				using enum fg::MeshoptCompressionMode;
+				case Attributes: {
 					rc = meshopt_decodeVertexBuffer(result.data(), mc.count, mc.byteStride,
 													reinterpret_cast<const unsigned char*>(data.data()), mc.byteLength);
 					break;
 				}
-				case fg::MeshoptCompressionMode::Triangles: {
+				case Triangles: {
 					rc = meshopt_decodeIndexBuffer(result.data(), mc.count, mc.byteStride,
 											  reinterpret_cast<const unsigned char*>(data.data()), mc.byteLength);
 					break;
 				}
-				case fg::MeshoptCompressionMode::Indices: {
+				case Indices: {
 					rc = meshopt_decodeIndexSequence(result.data(), mc.count, mc.byteStride,
 												reinterpret_cast<const unsigned char*>(data.data()), mc.byteLength);
 					break;
@@ -137,17 +138,18 @@ struct CompressedBufferDataAdapter : enki::ITaskSet {
 			//	  return false;
 
 			switch (mc.filter) {
-				case fg::MeshoptCompressionFilter::None:
+				using enum fg::MeshoptCompressionFilter;
+				case None:
 					break;
-				case fg::MeshoptCompressionFilter::Octahedral: {
+				case Octahedral: {
 					meshopt_decodeFilterOct(result.data(), mc.count, mc.byteStride);
 					break;
 				}
-				case fg::MeshoptCompressionFilter::Quaternion: {
+				case Quaternion: {
 					meshopt_decodeFilterQuat(result.data(), mc.count, mc.byteStride);
 					break;
 				}
-				case fg::MeshoptCompressionFilter::Exponential: {
+				case Exponential: {
 					meshopt_decodeFilterExp(result.data(), mc.count, mc.byteStride);
 					break;
 				}

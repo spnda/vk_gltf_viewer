@@ -46,3 +46,6 @@
 [submodule "submodules/wuffs"]
 	path = submodules/wuffs
 	url = https://github.com/google/wuffs
+[submodule "submodules/dlss"]
+	path = submodules/dlss
+	url = http://github.com/NVIDIA/DLSS.git

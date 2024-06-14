@@ -184,9 +184,35 @@ if (EXISTS "${VKV_DEPS_DIR}/nv-aftermath")
             IMPORTED_IMPLIB "${VKV_DEPS_DIR}/nv-aftermath/lib/x64/GFSDK_Aftermath_Lib.x64.lib"
             IMPORTED_CONFIGURATIONS "RELEASE"
         )
-    else()
-        set_property(TARGET nv_aftermath
-            PROPERTY IMPORTED_LOCATION "${VKV_DEPS_DIR}/nv-aftermath/lib/x64/libGFSDK_Aftermath_Lib.x64.so")
+    elseif(UNIX AND NOT APPLE)
+        set_target_properties(nv_aftermath PROPERTIES
+            IMPORTED_LOCATION "${VKV_DEPS_DIR}/nv-aftermath/lib/x64/libGFSDK_Aftermath_Lib.x64.so"
+            IMPORTED_CONFIGURATIONS "RELEASE"
+        )
+    endif()
+endif()
+
+if(EXISTS "${VKV_DEPS_DIR}/dlss")
+    message(STATUS "vk_gltf_viewer: Found NVIDIA DLSS")
+
+    add_library(nv_dlss SHARED IMPORTED GLOBAL)
+    add_library(nv::dlss ALIAS nv_dlss)
+    target_include_directories(nv_dlss INTERFACE "${VKV_DEPS_DIR}/dlss/include")
+    if(WIN32)
+        set_target_properties(nv_dlss PROPERTIES
+            IMPORTED_LOCATION "${VKV_DEPS_DIR}/dlss/lib/Windows_x86_64/rel/nvngx_dlss.dll"
+            IMPORTED_LOCATION_DEBUG "${VKV_DEPS_DIR}/dlss/lib/Windows_x86_64/dev/nvngx_dlss.dll"
+            IMPORTED_IMPLIB "${VKV_DEPS_DIR}/dlss/lib/Windows_x86_64/x86_64/nvsdk_ngx_d.lib"
+            IMPORTED_IMPLIB_DEBUG "${VKV_DEPS_DIR}/dlss/lib/Windows_x86_64/x86_64/nvsdk_ngx_d_dbg.lib"
+            IMPORTED_CONFIGURATIONS "RELEASE;DEBUG"
+        )
+    elseif(UNIX AND NOT APPLE)
+        set_target_properties(nv_dlss PROPERTIES
+            IMPORTED_LOCATION "${VKV_DEPS_DIR}/dlss/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.3.7.10"
+            IMPORTED_LOCATION_DEBUG "${VKV_DEPS_DIR}/dlss/lib/Linux_x86_64/dev/libnvidia-ngx-dlss.so.3.7.10"
+            IMPORTED_IMPLIB "${VKV_DEPS_DIR}/dlss/lib/Linux_x86_64/libnvsdk_ngx.a"
+            IMPORTED_CONFIGURATIONS "RELEASE;DEBUG"
+        )
     endif()
 endif()
 

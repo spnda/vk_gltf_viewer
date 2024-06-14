@@ -10,6 +10,8 @@
 #include <vulkan/vk.hpp>
 #include <vulkan/command_pool.hpp>
 
+#include <nvsdk_ngx_defs.h>
+
 #include <vk_gltf_viewer/device.hpp>
 #include <vk_gltf_viewer/swapchain.hpp>
 #include <vk_gltf_viewer/deletion_queue.hpp>
@@ -43,6 +45,7 @@ struct VisibilityBufferPass {
 	std::unique_ptr<ScopedImage> image;
 	glsl::ResourceTableHandle imageHandle = glsl::invalidHandle;
 	std::unique_ptr<ScopedImage> depthImage;
+	std::unique_ptr<ScopedImage> mvImage;
 };
 
 /**
@@ -51,6 +54,10 @@ struct VisibilityBufferPass {
 struct VisibilityBufferResolvePass {
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 	VkPipeline pipeline = VK_NULL_HANDLE;
+
+	/* This color image is only used when we apply resolution scaling, otherwise we render directly to the swapchain. */
+	std::unique_ptr<ScopedImage> colorImage;
+	glsl::ResourceTableHandle colorImageHandle = glsl::invalidHandle;
 };
 
 /**
@@ -75,6 +82,13 @@ struct HiZReductionPass {
 	VkSampler reduceSampler = VK_NULL_HANDLE;
 };
 
+enum class ResolutionScalingModes {
+	None,
+#if defined(VKV_NV_DLSS)
+	DLSS,
+#endif
+};
+
 /** The main Application class */
 class Application {
 	friend void glfwResizeCallback(GLFWwindow* window, int width, int height);
@@ -91,6 +105,15 @@ class Application {
 	std::unique_ptr<Instance> instance;
 	std::unique_ptr<Device> device;
 	std::unique_ptr<Swapchain> swapchain;
+
+	glm::u32vec2 renderResolution;
+	ResolutionScalingModes scalingMode = ResolutionScalingModes::None;
+	std::vector<std::pair<ResolutionScalingModes, std::string_view>> availableScalingModes;
+
+#if defined(VKV_NV_DLSS)
+	NVSDK_NGX_Handle* dlssHandle = nullptr;
+	NVSDK_NGX_PerfQuality_Value dlssQuality = NVSDK_NGX_PerfQuality_Value_Balanced;
+#endif
 
 	bool swapchainNeedsRebuild = false;
 	bool firstFrame = true;
@@ -110,6 +133,8 @@ class Application {
 	void initVisbufferPass();
 	void initVisbufferResolvePass();
 	void initHiZReductionPass();
+
+	void updateRenderResolution();
 
 	void renderUi();
 

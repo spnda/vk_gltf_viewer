@@ -9,7 +9,7 @@ Swapchain::Swapchain(const Device& _device, VkSurfaceKHR _surface, VkSwapchainKH
 	auto result = builder
 		.set_old_swapchain(_swapchain)
 		.set_desired_min_image_count(Application::frameOverlap)
-		.add_image_usage_flags(VK_IMAGE_USAGE_STORAGE_BIT)
+		.add_image_usage_flags(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 		.set_desired_format(VkSurfaceFormatKHR {.format = VK_FORMAT_R8G8B8A8_UNORM, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
 		.build();
 	if (!result)

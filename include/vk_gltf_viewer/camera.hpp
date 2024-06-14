@@ -33,7 +33,7 @@ struct Camera {
 	~Camera() noexcept;
 
 	/** Updates the camera position and rotation using the last known window inputs */
-	void updateCamera(std::size_t currentFrame, GLFWwindow* window, double deltaTime, VkExtent2D framebufferExtent);
+	void updateCamera(std::size_t currentFrame, GLFWwindow* window, double deltaTime, glm::u32vec2 framebufferExtent);
 
 	[[nodiscard]] VkDeviceAddress getCameraDeviceAddress(std::size_t currentFrame) const noexcept {
 		return cameraBuffers[currentFrame]->getDeviceAddress();
