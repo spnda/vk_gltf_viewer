@@ -10,7 +10,7 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 
-#include <mesh_common.glsl.h>
+#include <mesh_common.h.glsl>
 
 /** The buffer handles corresponding to the buffers in each glsl::Primitive. */
 struct PrimitiveBuffers {

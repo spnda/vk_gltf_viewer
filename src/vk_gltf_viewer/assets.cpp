@@ -3,7 +3,7 @@
 
 #include <fmt/std.h>
 
-#include <mesh_common.glsl.h>
+#include <mesh_common.h.glsl>
 
 #include <vk_gltf_viewer/assets.hpp>
 

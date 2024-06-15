@@ -1,6 +1,7 @@
 #ifndef SRGB_GLSL_H
 #define SRGB_GLSL_H
-#include "common.glsl.h"
+
+#include "common.h.glsl"
 GLSL_NAMESPACE_BEGIN
 
 /** sRGB conversion functions shamelessly stolen from https://gamedev.stackexchange.com/a/194038/159451 */

@@ -2,8 +2,8 @@
 
 #include <vector>
 
-#include <ui/ui.glsl.h>
-#include <resource_table.glsl.h>
+#include <ui/ui.h.glsl>
+#include <resource_table.h.glsl>
 
 #include <glm/glm.hpp>
 #include <imgui.h>

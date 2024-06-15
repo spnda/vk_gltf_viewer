@@ -1,7 +1,7 @@
 #ifndef RESOURCE_TABLE_GLSL_H
 #define RESOURCE_TABLE_GLSL_H
 
-#include "common.glsl.h"
+#include "common.h.glsl"
 GLSL_NAMESPACE_BEGIN
 
 GLSL_CONSTANT uint sampledImageBinding = 0;

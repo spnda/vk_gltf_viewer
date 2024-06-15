@@ -6,9 +6,9 @@
 #extension GL_EXT_scalar_block_layout : require
 #endif
 
-#include "common.glsl.h"
-#include "mesh_common.glsl.h"
-#include "resource_table.glsl.h"
+#include "common.h.glsl"
+#include "mesh_common.h.glsl"
+#include "resource_table.h.glsl"
 
 GLSL_NAMESPACE_BEGIN
 

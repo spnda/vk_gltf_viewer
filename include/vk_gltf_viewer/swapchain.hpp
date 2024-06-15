@@ -7,7 +7,7 @@
 
 #include <vk_gltf_viewer/device.hpp>
 
-#include <resource_table.glsl.h>
+#include <resource_table.h.glsl>
 
 constexpr glm::u32vec2 toVector(VkExtent2D extent) noexcept {
 	return {extent.width, extent.height};

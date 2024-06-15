@@ -6,7 +6,7 @@
 
 #include <GLFW/glfw3.h>
 
-#include <mesh_common.glsl.h>
+#include <mesh_common.h.glsl>
 
 struct Camera {
 	std::reference_wrapper<const Device> device;

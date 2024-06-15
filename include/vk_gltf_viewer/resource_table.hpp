@@ -6,7 +6,7 @@
 
 #include <vulkan/vk.hpp>
 
-#include <resource_table.glsl.h>
+#include <resource_table.h.glsl>
 
 struct Device;
 

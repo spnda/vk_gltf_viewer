@@ -1,6 +1,7 @@
 #ifndef CULLING_GLSL_H
 #define CULLING_GLSL_H
-#include "common.glsl.h"
+
+#include "common.h.glsl"
 GLSL_NAMESPACE_BEGIN
 
 // Frustum culling using 6 planes on an AABB

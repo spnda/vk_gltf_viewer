@@ -71,6 +71,17 @@ list(APPEND SHADER_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/shaders")
 file(GLOB_RECURSE SHADER_FILES "shaders/*.glsl" "shaders/**/*.glsl")
 set(SHADER_C_NAMES "") # List holding all compiled shader names
 foreach(SHADER_FILE ${SHADER_FILES})
+    cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
+
+    # Rudimentary parsing to detect if this file is a header or not
+    string(FIND ${SHADER_FILENAME} "." FILE_EXTENSION_BEGIN)
+    string(FIND ${SHADER_FILENAME} "." FILE_EXTENSION_END REVERSE)
+    math(EXPR FILE_EXTENSION_LENGTH "${FILE_EXTENSION_END}-${FILE_EXTENSION_BEGIN}")
+    string(SUBSTRING ${SHADER_FILENAME} ${FILE_EXTENSION_BEGIN} ${FILE_EXTENSION_LENGTH} EXTENSION_TYPE)
+    if (${EXTENSION_TYPE} STREQUAL ".h")
+        continue()
+    endif()
+
     message(STATUS "vk_gltf_viewer: Found shader: ${SHADER_FILE}")
     string(SHA1 PATH_HASH ${SHADER_FILE})
     set(SHADER_TIMESTAMP_NAME "shaders/${PATH_HASH}.timestamp")
@@ -126,7 +137,6 @@ foreach(SHADER_FILE ${SHADER_FILES})
     list(REMOVE_DUPLICATES FILE_INCLUDES)
 
     # Add a custom command to compile the shader
-    cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
     set(COMPILED_SHADER_FILE "shaders/${PATH_HASH}.spirv")
     add_custom_command(
         OUTPUT ${SHADER_TIMESTAMP_NAME} ${COMPILED_SHADER_FILE}

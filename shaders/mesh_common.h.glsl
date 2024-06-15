@@ -11,7 +11,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #endif
 
-#include "common.glsl.h"
+#include "common.h.glsl"
 GLSL_NAMESPACE_BEGIN
 
 GLSL_CONSTANT uint shadowMapCount = 4;
