@@ -40,7 +40,7 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 
 		animations.emplace_back(Animation {
 			.channels = std::move(channels),
-			// The AnimationSampler object has an internal reference to the Asset, and therefore doesn't need remapping.
+			// The AnimationSampler object contains all data it needs, and therefore doesn't need remapping.
 			.samplers = std::move(animation.samplers),
 		});
 	}

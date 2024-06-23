@@ -34,16 +34,24 @@ template <> struct AnimationSamplerTraits<fastgltf::AnimationPath::Scale> { usin
 template <> struct AnimationSamplerTraits<fastgltf::AnimationPath::Rotation> { using OutputType = fastgltf::math::fquat; };
 
 struct AnimationSampler {
-	std::shared_ptr<fastgltf::Asset> asset;
-	fastgltf::AnimationSampler sampler;
-
 	std::vector<float> input;
 
-	explicit AnimationSampler(std::shared_ptr<fastgltf::Asset> _asset, const fastgltf::AnimationSampler& _sampler) : asset(std::move(_asset)), sampler(_sampler) {
+	fastgltf::AnimationInterpolation interpolation;
+	std::size_t componentCount;
+	std::size_t outputCount;
+	std::vector<float> values;
+
+	explicit AnimationSampler(const fastgltf::Asset& asset, const fastgltf::AnimationSampler& sampler) : interpolation(sampler.interpolation) {
 		ZoneScoped;
-		auto& inputAccessor = asset->accessors[sampler.inputAccessor];
+		auto& inputAccessor = asset.accessors[sampler.inputAccessor];
 		input.resize(inputAccessor.count);
-		fastgltf::copyFromAccessor<float>(*asset, inputAccessor, input.data());
+		fastgltf::copyFromAccessor<float>(asset, inputAccessor, input.data());
+
+		auto& outputAccessor = asset.accessors[sampler.outputAccessor];
+		outputCount = outputAccessor.count;
+		componentCount = fastgltf::getNumComponents(outputAccessor.type);
+		values.resize(outputAccessor.count * componentCount);
+		fastgltf::copyComponentsFromAccessor<float>(asset, outputAccessor, values.data());
 	}
 
 	template <fastgltf::AnimationPath path>
@@ -53,29 +61,28 @@ struct AnimationSampler {
 
 		time = std::fmod(time, input.back()); // Ugly hack to loop animations
 
-		auto& outputAccessor = asset->accessors[sampler.outputAccessor];
-
 		auto it = std::lower_bound(input.begin(), input.end(), time);
 		if (it == input.cbegin()) {
-			if (sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline)
-				return fastgltf::getAccessorElement<T>(*asset, outputAccessor, 1);
-			return fastgltf::getAccessorElement<T>(*asset, outputAccessor, 0);
+			if (interpolation == fastgltf::AnimationInterpolation::CubicSpline)
+				return T::fromPointer(&values[(1) * componentCount]);
+			return T::fromPointer(&values[0]);
 		}
 		if (it == input.cend()) {
-			if (sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline)
-				return fastgltf::getAccessorElement<T>(*asset, outputAccessor, outputAccessor.count - 2);
-			return fastgltf::getAccessorElement<T>(*asset, outputAccessor, outputAccessor.count - 1);
+			if (interpolation == fastgltf::AnimationInterpolation::CubicSpline)
+				return T::fromPointer(&values[(outputCount - 2) * componentCount]);
+			return T::fromPointer(&values[(outputCount - 1) * componentCount]);
 		}
 
 		auto i = std::distance(input.begin(), it);
 		auto t = (time - input[i - 1]) / (input[i] - input[i - 1]);
 
-		switch (sampler.interpolation) {
-			case fastgltf::AnimationInterpolation::Step:
-				return fastgltf::getAccessorElement<T>(*asset, outputAccessor, i - 1);
-			case fastgltf::AnimationInterpolation::Linear: {
-				auto vk = fastgltf::getAccessorElement<T>(*asset, outputAccessor, i - 1);
-				auto vk1 = fastgltf::getAccessorElement<T>(*asset, outputAccessor, i);
+		switch (interpolation) {
+			using enum fastgltf::AnimationInterpolation;
+			case Step:
+				return T::fromPointer(&values[(i - 1) * componentCount]);
+			case Linear: {
+				auto vk = T::fromPointer(&values[(i - 1) * componentCount]);
+				auto vk1 = T::fromPointer(&values[i * componentCount]);
 
 				if constexpr (path == fastgltf::AnimationPath::Rotation) {
 					return fastgltf::math::slerp(vk, vk1, t);
@@ -83,22 +90,22 @@ struct AnimationSampler {
 					return fastgltf::math::lerp(vk, vk1, t);
 				}
 			}
-			case fastgltf::AnimationInterpolation::CubicSpline: {
+			case CubicSpline: {
 				auto t2 = std::powf(t, 2);
 				auto t3 = std::powf(t, 3);
 				auto dt = input[i] - input[i - 1];
 
-				std::array<T, 4> values {{
-					fastgltf::getAccessorElement<T>(*asset, outputAccessor, 3 * (i - 1) + 1),
-					fastgltf::getAccessorElement<T>(*asset, outputAccessor, 3 * (i - 1) + 2),
-					fastgltf::getAccessorElement<T>(*asset, outputAccessor, 3 * (i + 0) + 1),
-					fastgltf::getAccessorElement<T>(*asset, outputAccessor, 3 * (i + 0) + 0),
+				std::array<T, 4> arr {{
+					T::fromPointer(&values[(3 * (i - 1) + 1) * componentCount]),
+					T::fromPointer(&values[(3 * (i - 1) + 2) * componentCount]),
+					T::fromPointer(&values[(3 * (i + 0) + 1) * componentCount]),
+					T::fromPointer(&values[(3 * (i + 0) + 0) * componentCount]),
 				}};
 
-				auto v = values[0] * (2 * t3 - 3 * t2 + 1)
-					   + values[1] * (t3 - 2 * t2 + t) * dt
-					   + values[2] * (-2 * t3 + 3 * t2)
-					   + values[3] * (t3 - t2) * dt;
+				auto v = arr[0] * (2 * t3 - 3 * t2 + 1)
+					   + arr[1] * (t3 - 2 * t2 + t) * dt
+					   + arr[2] * (-2 * t3 + 3 * t2)
+					   + arr[3] * (t3 - t2) * dt;
 
 				if constexpr (path == fastgltf::AnimationPath::Rotation) {
 					return normalize(v);

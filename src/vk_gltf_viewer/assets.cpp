@@ -48,7 +48,7 @@ void BufferLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, st
 			throw std::runtime_error(fmt::format("Failed to open buffer: {}", filePath));
 		}
 
-		fg::StaticVector<std::uint8_t> data(buffer.byteLength);
+		fg::StaticVector<std::byte> data(buffer.byteLength);
 		file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size_bytes()));
 		fg::sources::Array arraySource {
 			std::move(data),
@@ -285,7 +285,7 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 	auto* positionIt = gltfPrimitive.findAttribute("POSITION");
 	assert(positionIt != gltfPrimitive.attributes.cend());
 
-	auto& posAccessor = asset.accessors[positionIt->second];
+	auto& posAccessor = asset.accessors[positionIt->accessorIndex];
 
 	{
 		auto primitiveMin = getAccessorMinMax(posAccessor.min);
@@ -522,7 +522,7 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 
 		animation.samplers.reserve(gltfAnimation.samplers.size());
 		for (auto& sampler : gltfAnimation.samplers) {
-			animation.samplers.emplace_back(asset, sampler);
+			animation.samplers.emplace_back(*asset, sampler);
 		}
 	}
 
