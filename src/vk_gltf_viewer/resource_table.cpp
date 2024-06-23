@@ -26,7 +26,7 @@ ResourceTable::ResourceTable(Device& _device) : device(_device) {
 	vk::checkResult(vkCreateDescriptorPool(device.get(), &poolCreateInfo, vk::allocationCallbacks.get(), &pool),
 					"Failed to create descriptor pool");
 
-	// This needs to match what resource_table.glsl.h has.
+	// This needs to match what resource_table.h.glsl has.
 	const std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings {{
 		{
 			.binding = glsl::sampledImageBinding,

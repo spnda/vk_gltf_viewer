@@ -3,11 +3,11 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 
-#include "visbuffer.glsl.h"
+#include "visbuffer.h.glsl"
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
-#include "resource_table.glsl.h"
+#include "resource_table.h.glsl"
 
 layout(push_constant, scalar) uniform readonly PushConstants {
 	VisbufferResolvePushConstants pushConstants;

@@ -4,12 +4,12 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_mesh_shader : require // For gl_PrimitiveID
 
-#include "mesh_common.glsl.h"
-#include "srgb.glsl.h"
+#include "mesh_common.h.glsl"
+#include "srgb.h.glsl"
 
-#include "visbuffer.glsl.h"
+#include "visbuffer.h.glsl"
 
-#include "resource_table.glsl.h"
+#include "resource_table.h.glsl"
 
 layout(location = 0) in flat uint drawIndex;
 layout(location = 1) in flat uint materialIndex;

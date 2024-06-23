@@ -4,7 +4,7 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-#include "resource_table.glsl.h"
+#include "resource_table.h.glsl"
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
