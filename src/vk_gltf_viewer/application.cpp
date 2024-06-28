@@ -852,7 +852,7 @@ void Application::run() {
 					.transformBuffer = drawBuffer.transformBuffer->getDeviceAddress(),
 					.primitiveBuffer = world->primitiveBuffer->getDeviceAddress(),
 					.cameraBuffer = camera->getCameraDeviceAddress(currentFrame),
-					.materialBuffer = 0,
+					.materialBuffer = world->materialBuffer->getDeviceAddress(),
 					.depthPyramid = hizReductionPass.depthPyramidHandle,
 				};
 				vkCmdPushConstants(cmd, visbufferPass.pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof pushConstants,
@@ -925,16 +925,25 @@ void Application::run() {
 
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, visbufferResolvePass.pipeline);
 
-			glsl::VisbufferResolvePushConstants pushConstants {
-				.visbufferHandle = visbufferPass.imageHandle,
-				.outputImageHandle = scalingMode != ResolutionScalingModes::None ? visbufferResolvePass.colorImageHandle : swapchain->imageViewHandles[swapchainImageIndex],
-			};
-			vkCmdPushConstants(cmd, visbufferResolvePass.pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof pushConstants, &pushConstants);
+			auto& drawBuffer = world->drawBuffers[currentFrame];
+			if (drawBuffer.meshletDrawBuffer) {
+				glsl::VisbufferResolvePushConstants pushConstants{
+					.visbufferHandle = visbufferPass.imageHandle,
+					.outputImageHandle = scalingMode != ResolutionScalingModes::None
+					                     ? visbufferResolvePass.colorImageHandle
+					                     : swapchain->imageViewHandles[swapchainImageIndex],
+					.drawBuffer = drawBuffer.meshletDrawBuffer->getDeviceAddress(),
+					.primitiveBuffer = world->primitiveBuffer->getDeviceAddress(),
+					.materialBuffer = world->materialBuffer->getDeviceAddress(),
+				};
+				vkCmdPushConstants(cmd, visbufferResolvePass.pipelineLayout, VK_SHADER_STAGE_ALL, 0,
+				                   sizeof pushConstants, &pushConstants);
 
-			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, visbufferResolvePass.pipelineLayout,
-			                        0, 1, &device->resourceTable->getSet(), 0, nullptr);
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, visbufferResolvePass.pipelineLayout,
+				                        0, 1, &device->resourceTable->getSet(), 0, nullptr);
 
-			vkCmdDispatch(cmd, renderResolution.x / 32, renderResolution.y, 1);
+				vkCmdDispatch(cmd, renderResolution.x / 32, renderResolution.y, 1);
+			}
 
 			vkCmdEndDebugUtilsLabelEXT(cmd);
 		}

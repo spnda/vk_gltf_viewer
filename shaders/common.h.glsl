@@ -20,6 +20,7 @@ namespace glsl {
 #define GLSL_CONSTANT static constexpr
 #define GLSL_ARRAY(Type, Name, Count) std::array<Type, Count> Name
 #define BUFFER_REF(Name) VkDeviceAddress
+#define GLSL_BOOL alignas(4) bool
 #define MEMBER_INIT(Value) = Value
 
 #define PARAMETER_COPY(Name) Name
@@ -33,6 +34,7 @@ namespace glsl {
 #define GLSL_CONSTANT const
 #define GLSL_ARRAY(Type, Name, Count) Type Name [Count]
 #define BUFFER_REF(Name) Name
+#define GLSL_BOOL bool
 #define MEMBER_INIT(Value)
 
 #define PARAMETER_COPY(Name) in Name

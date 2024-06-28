@@ -139,6 +139,9 @@ struct World {
 	std::vector<PrimitiveBuffers> primitiveBuffers;
 	std::unique_ptr<ScopedBuffer> primitiveBuffer;
 
+	std::vector<glsl::Material> materials;
+	std::unique_ptr<ScopedBuffer> materialBuffer;
+
 	std::vector<Animation> animations;
 	float animationTime = 0.f;
 	bool freezeAnimations = false;
@@ -170,6 +173,7 @@ class AssetLoadTask : public ExceptionTaskSet {
 	std::vector<Mesh> meshes;
 	std::vector<std::pair<PrimitiveBuffers, glsl::Primitive>> primitives;
 	std::vector<Animation> animations;
+	std::vector<glsl::Material> materials;
 
 	std::shared_ptr<fastgltf::Asset> loadGltf();
 

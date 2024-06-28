@@ -25,12 +25,15 @@ layout(push_constant, scalar) readonly uniform PushConstants {
 
 taskPayloadSharedEXT TaskPayload taskPayload;
 
+shared vec3 clipVertices[maxVertices];
+
 void main() {
 	const uint drawId = taskPayload.baseID + taskPayload.deltaIDs[gl_WorkGroupID.x];
 	restrict const MeshletDraw draw = pushConstants.drawBuffer.draws[drawId];
 
 	restrict Primitive primitive = pushConstants.primitiveBuffer.primitives[draw.primitiveIndex];
 	restrict const Meshlet meshlet = primitive.meshletBuffer.meshlets[draw.meshletIndex];
+	restrict const Material material = pushConstants.materialBuffer.materials[primitive.materialIndex];
 
 	// This defines the array size of gl_MeshVerticesEXT
 	if (gl_LocalInvocationID.x == 0) {
@@ -59,10 +62,13 @@ void main() {
 		gl_MeshVerticesEXT[vidx].gl_Position = pos;
 		position[vidx] = pos;
 		prevPosition[vidx] = prevMvp * vec4(vertex.position, 1.f);
+		clipVertices[vidx] = pos.xyw;
+
 		color[vidx] = unpackVertexColor(vertex.color);
 		uv[vidx] = vec2(vertex.uv);
 	}
 
+	const float transformDet = determinant(transformMatrix);
 	const uint primitiveLoops = (meshlet.triangleCount + gl_WorkGroupSize.x - 1) / gl_WorkGroupSize.x;
 	[[unroll]] for (uint i = 0; i < primitiveLoops; ++i) {
 		uint pidx = gl_LocalInvocationIndex.x + i * gl_WorkGroupSize.x;
@@ -76,5 +82,23 @@ void main() {
 		gl_PrimitiveTriangleIndicesEXT[pidx] = indices;
 		drawIndex[pidx] = drawId;
 		materialIndex[pidx] = primitive.materialIndex;
+
+		if (!material.doubleSided) {
+			// The glTF spec says:
+			// If the determinant of the transform is a negative value, the winding order of the mesh triangle faces should be reversed.
+			// This supports negative scales for mirroring geometry.
+			const vec3 v0 = clipVertices[indices.x];
+			const vec3 v1 = clipVertices[indices.y];
+			const vec3 v2 = clipVertices[indices.z];
+			const float det = determinant(mat3(v0, v1, v2));
+			if (transformDet < 0.0f) {
+				gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det < 0.0f; // Front face culling
+			} else {
+				gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det > 0.0f; // Back face culling
+			}
+		} else {
+			// We need to write these values explicitly, since the values are undefined otherwise.
+			gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = false;
+		}
 	}
 }

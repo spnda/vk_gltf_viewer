@@ -12,6 +12,7 @@
 #endif
 
 #include "common.h.glsl"
+#include "resource_table.h.glsl"
 GLSL_NAMESPACE_BEGIN
 
 GLSL_CONSTANT uint shadowMapCount = 4;
@@ -115,13 +116,13 @@ struct Material {
 	vec4 albedoFactor;
 
 	// Albedo texture
-	uint albedoIndex;
+	ResourceTableHandle albedoIndex;
 	vec2 uvOffset;
 	vec2 uvScale;
 	float uvRotation;
 
 	float alphaCutoff;
-	bool doubleSided;
+	GLSL_BOOL doubleSided;
 };
 
 #if !defined(__cplusplus)

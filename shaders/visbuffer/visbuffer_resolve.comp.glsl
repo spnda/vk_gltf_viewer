@@ -13,20 +13,6 @@ layout(push_constant, scalar) uniform readonly PushConstants {
 	VisbufferResolvePushConstants pushConstants;
 };
 
-#define MAX_COLORS 10
-vec3 meshletcolors[MAX_COLORS] = {
-	vec3(1,0,0),
-	vec3(0,1,0),
-	vec3(0,0,1),
-	vec3(1,1,0),
-	vec3(1,0,1),
-	vec3(0,1,1),
-	vec3(1,0.5,0),
-	vec3(0.5,1,0),
-	vec3(0,0.5,1),
-	vec3(1,1,1)
-};
-
 void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 size = imageSize(readonly_uimage2d_r32ui_heap[pushConstants.visbufferHandle]);
@@ -44,7 +30,11 @@ void main() {
 	uint primitiveId;
 	unpackVisBuffer(visBuffer, drawIndex, primitiveId);
 
-	vec4 resolved = vec4(meshletcolors[drawIndex % MAX_COLORS], 1.f);
+	restrict const MeshletDraw draw = pushConstants.drawBuffer.draws[drawIndex];
+	restrict Primitive primitive = pushConstants.primitiveBuffer.primitives[draw.primitiveIndex];
+	restrict const Material material = pushConstants.materialBuffer.materials[primitive.materialIndex];
+
+	vec4 resolved = material.albedoFactor;
 
 	imageStore(writeonly_image2d_rgba8_heap[pushConstants.outputImageHandle], pixel, resolved);
 }

@@ -49,6 +49,10 @@ struct VisbufferPushConstants {
 struct VisbufferResolvePushConstants {
 	ResourceTableHandle visbufferHandle;
 	ResourceTableHandle outputImageHandle;
+
+	BUFFER_REF(MeshletDraws) drawBuffer MEMBER_INIT(0);
+	BUFFER_REF(Primitives) primitiveBuffer MEMBER_INIT(0);
+	BUFFER_REF(Materials) materialBuffer MEMBER_INIT(0);
 };
 
 uint packVisBuffer(PARAMETER_COPY(uint) drawIndex, PARAMETER_COPY(uint) primitiveId) {

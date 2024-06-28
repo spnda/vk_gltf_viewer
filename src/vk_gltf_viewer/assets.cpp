@@ -7,6 +7,8 @@
 
 #include <vk_gltf_viewer/assets.hpp>
 
+#include <glm/gtc/type_ptr.hpp>
+
 #include <fastgltf/tools.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 
@@ -15,18 +17,27 @@
 namespace fs = std::filesystem;
 namespace fg = fastgltf;
 
+#if defined(_MSC_VER) && !defined(__clang__)
+std::size_t operator""UZ(unsigned long long int x) noexcept {
+	return std::size_t(x);
+}
+#endif
+
 struct BufferLoadTask : ExceptionTaskSet {
 	fg::Asset& asset;
 	fs::path folder;
 
 	explicit BufferLoadTask(fg::Asset& asset, fs::path folder) : asset(asset), folder(std::move(folder)) {
-		m_SetSize = asset.buffers.size();
+		m_SetSize = fg::max(1UZ, asset.buffers.size());
 	}
 	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override;
 };
 
 void BufferLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
 	ZoneScoped;
+	if (asset.buffers.empty())
+		return;
+
 	for (auto i = range.start; i < range.end; ++i) {
 		auto& buffer = asset.buffers[i];
 
@@ -192,7 +203,7 @@ struct PrimitiveProcessingTask : ExceptionTaskSet {
 	explicit PrimitiveProcessingTask(const fg::Asset& _asset, const CompressedBufferDataAdapter& _adapter, Device& _device) noexcept
 			: asset(_asset), adapter(_adapter), device(_device) {
 		ZoneScoped;
-		m_SetSize = asset.meshes.size();
+		m_SetSize = fg::max(1UZ, asset.meshes.size());
 		meshes.resize(asset.meshes.size());
 		primitives.reserve(meshes.size()); // Is definitely not enough, but we'll just live with it.
 	}
@@ -419,6 +430,9 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 
 void PrimitiveProcessingTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
 	ZoneScoped;
+	if (asset.meshes.empty())
+		return;
+
 	for (auto i = range.start; i < range.end; ++i) {
 		auto& gltfMesh = asset.meshes[i];
 
@@ -452,6 +466,45 @@ struct ImageLoadTask : ExceptionTaskSet {
 void ImageLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
 	ZoneScoped;
 	for (auto i = range.start; i < range.end; ++i) {
+	}
+}
+
+struct MaterialLoadTask : enki::ITaskSet {
+	const fg::Asset& asset;
+	std::vector<glsl::Material> materials;
+
+	enki::Dependency imageLoadDependency;
+
+	explicit MaterialLoadTask(const fg::Asset& asset, ImageLoadTask& imageLoadTask) noexcept : asset(asset) {
+		m_SetSize = fg::max(1UZ, asset.materials.size());
+		m_MinRange = fg::min(16U, m_SetSize);
+		materials.resize(m_SetSize);
+	}
+
+	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override;
+};
+
+#include <glm/gtc/random.hpp>
+
+void MaterialLoadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) {
+	ZoneScoped;
+	if (asset.materials.empty())
+		return;
+
+	for (auto i = range.start; i < range.end; ++i) {
+		auto& gltfMaterial = asset.materials[i];
+		auto& mat = materials[i];
+
+		auto& pbr = gltfMaterial.pbrData;
+		mat.albedoFactor = glm::make_vec4(pbr.baseColorFactor.data());
+		if (pbr.baseColorTexture) {
+			mat.albedoIndex = glsl::invalidHandle;
+		} else {
+			mat.albedoIndex = glsl::invalidHandle;
+		}
+
+		mat.alphaCutoff = gltfMaterial.alphaCutoff;
+		mat.doubleSided = static_cast<std::uint32_t>(gltfMaterial.doubleSided);
 	}
 }
 
@@ -502,6 +555,10 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	taskScheduler.AddTaskSetToPipe(&bufferLoadTask);
 
 	ImageLoadTask imageLoadTask;
+
+	MaterialLoadTask materialLoadTask(*asset, imageLoadTask);
+	materialLoadTask.SetDependency(materialLoadTask.imageLoadDependency, &imageLoadTask);
+
 	taskScheduler.AddTaskSetToPipe(&imageLoadTask);
 
 	taskScheduler.WaitforTask(&primitiveTask);
@@ -513,7 +570,6 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	for (std::size_t i = 0; i < asset->animations.size(); ++i) {
 		auto& gltfAnimation = asset->animations[i];
 		auto& animation = animations[i];
-
 
 		animation.channels.reserve(gltfAnimation.channels.size());
 		for (auto& channel : gltfAnimation.channels) {
@@ -535,4 +591,8 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	}
 
 	taskScheduler.WaitforTask(&imageLoadTask);
+
+	taskScheduler.WaitforTask(&materialLoadTask);
+
+	materials = std::move(materialLoadTask.materials);
 }

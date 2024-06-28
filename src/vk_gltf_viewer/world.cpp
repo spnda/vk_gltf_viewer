@@ -12,8 +12,9 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 	auto nodeOffset = nodes.size();
 	auto meshOffset = meshes.size();
 	auto primitiveOffset = primitiveBuffers.size();
+	auto materialOffset = materials.size();
 
-	assets.emplace_back(task->asset);
+	auto& newAsset = assets.emplace_back(task->asset);
 
 	// Append all the data to the back of our data, and adjust all indices correctly.
 	meshes.reserve(meshes.size() + task->meshes.size());
@@ -31,6 +32,10 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 	for (auto& [buffers, primitive] : task->primitives)
 		primitiveBuffers.emplace_back(std::move(buffers));
 
+	materials.reserve(materials.size() + task->materials.size());
+	for (auto& mat : task->materials)
+		materials.emplace_back(mat);
+
 	animations.reserve(animations.size() + task->animations.size());
 	for (auto& animation : task->animations) {
 		auto channels = animation.channels;
@@ -45,8 +50,11 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 		});
 	}
 
-	nodes.reserve(nodes.size() + assets.back()->nodes.size());
-	for (auto& node : assets.back()->nodes) {
+	materials.reserve(materials.size() + task->materials.size());
+	materials.insert(materials.end(), task->materials.begin(), task->materials.end());
+
+	nodes.reserve(nodes.size() + newAsset->nodes.size());
+	for (auto& node : newAsset->nodes) {
 		auto children = node.children;
 		for (auto& child : children)
 			child += nodeOffset;
@@ -77,51 +85,106 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 		device.get().graphicsQueueFamily,
 		device.get().transferQueueFamily,
 	}};
-	const VkBufferCreateInfo bufferCreateInfo {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.size = primitiveBuffers.size() * sizeof(glsl::Primitive),
-		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-				 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		// We need to use CONCURRENT since we're using the old buffer to copy while it still may be in use
-		.sharingMode = VK_SHARING_MODE_CONCURRENT,
-		.queueFamilyIndexCount = static_cast<std::uint32_t>(queueFamilies.size()),
-		.pQueueFamilyIndices = queueFamilies.data(),
-	};
-	auto oldPrimitiveBuffer = std::move(primitiveBuffer);
-	primitiveBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
-	vk::setDebugUtilsName(device.get(), primitiveBuffer->getHandle(), "Primitive buffer");
 
-	auto primitiveStagingBuffer = device.get().createHostStagingBuffer(
-		task->primitives.size() * sizeof(glsl::Primitive));
 	{
-		ScopedMap<glsl::Primitive> map(*primitiveStagingBuffer);
-		for (std::size_t i = 0; auto& primitive : task->primitives) {
-			map.get()[i++] = primitive.second;
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = primitiveBuffers.size() * sizeof(glsl::Primitive),
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+					 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+			// We need to use CONCURRENT since we're using the old buffer to copy while it still may be in use
+			.sharingMode = VK_SHARING_MODE_CONCURRENT,
+			.queueFamilyIndexCount = static_cast<std::uint32_t>(queueFamilies.size()),
+			.pQueueFamilyIndices = queueFamilies.data(),
+		};
+		auto oldPrimitiveBuffer = std::move(primitiveBuffer);
+		primitiveBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
+		vk::setDebugUtilsName(device.get(), primitiveBuffer->getHandle(), "Primitive buffer");
+
+		auto primitiveStagingBuffer = device.get().createHostStagingBuffer(
+			task->primitives.size() * sizeof(glsl::Primitive));
+		{
+			ScopedMap<glsl::Primitive> map(*primitiveStagingBuffer);
+			for (std::size_t i = 0; auto& primitive: task->primitives) {
+				auto& p = map.get()[i++] = primitive.second;
+				p.materialIndex += materialOffset;
+			}
+		}
+
+		device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
+		                             device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
+		                             [&](auto cmd) {
+			VkDeviceSize dstOffset = 0;
+			if (oldPrimitiveBuffer) {
+				const VkBufferCopy copyRegion {
+					.size = oldPrimitiveBuffer->getBufferSize(),
+				};
+				dstOffset = copyRegion.size;
+				vkCmdCopyBuffer(cmd, oldPrimitiveBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &copyRegion);
+			}
+
+			const VkBufferCopy uploadRegion {
+				.dstOffset = dstOffset,
+				.size = primitiveStagingBuffer->getBufferSize(),
+			};
+			vkCmdCopyBuffer(cmd, primitiveStagingBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &uploadRegion);
+		});
+
+		if (oldPrimitiveBuffer) {
+			device.get().timelineDeletionQueue->push([buffer = std::move(oldPrimitiveBuffer)]() mutable {
+				buffer.reset();
+			});
 		}
 	}
-	device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
-								 device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
-								 [&](auto cmd) {
-		VkDeviceSize dstOffset = 0;
-		if (oldPrimitiveBuffer) {
-			const VkBufferCopy copyRegion {
-				.size = oldPrimitiveBuffer->getBufferSize(),
-			};
-			dstOffset = copyRegion.size;
-			vkCmdCopyBuffer(cmd, oldPrimitiveBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &copyRegion);
+
+	{
+		const VkBufferCreateInfo bufferCreateInfo {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = materials.size() * sizeof(glsl::Material),
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+					 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+			// We need to use CONCURRENT since we're using the old buffer to copy while it still may be in use
+			.sharingMode = VK_SHARING_MODE_CONCURRENT,
+			.queueFamilyIndexCount = static_cast<std::uint32_t>(queueFamilies.size()),
+			.pQueueFamilyIndices = queueFamilies.data(),
+		};
+		auto oldMaterialBuffer = std::move(materialBuffer);
+		materialBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
+		vk::setDebugUtilsName(device.get(), materialBuffer->getHandle(), "Material buffer");
+
+		auto materialStagingBuffer = device.get().createHostStagingBuffer(
+			task->materials.size() * sizeof(glsl::Material));
+		{
+			ScopedMap<glsl::Material> map(*materialStagingBuffer);
+			for (std::size_t i = 0; auto& material: task->materials) {
+				map.get()[i++] = material;
+			}
 		}
 
-		const VkBufferCopy uploadRegion {
-			.dstOffset = dstOffset,
-			.size = primitiveStagingBuffer->getBufferSize(),
-		};
-		vkCmdCopyBuffer(cmd, primitiveStagingBuffer->getHandle(), primitiveBuffer->getHandle(), 1, &uploadRegion);
-	});
+		device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
+		                             device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
+		                             [&](auto cmd) {
+			VkDeviceSize dstOffset = 0;
+			if (oldMaterialBuffer) {
+				const VkBufferCopy copyRegion {
+					.size = oldMaterialBuffer->getBufferSize(),
+				};
+				dstOffset = copyRegion.size;
+				vkCmdCopyBuffer(cmd, oldMaterialBuffer->getHandle(), materialBuffer->getHandle(), 1, &copyRegion);
+			}
 
-	if (oldPrimitiveBuffer) {
-		device.get().timelineDeletionQueue->push([buffer = std::move(oldPrimitiveBuffer)]() mutable {
-			buffer.reset();
+			const VkBufferCopy uploadRegion {
+				.dstOffset = dstOffset,
+				.size = materialStagingBuffer->getBufferSize(),
+			};
+			vkCmdCopyBuffer(cmd, materialStagingBuffer->getHandle(), materialBuffer->getHandle(), 1, &uploadRegion);
 		});
+
+		if (oldMaterialBuffer) {
+			device.get().timelineDeletionQueue->push([buffer = std::move(oldMaterialBuffer)]() mutable {
+				buffer.reset();
+			});
+		}
 	}
 
 	// Invalidate old draw buffers

@@ -60,7 +60,7 @@ void main() {
 
 			vec2 projectedCenter = (projectedAabb[0].xy + projectedAabb[1].xy) * 0.5f;
 			float depth = textureLod(sampled_textures_heap[pushConstants.depthPyramid], projectedCenter, level).r;
-			// Use the max value, since we want to know the nearest depth of the AABB is less than the farthest sampled depth
+			// Use the max value, since we want to know if the nearest depth of the AABB is less than the farthest sampled depth
 			visible = visible && depth < projectedAabb[1].z;
 		}
 
