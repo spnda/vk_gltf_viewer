@@ -43,15 +43,9 @@ struct AnimationSampler {
 
 	explicit AnimationSampler(const fastgltf::Asset& asset, const fastgltf::AnimationSampler& sampler) : interpolation(sampler.interpolation) {
 		ZoneScoped;
-		auto& inputAccessor = asset.accessors[sampler.inputAccessor];
-		input.resize(inputAccessor.count);
-		fastgltf::copyFromAccessor<float>(asset, inputAccessor, input.data());
-
 		auto& outputAccessor = asset.accessors[sampler.outputAccessor];
 		outputCount = outputAccessor.count;
 		componentCount = fastgltf::getNumComponents(outputAccessor.type);
-		values.resize(outputAccessor.count * componentCount);
-		fastgltf::copyComponentsFromAccessor<float>(asset, outputAccessor, values.data());
 	}
 
 	template <fastgltf::AnimationPath path>

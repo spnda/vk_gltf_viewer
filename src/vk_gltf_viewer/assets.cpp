@@ -521,8 +521,16 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 		}
 
 		animation.samplers.reserve(gltfAnimation.samplers.size());
-		for (auto& sampler : gltfAnimation.samplers) {
-			animation.samplers.emplace_back(*asset, sampler);
+		for (auto& gltfSampler : gltfAnimation.samplers) {
+			auto& sampler = animation.samplers.emplace_back(*asset, gltfSampler);
+
+			auto& inputAccessor = asset->accessors[gltfSampler.inputAccessor];
+			sampler.input.resize(inputAccessor.count);
+			fastgltf::copyFromAccessor<float>(*asset, inputAccessor, sampler.input.data(), bufferDecompressTask);
+
+			auto& outputAccessor = asset->accessors[gltfSampler.outputAccessor];
+			sampler.values.resize(outputAccessor.count * sampler.componentCount);
+			fastgltf::copyComponentsFromAccessor<float>(*asset, outputAccessor, sampler.values.data(), bufferDecompressTask);
 		}
 	}
 
