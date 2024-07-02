@@ -138,6 +138,12 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 	}
 
 	{
+		if (materialBuffer) {
+			device.get().timelineDeletionQueue->push([buffer = std::move(materialBuffer)]() mutable {
+				buffer.reset();
+			});
+		}
+
 		const VkBufferCreateInfo bufferCreateInfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = materials.size() * sizeof(glsl::Material),
@@ -148,15 +154,15 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 			.queueFamilyIndexCount = static_cast<std::uint32_t>(queueFamilies.size()),
 			.pQueueFamilyIndices = queueFamilies.data(),
 		};
-		auto oldMaterialBuffer = std::move(materialBuffer);
+
 		materialBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
 		vk::setDebugUtilsName(device.get(), materialBuffer->getHandle(), "Material buffer");
 
 		auto materialStagingBuffer = device.get().createHostStagingBuffer(
-			task->materials.size() * sizeof(glsl::Material));
+			materials.size() * sizeof(glsl::Material));
 		{
 			ScopedMap<glsl::Material> map(*materialStagingBuffer);
-			for (std::size_t i = 0; auto& material: task->materials) {
+			for (std::size_t i = 0; auto& material: materials) {
 				map.get()[i++] = material;
 			}
 		}
@@ -164,27 +170,11 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 		device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
 		                             device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
 		                             [&](auto cmd) {
-			VkDeviceSize dstOffset = 0;
-			if (oldMaterialBuffer) {
-				const VkBufferCopy copyRegion {
-					.size = oldMaterialBuffer->getBufferSize(),
-				};
-				dstOffset = copyRegion.size;
-				vkCmdCopyBuffer(cmd, oldMaterialBuffer->getHandle(), materialBuffer->getHandle(), 1, &copyRegion);
-			}
-
 			const VkBufferCopy uploadRegion {
-				.dstOffset = dstOffset,
 				.size = materialStagingBuffer->getBufferSize(),
 			};
 			vkCmdCopyBuffer(cmd, materialStagingBuffer->getHandle(), materialBuffer->getHandle(), 1, &uploadRegion);
 		});
-
-		if (oldMaterialBuffer) {
-			device.get().timelineDeletionQueue->push([buffer = std::move(oldMaterialBuffer)]() mutable {
-				buffer.reset();
-			});
-		}
 	}
 
 	// Invalidate old draw buffers

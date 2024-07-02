@@ -4,6 +4,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "visbuffer.h.glsl"
+#include "srgb.h.glsl"
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
@@ -34,7 +35,7 @@ void main() {
 	restrict Primitive primitive = pushConstants.primitiveBuffer.primitives[draw.primitiveIndex];
 	restrict const Material material = pushConstants.materialBuffer.materials[primitive.materialIndex];
 
-	vec4 resolved = material.albedoFactor;
+	vec4 resolved = fromLinear(material.albedoFactor);
 
 	imageStore(writeonly_image2d_rgba8_heap[pushConstants.outputImageHandle], pixel, resolved);
 }

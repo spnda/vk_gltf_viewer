@@ -288,9 +288,10 @@ void PrimitiveProcessingTask::createMeshBuffers(
 void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const fg::Primitive& gltfPrimitive) {
 	ZoneScoped;
 	glsl::Primitive primitive;
-	if (gltfPrimitive.materialIndex.has_value()) {
-		primitive.materialIndex = static_cast<std::uint32_t>(gltfPrimitive.materialIndex.value());
-	}
+	// TODO: More explicit way of setting defaults?
+	primitive.materialIndex = gltfPrimitive.materialIndex.transform([](auto x) {
+		return x + 1;
+	}).value_or(0U);
 
 	// The code says this is possible, the spec says otherwise.
 	auto* positionIt = gltfPrimitive.findAttribute("POSITION");
@@ -476,9 +477,19 @@ struct MaterialLoadTask : enki::ITaskSet {
 	enki::Dependency imageLoadDependency;
 
 	explicit MaterialLoadTask(const fg::Asset& asset, ImageLoadTask& imageLoadTask) noexcept : asset(asset) {
+		materials.resize(asset.materials.size() + 1);
 		m_SetSize = fg::max(1UZ, asset.materials.size());
 		m_MinRange = fg::min(16U, m_SetSize);
-		materials.resize(m_SetSize);
+
+		// Add default/fallback material, as per the glTF defaults
+		// TODO: Set global defaults for when we load multiple assets?
+		materials[0] = glsl::Material {
+			.albedoFactor = glm::fvec4(1.f),
+			.albedoIndex = glsl::invalidHandle,
+			.uvScale = glm::fvec2(1.f),
+			.alphaCutoff = 0.5f,
+			.doubleSided = false,
+		};
 	}
 
 	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override;
@@ -493,7 +504,7 @@ void MaterialLoadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t 
 
 	for (auto i = range.start; i < range.end; ++i) {
 		auto& gltfMaterial = asset.materials[i];
-		auto& mat = materials[i];
+		auto& mat = materials[i + 1];
 
 		auto& pbr = gltfMaterial.pbrData;
 		mat.albedoFactor = glm::make_vec4(pbr.baseColorFactor.data());
