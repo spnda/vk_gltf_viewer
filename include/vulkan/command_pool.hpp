@@ -97,6 +97,11 @@ namespace vk {
 			vk::checkResult(allocateResult, "Failed to allocate command buffer: {}");
 		}
 
+		void reset_pool() {
+			ZoneScoped;
+			vkResetCommandPool(device, handle(), 0);
+		}
+
 		/** Makes the command buffer available again, and resets it */
 		void reset_and_free(VkCommandBuffer handle) {
 			ZoneScoped;

@@ -5,6 +5,8 @@
 #include <ui/ui.h.glsl>
 #include <resource_table.h.glsl>
 
+#include <GLFW/glfw3.h>
+
 #include <glm/glm.hpp>
 #include <imgui.h>
 #include <TaskScheduler.h>
