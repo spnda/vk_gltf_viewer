@@ -47,7 +47,7 @@ std::unique_ptr<Swapchain> Swapchain::recreate(std::unique_ptr<Swapchain>&& oldS
 
 	// Push the old swapchain into the timeline deletion queue, which will delete it when it's not used anymore.
 	// We move the swapchain into the lambda so that when the function gets destroyed it'll also destroy the swapchain, since it now owns it.
-	newSwapchain->device.get().timelineDeletionQueue->push([oldSwapchain = std::move(oldSwapchain)]() mutable {});
+	newSwapchain->device.get().timelineDeletionQueue->push(make_shared_function([oldSwapchain = std::move(oldSwapchain)]() mutable {}));
 
 	return newSwapchain;
 }

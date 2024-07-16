@@ -9,11 +9,14 @@
 #include <vulkan/vk.hpp>
 #include <vulkan/pipeline_builder.hpp>
 #include <GLFW/glfw3.h> // After Vulkan includes so that it detects it
+#include <imgui_impl_glfw.h>
 
 #include <glm/glm.hpp>
 
 #include <nvidia/dlss.hpp>
+#if defined(VKV_NV_DLSS)
 #include <nvsdk_ngx_helpers_vk.h>
+#endif
 #include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/application.hpp>
 #include <vk_gltf_viewer/assets.hpp>
@@ -35,12 +38,7 @@ void glfwResizeCallback(GLFWwindow* window, int width, int height) {
 	ZoneScoped;
 	if (width > 0 && height > 0) {
 		decltype(auto) app = *static_cast<Application*>(glfwGetWindowUserPointer(window));
-		app.swapchain = Swapchain::recreate(std::move(app.swapchain));
-
-		app.updateRenderResolution();
-
-		app.swapchainNeedsRebuild = false;
-		app.firstFrame = true;
+		app.renderer->updateResolution(glm::u32vec2(width, height));
 	}
 }
 
@@ -73,98 +71,14 @@ Application::Application(std::span<std::filesystem::path> gltfs) {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetWindowSizeCallback(window, glfwResizeCallback);
 
-	// Create the instance
-	instance = std::make_unique<Instance>();
-	deletionQueue.push([this]() { instance.reset(); });
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGui::StyleColorsDark();
+	//ImGui_ImplGlfw_InitForVulkan(window, true);
+	ImGui_ImplGlfw_InitForOther(window, true);
 
-	// Create the window surface
-	vk::checkResult(glfwCreateWindowSurface(*instance, window, nullptr, &surface), "Failed to create window surface");
-	deletionQueue.push([this]() {
-		vkDestroySurfaceKHR(*instance, surface, nullptr);
-	});
-
-	// Create the Vulkan device
-	device = std::make_unique<Device>(*instance, surface);
-	deletionQueue.push([this]() { device.reset(); });
-
-	// With the device created, we can now launch asset loading tasks
-	for (auto& gltf : gltfs) {
-		assetLoadTasks.emplace_back(std::make_shared<AssetLoadTask>(*device, gltf));
-		taskScheduler.AddTaskSetToPipe(assetLoadTasks.back().get());
-	}
-	deletionQueue.push([this]() {
-		for (auto& task : assetLoadTasks)
-			taskScheduler.WaitforTask(task.get());
-		assetLoadTasks.clear();
-	});
-
-	// Create the swapchain
-	swapchain = std::make_unique<Swapchain>(*device, surface);
-	deletionQueue.push([this]() { swapchain.reset(); });
-
-	renderResolution = toVector(swapchain->swapchain.extent);
-
-	availableScalingModes.emplace_back(ResolutionScalingModes::None, "None\0");
-
-#if defined(VKV_NV_DLSS)
-	if (dlss::isSupported()) {
-		availableScalingModes.emplace_back(ResolutionScalingModes::DLSS, "DLSS\0");
-
-		dlssQuality = NVSDK_NGX_PerfQuality_Value_DLAA; // TODO: Change to 'Auto' mode?
-		dlssHandle = dlss::initFeature(*device, renderResolution, toVector(swapchain->swapchain.extent));
-		deletionQueue.push([this]() { dlss::releaseFeature(dlssHandle); });
-	}
-#endif
-
-	// Initialize the ImGui renderer
-	imguiRenderer = std::make_unique<imgui::Renderer>(*device, window, swapchain->swapchain.image_format);
-	imguiRenderer->initFrameData(frameOverlap);
-	auto& io = ImGui::GetIO();
-	io.ConfigFlags |= ImGuiConfigFlags_IsSRGB;
-	io.Fonts->AddFontDefault();
-	imguiRenderer->createFontAtlas();
-	deletionQueue.push([this]() { imguiRenderer.reset(); });
-
-	// Initialize the camera buffers
-	camera = std::make_unique<Camera>(*device, frameOverlap);
-	deletionQueue.push([this]() { camera.reset(); });
-
-	// Create the per-frame sync primitives
-	frameSyncData.resize(frameOverlap);
-	for (auto& frame : frameSyncData) {
-		frame.imageAvailable = std::make_unique<vk::Semaphore>(*device);
-		vk::setDebugUtilsName(*device, frame.imageAvailable->handle, "Image acquire semaphore");
-
-		frame.renderingFinished = std::make_unique<vk::Semaphore>(*device);
-		vk::setDebugUtilsName(*device, frame.renderingFinished->handle, "Rendering finished semaphore");
-
-		frame.presentFinished = std::make_unique<vk::Fence>(*device, VK_FENCE_CREATE_SIGNALED_BIT);
-		vk::setDebugUtilsName(*device, frame.presentFinished->handle, "Present fence");
-	}
-	deletionQueue.push([this] {
-		for (auto& frame : frameSyncData) {
-			frame.presentFinished.reset();
-			frame.renderingFinished.reset();
-			frame.imageAvailable.reset();
-		}
-	});
-
-	// Create the command pools
-	frameCommandPools.resize(frameOverlap);
-	for (auto& pool : frameCommandPools) {
-		pool.commandPool.create(*device, device->graphicsQueueFamily);
-		pool.commandBuffer = pool.commandPool.allocate();
-	}
-	deletionQueue.push([this] {
-		for (auto& pool : frameCommandPools)
-			pool.commandPool.destroy();
-	});
-
-	initVisbufferPass();
-	initVisbufferResolvePass();
-	initHiZReductionPass();
-
-	world = std::make_unique<World>(*device, frameOverlap);
+	renderer = graphics::Renderer::createRenderer(window);
+	scene = renderer->createSharedScene();
 }
 
 Application::~Application() noexcept {
@@ -182,10 +96,10 @@ void Application::initVisbufferPass() {
 	ZoneScoped;
 
 	if (visbufferPass.image)
-		device->timelineDeletionQueue->push([this, handle = visbufferPass.imageHandle, image = std::move(visbufferPass.image)]() mutable {
+		device->timelineDeletionQueue->push(make_shared_function([this, handle = visbufferPass.imageHandle, image = std::move(visbufferPass.image)]() mutable {
 			device->resourceTable->removeStorageImageHandle(handle);
 			image.reset();
-		});
+		}));
 
 	const VmaAllocationCreateInfo allocationInfo {
 		.usage = VMA_MEMORY_USAGE_AUTO,
@@ -216,9 +130,9 @@ void Application::initVisbufferPass() {
 		visbufferPass.image->getDefaultView(), VK_IMAGE_LAYOUT_GENERAL);
 
 	if (visbufferPass.depthImage)
-		device->timelineDeletionQueue->push([image = std::move(visbufferPass.depthImage)]() mutable {
+		device->timelineDeletionQueue->push(make_shared_function([image = std::move(visbufferPass.depthImage)]() mutable {
 			image.reset();
-		});
+		}));
 
 	const VkImageCreateInfo depthImageInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -243,9 +157,9 @@ void Application::initVisbufferPass() {
 	vk::setDebugUtilsName(*device, visbufferPass.depthImage->getDefaultView(), "Depth image view");
 
 	if (visbufferPass.mvImage)
-		device->timelineDeletionQueue->push([image = std::move(visbufferPass.mvImage)]() mutable {
+		device->timelineDeletionQueue->push(make_shared_function([image = std::move(visbufferPass.mvImage)]() mutable {
 			image.reset();
-		});
+		}));
 
 	const VkImageCreateInfo mvImageInfo {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -355,10 +269,10 @@ void Application::initVisbufferPass() {
 void Application::initVisbufferResolvePass() {
 	ZoneScoped;
 	if (visbufferResolvePass.colorImage) {
-		device->timelineDeletionQueue->push([this, handle = visbufferResolvePass.colorImageHandle, image = std::move(visbufferResolvePass.colorImage)]() mutable {
+		device->timelineDeletionQueue->push(make_shared_function([this, handle = visbufferResolvePass.colorImageHandle, image = std::move(visbufferResolvePass.colorImage)]() mutable {
 			device->resourceTable->removeStorageImageHandle(handle);
 			image.reset();
-		});
+		}));
 	}
 
 	const VmaAllocationCreateInfo allocationInfo {
@@ -458,7 +372,7 @@ void Application::initHiZReductionPass() {
 	}
 
 	if (hizReductionPass.depthPyramid) {
-		device->timelineDeletionQueue->push([this, handle = hizReductionPass.depthPyramidHandle, image = std::move(hizReductionPass.depthPyramid), views = std::move(hizReductionPass.depthPyramidViews)]() mutable {
+		device->timelineDeletionQueue->push(make_shared_function([this, handle = hizReductionPass.depthPyramidHandle, image = std::move(hizReductionPass.depthPyramid), views = std::move(hizReductionPass.depthPyramidViews)]() mutable {
 			for (auto& view : views) {
 				device->resourceTable->removeSampledImageHandle(view.sampledHandle);
 				device->resourceTable->removeStorageImageHandle(view.storageHandle);
@@ -466,7 +380,7 @@ void Application::initHiZReductionPass() {
 			}
 			device->resourceTable->removeSampledImageHandle(handle);
 			image.reset();
-		});
+		}));
 	}
 
 	auto mipLevels = static_cast<std::uint32_t>(std::floor(std::log2(
@@ -634,7 +548,7 @@ void Application::run() {
 		deltaTime = currentTime - lastFrame;
 		lastFrame = currentTime;
 
-		imguiRenderer->newFrame();
+		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
 		renderUi();
@@ -642,637 +556,9 @@ void Application::run() {
 		currentFrame = ++currentFrame % frameOverlap;
 		auto& syncData = frameSyncData[currentFrame];
 
-		// Wait for the last render for this frame index to finish, so that we can use
-		// the associated resources again.
-		syncData.presentFinished->wait(std::numeric_limits<std::uint64_t>::max());
-		syncData.presentFinished->reset();
+		renderer->prepareFrame(currentFrame);
 
-		// Check if anything can be deleted this frame.
-		device->timelineDeletionQueue->check();
-
-		camera->updateCamera(currentFrame, window, deltaTime, renderResolution);
-		world->updateDrawBuffers(currentFrame, static_cast<float>(deltaTime));
-
-		auto& cmdPool = frameCommandPools[currentFrame];
-		vkResetCommandPool(*device, cmdPool.commandPool, 0);
-		auto& cmd = cmdPool.commandBuffer;
-
-		// Acquire the next swapchain image
-		std::uint32_t swapchainImageIndex = 0;
-		{
-			auto result = vkAcquireNextImageKHR(*device, *swapchain, std::numeric_limits<std::uint64_t>::max(),
-												syncData.imageAvailable->handle,
-												VK_NULL_HANDLE, &swapchainImageIndex);
-			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-				swapchainNeedsRebuild = true;
-				continue;
-			}
-			vk::checkResult(result, "Failed to acquire swapchain image");
-		}
-
-		// Begin the command buffer
-		VkCommandBufferBeginInfo beginInfo = {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, // We're only using once, then resetting.
-		};
-		vkBeginCommandBuffer(cmd, &beginInfo);
-
-		// Transition the swapchain image from UNDEFINED -> GENERAL
-		// Transition the visbuffer image from UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
-		// Transition the depth image from UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL
-		// Transition the depth pyramid from UNDEFINED/GENERAL -> SHADER_READ_ONLY_OPTIMAL
-		{
-			std::array<VkImageMemoryBarrier2, 4> imageBarriers {{
-				{
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-					.srcAccessMask = VK_ACCESS_2_NONE,
-					.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-					.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = swapchain->images[swapchainImageIndex],
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.levelCount = 1,
-						.layerCount = 1,
-					},
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-					.srcAccessMask = VK_ACCESS_2_NONE,
-					.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-					.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = visbufferPass.image->getHandle(),
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.levelCount = 1,
-						.layerCount = 1,
-					},
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-					.srcAccessMask = VK_ACCESS_2_NONE,
-					.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-					.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = visbufferPass.depthImage->getHandle(),
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-						.levelCount = 1,
-						.layerCount = 1,
-					},
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-					.srcAccessMask = VK_ACCESS_2_NONE,
-					.dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-					.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					.oldLayout = firstFrame ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
-					.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = hizReductionPass.depthPyramid->getHandle(),
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.levelCount = VK_REMAINING_MIP_LEVELS,
-						.layerCount = 1,
-					},
-				},
-			}};
-			const VkDependencyInfo dependencyInfo {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = static_cast<std::uint32_t>(imageBarriers.size()),
-				.pImageMemoryBarriers = imageBarriers.data(),
-			};
-			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
-		}
-
-		// Visbuffer pass
-		{
-			TracyVkZone(device->tracyCtx, cmd, "Visbuffer");
-			const VkDebugUtilsLabelEXT label {
-				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-				.pLabelName = "Visbuffer",
-			};
-			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
-
-			std::array<VkRenderingAttachmentInfo, 2> attachments {{
-				{
-					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = visbufferPass.image->getDefaultView(),
-					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					.resolveMode = VK_RESOLVE_MODE_NONE,
-					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-					.clearValue = {
-						.color = {
-							.uint32 = { glsl::visbufferClearValue },
-						}
-					}
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = visbufferPass.mvImage->getDefaultView(),
-					.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					.resolveMode = VK_RESOLVE_MODE_NONE,
-					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-					.clearValue = {
-						.color = {
-							.float32 = { 0.f, 0.f, 0.f, 0.f },
-						}
-					}
-				},
-			}};
-			const VkRenderingAttachmentInfo depthAttachment {
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = visbufferPass.depthImage->getDefaultView(),
-				.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-				.resolveMode = VK_RESOLVE_MODE_NONE,
-				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-				.clearValue = {0.0f, 0.0f},
-			};
-			const VkRenderingInfo renderingInfo {
-				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-				.renderArea = {
-					.offset = {},
-					.extent = {
-						.width = renderResolution.x,
-						.height = renderResolution.y,
-					},
-				},
-				.layerCount = 1,
-				.colorAttachmentCount = static_cast<std::uint32_t>(attachments.size()),
-				.pColorAttachments = attachments.data(),
-				.pDepthAttachment = &depthAttachment,
-			};
-			vkCmdBeginRendering(cmd, &renderingInfo);
-
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, visbufferPass.pipeline);
-
-			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, visbufferPass.pipelineLayout,
-									0, 1, &device->resourceTable->getSet(), 0, nullptr);
-
-			const VkViewport viewport = {
-				.x = 0.0F,
-				.y = 0.0F,
-				.width = static_cast<float>(renderResolution.x),
-				.height = static_cast<float>(renderResolution.y),
-				.minDepth = 0.0F,
-				.maxDepth = 1.0F,
-			};
-			vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-			const VkRect2D scissor = renderingInfo.renderArea;
-			vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-			auto& drawBuffer = world->drawBuffers[currentFrame];
-			auto totalMeshletCount = drawBuffer.meshletDrawBuffer
-				? static_cast<std::uint32_t>(drawBuffer.meshletDrawBuffer->getBufferSize() / sizeof(glsl::MeshletDraw))
-				: 0U;
-
-			if (totalMeshletCount > 0) {
-				glsl::VisbufferPushConstants pushConstants {
-					.drawBuffer = drawBuffer.meshletDrawBuffer->getDeviceAddress(),
-					.meshletDrawCount = totalMeshletCount,
-					.transformBuffer = drawBuffer.transformBuffer->getDeviceAddress(),
-					.primitiveBuffer = world->primitiveBuffer->getDeviceAddress(),
-					.cameraBuffer = camera->getCameraDeviceAddress(currentFrame),
-					.materialBuffer = world->materialBuffer->getDeviceAddress(),
-					.depthPyramid = hizReductionPass.depthPyramidHandle,
-				};
-				vkCmdPushConstants(cmd, visbufferPass.pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof pushConstants,
-								   &pushConstants);
-
-				vkCmdDrawMeshTasksEXT(cmd, (totalMeshletCount + glsl::maxMeshlets - 1) / glsl::maxMeshlets, 1, 1);
-			}
-
-			vkCmdEndRendering(cmd);
-
-			vkCmdEndDebugUtilsLabelEXT(cmd);
-		}
-
-		// Image barrier for visbuffer image from visbuffer pass -> resolve pass
-		// Transition hierarchical depth pyramid from SHADER_READ_ONLY_OPTIMAL -> GENERAL
-		{
-			std::array<VkImageMemoryBarrier2, 2> imageBarriers {{
-				{
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-					.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-					.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-					.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
-					.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = visbufferPass.image->getHandle(),
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.levelCount = 1,
-						.layerCount = 1,
-					},
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-					.srcStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-					.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-					.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-					.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-					.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-					.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = hizReductionPass.depthPyramid->getHandle(),
-					.subresourceRange = {
-						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-						.baseMipLevel = 0,
-						.levelCount = VK_REMAINING_MIP_LEVELS,
-						.layerCount = 1,
-					},
-				},
-			}};
-			const VkDependencyInfo dependencyInfo {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = static_cast<std::uint32_t>(imageBarriers.size()),
-				.pImageMemoryBarriers = imageBarriers.data(),
-			};
-			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
-		}
-
-		// Visbuffer resolve pass
-		{
-			TracyVkZone(device->tracyCtx, cmd, "Visbuffer resolve");
-			const VkDebugUtilsLabelEXT label {
-				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-				.pLabelName = "Visbuffer resolve",
-			};
-			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
-
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, visbufferResolvePass.pipeline);
-
-			auto& drawBuffer = world->drawBuffers[currentFrame];
-			if (drawBuffer.meshletDrawBuffer) {
-				glsl::VisbufferResolvePushConstants pushConstants{
-					.visbufferHandle = visbufferPass.imageHandle,
-					.outputImageHandle = scalingMode != ResolutionScalingModes::None
-					                     ? visbufferResolvePass.colorImageHandle
-					                     : swapchain->imageViewHandles[swapchainImageIndex],
-					.drawBuffer = drawBuffer.meshletDrawBuffer->getDeviceAddress(),
-					.primitiveBuffer = world->primitiveBuffer->getDeviceAddress(),
-					.materialBuffer = world->materialBuffer->getDeviceAddress(),
-				};
-				vkCmdPushConstants(cmd, visbufferResolvePass.pipelineLayout, VK_SHADER_STAGE_ALL, 0,
-				                   sizeof pushConstants, &pushConstants);
-
-				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, visbufferResolvePass.pipelineLayout,
-				                        0, 1, &device->resourceTable->getSet(), 0, nullptr);
-
-				vkCmdDispatch(cmd, renderResolution.x / 32, renderResolution.y, 1);
-			}
-
-			vkCmdEndDebugUtilsLabelEXT(cmd);
-		}
-
-		if (!camera->freezeCullingMatrix) {
-			TracyVkZone(device->tracyCtx, cmd, "HiZ reduction");
-			const VkDebugUtilsLabelEXT label {
-				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-				.pLabelName = "HiZ reduction",
-			};
-			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
-
-			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizReductionPass.reducePipelineLayout,
-			                        0, 1, &device->resourceTable->getSet(), 0, nullptr);
-
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizReductionPass.reducePipeline);
-
-			for (std::uint32_t i = 1; i < hizReductionPass.depthPyramidViews.size(); ++i) {
-				auto levelSize = renderResolution >> i;
-
-				struct HiZreducePushConstants {
-					glsl::ResourceTableHandle sourceImage;
-					glsl::ResourceTableHandle outputImage;
-					glm::u32vec2 imageSize;
-				} pushConstants {
-					.sourceImage = hizReductionPass.depthPyramidViews[i - 1].sampledHandle,
-					.outputImage = hizReductionPass.depthPyramidViews[i].storageHandle,
-					.imageSize = levelSize,
-				};
-				vkCmdPushConstants(cmd, hizReductionPass.reducePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-				                   0, sizeof(pushConstants), &pushConstants);
-
-				vkCmdDispatch(cmd, fg::alignUp(levelSize.x, 32) / 32, fg::alignUp(levelSize.y, 32) / 32, 1);
-
-				if (i + 1 != hizReductionPass.depthPyramidViews.size()) {
-					const VkImageMemoryBarrier barrier{
-						.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-						.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-						.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-						.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-						.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-						.image = *hizReductionPass.depthPyramid,
-						.subresourceRange = {
-							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-							.baseMipLevel = i,
-							.levelCount = 1,
-							.layerCount = 1,
-						}
-					};
-					vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr,
-					                     1, &barrier);
-				}
-			}
-
-			vkCmdEndDebugUtilsLabelEXT(cmd);
-		}
-
-#if defined(VKV_NV_DLSS)
-		// DLSS pass
-		if (scalingMode == ResolutionScalingModes::DLSS) {
-			TracyVkZone(device->tracyCtx, cmd, "DLSS");
-			const VkDebugUtilsLabelEXT label {
-				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-				.pLabelName = "DLSS",
-			};
-			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
-
-			const VkMemoryBarrier2 memoryBarrier {
-				.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-				.srcAccessMask = VK_ACCESS_2_NONE,
-				.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-				.dstAccessMask = VK_ACCESS_2_NONE,
-			};
-			const VkDependencyInfo dep {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.memoryBarrierCount = 1,
-				.pMemoryBarriers = &memoryBarrier,
-			};
-			vkCmdPipelineBarrier2(cmd, &dep);
-
-			NVSDK_NGX_Parameter* params = nullptr;
-			NVSDK_NGX_VULKAN_AllocateParameters(&params);
-
-			NVSDK_NGX_Resource_VK colorInput {
-				.Resource = {
-					.ImageViewInfo = {
-						.ImageView = visbufferResolvePass.colorImage->getDefaultView(),
-						.Image = *visbufferResolvePass.colorImage,
-						.SubresourceRange = {
-							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-							.levelCount = 1,
-							.layerCount = 1,
-						},
-						.Format = swapchain->swapchain.image_format,
-						.Width = renderResolution.x,
-						.Height = renderResolution.y,
-					}
-				},
-				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
-				.ReadWrite = true,
-			};
-			NVSDK_NGX_Resource_VK colorOutput {
-				.Resource = {
-					.ImageViewInfo = {
-						.ImageView = swapchain->imageViews[swapchainImageIndex],
-						.Image = swapchain->images[swapchainImageIndex],
-						.SubresourceRange = {
-							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-							.levelCount = 1,
-							.layerCount = 1,
-						},
-						.Format = swapchain->swapchain.image_format,
-						.Width = swapchain->swapchain.extent.width,
-						.Height = swapchain->swapchain.extent.height,
-					}
-				},
-				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
-				.ReadWrite = true,
-			};
-			NVSDK_NGX_Resource_VK depthAttachment {
-				.Resource = {
-					.ImageViewInfo = {
-						.ImageView = visbufferPass.depthImage->getDefaultView(),
-						.Image = *visbufferPass.depthImage,
-						.SubresourceRange = {
-							.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-							.levelCount = 1,
-							.layerCount = 1,
-						},
-						.Format = VK_FORMAT_D32_SFLOAT,
-						.Width = renderResolution.x,
-						.Height = renderResolution.y,
-					}
-				},
-				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
-				.ReadWrite = false,
-			};
-			NVSDK_NGX_Resource_VK motionVectors {
-				.Resource = {
-					.ImageViewInfo = {
-						.ImageView = visbufferPass.mvImage->getDefaultView(),
-						.Image = *visbufferPass.mvImage,
-						.SubresourceRange = {
-							.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-							.levelCount = 1,
-							.layerCount = 1,
-						},
-						.Format = VK_FORMAT_R16G16_SFLOAT,
-						.Width = renderResolution.x,
-						.Height = renderResolution.y,
-					}
-				},
-				.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
-				.ReadWrite = true,
-			};
-
-			NVSDK_NGX_VK_DLSS_Eval_Params dlssEval {
-				.Feature = {
-					.pInColor = &colorInput,
-					.pInOutput = &colorOutput,
-					.InSharpness = 0.35f, // Some random value that works?
-				},
-				.pInDepth = &depthAttachment,
-				.pInMotionVectors = &motionVectors,
-				.InRenderSubrectDimensions = {
-					.Width = renderResolution.x,
-					.Height = renderResolution.y,
-				},
-				.InMVScaleX = 1.f,
-				.InMVScaleY = 1.f,
-				.InPreExposure = 1.f,
-				.InExposureScale = 1.f,
-				.InFrameTimeDeltaInMsec = static_cast<float>(deltaTime),
-			};
-
-			auto res = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, dlssHandle, params, &dlssEval);
-			if (NVSDK_NGX_FAILED(res)) {
-				fmt::print("Failed to NVSDK_NGX_VULKAN_EvaluateFeature for DLSS, code = {:x}, info: {}", std::to_underlying(res), res);
-			}
-
-			NVSDK_NGX_VULKAN_DestroyParameters(params);
-
-			vkCmdEndDebugUtilsLabelEXT(cmd);
-		}
-#endif
-
-		// Image barrier for swapchain image from resolve pass -> UI draw pass
-		{
-			const VkImageMemoryBarrier2 swapchainImageBarrier {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-				.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
-				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = swapchain->images[swapchainImageIndex],
-				.subresourceRange = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.levelCount = 1,
-					.layerCount = 1,
-				},
-			};
-			const VkDependencyInfo dependencyInfo{
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &swapchainImageBarrier,
-			};
-			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
-		}
-
-		// Draw UI
-		{
-			TracyVkZone(device->tracyCtx, cmd, "ImGui rendering");
-			const VkDebugUtilsLabelEXT label {
-				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-				.pLabelName = "ImGui rendering",
-			};
-			vkCmdBeginDebugUtilsLabelEXT(cmd, &label);
-
-			// Insert a barrier to protect against any hazard reads from ImGui textures we might be using as render targets.
-			const VkMemoryBarrier2 memoryBarrier {
-				.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-				.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
-			};
-			const VkDependencyInfo dependency {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.memoryBarrierCount = 1,
-				.pMemoryBarriers = &memoryBarrier,
-			};
-			vkCmdPipelineBarrier2(cmd, &dependency);
-
-			auto extent = glm::u32vec2(renderResolution.x, renderResolution.y);
-			imguiRenderer->draw(cmd, swapchain->imageViews[swapchainImageIndex], extent, currentFrame);
-
-			vkCmdEndDebugUtilsLabelEXT(cmd);
-		}
-
-		// Transition the swapchain image from COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC
-		{
-			const VkImageMemoryBarrier2 swapchainImageBarrier {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-				.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-				.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-				.dstAccessMask = VK_ACCESS_2_NONE,
-				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = swapchain->images[swapchainImageIndex],
-				.subresourceRange = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.levelCount = 1,
-					.layerCount = 1,
-				},
-			};
-			const VkDependencyInfo dependencyInfo{
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &swapchainImageBarrier,
-			};
-			vkCmdPipelineBarrier2(cmd, &dependencyInfo);
-		}
-
-		// Always collect at the end of the main command buffer.
-		TracyVkCollect(device->tracyCtx, cmd);
-
-		vkEndCommandBuffer(cmd);
-
-		// Submit
-		{
-			const VkSemaphoreSubmitInfo waitSemaphoreInfo {
-				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-				.semaphore = syncData.imageAvailable->handle,
-				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-			};
-			const VkCommandBufferSubmitInfo bufferSubmitInfo {
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-				.commandBuffer = cmd,
-			};
-			std::array<VkSemaphoreSubmitInfo, 2> signalSemaphoreInfos = {{
-				{
-					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-					.semaphore = syncData.renderingFinished->handle,
-					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-				},
-				{
-					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-					.semaphore = device->timelineDeletionQueue->getSemaphoreHandle(),
-					.value = device->timelineDeletionQueue->nextValue(),
-					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-				},
-			}};
-			const VkSubmitInfo2 submitInfo {
-				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-				.waitSemaphoreInfoCount = 1,
-				.pWaitSemaphoreInfos = &waitSemaphoreInfo,
-				.commandBufferInfoCount = 1,
-				.pCommandBufferInfos = &bufferSubmitInfo,
-				.signalSemaphoreInfoCount = static_cast<std::uint32_t>(signalSemaphoreInfos.size()),
-				.pSignalSemaphoreInfos = signalSemaphoreInfos.data(),
-			};
-			vk::checkResult(device->graphicsQueue.submit(submitInfo, *syncData.presentFinished),
-							"Failed to submit frame command buffer to queue");
-
-			// Lastly, present the swapchain image as soon as rendering is done
-			const VkPresentInfoKHR presentInfo {
-				.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-				.waitSemaphoreCount = 1,
-				.pWaitSemaphores = &syncData.renderingFinished->handle,
-				.swapchainCount = 1,
-				.pSwapchains = &swapchain->swapchain.swapchain,
-				.pImageIndices = &swapchainImageIndex,
-			};
-			auto presentResult = device->graphicsQueue.present(presentInfo);
-			if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
-				swapchainNeedsRebuild = true;
-				continue;
-			}
-			vk::checkResult(presentResult, "Failed to present to queue");
-		}
+		renderer->draw(currentFrame, *scene, static_cast<float>(deltaTime));
 
 		FrameMark;
 		firstFrame = false;

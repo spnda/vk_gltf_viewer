@@ -227,7 +227,7 @@ Device::Device(const Instance& instance, VkSurfaceKHR surface) {
 	dlss::initSdk(instance, *this);
 #endif
 
-	resourceTable = std::make_unique<ResourceTable>(*this);
+	resourceTable = std::make_unique<graphics::vulkan::VkResourceTable>(*this);
 
 	// Create the VMA allocator
 	const VmaVulkanFunctions vmaFunctions {

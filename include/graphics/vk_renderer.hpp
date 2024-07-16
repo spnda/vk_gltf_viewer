@@ -8,12 +8,14 @@
 #include <vulkan/command_pool.hpp>
 #include <vulkan/sync_pools.hpp>
 
+#if defined(VKV_NV_DLSS)
 #include <nvsdk_ngx_defs.h>
+#endif
 
 #include <vk_gltf_viewer/device.hpp>
 #include <vk_gltf_viewer/swapchain.hpp>
 
-#include <imgui/renderer.hpp>
+#include <graphics/imgui/vk_renderer.hpp>
 #include <graphics/renderer.hpp>
 
 namespace graphics::vulkan {
@@ -48,7 +50,8 @@ class VkScene : graphics::Scene {
 	void updateTransformBuffer(std::size_t frameIndex);
 
 public:
-	void addMesh(std::shared_ptr<Mesh> mesh) override;
+	InstanceIndex addMesh(std::shared_ptr<Mesh> mesh) override;
+	void updateTransform(InstanceIndex instance, glm::fmat4x4 transform) override;
 
 	void updateDrawBuffers(std::size_t frameIndex, float dt);
 };
@@ -74,11 +77,13 @@ enum class ResolutionScalingModes {
 };
 
 class VkRenderer : public graphics::Renderer {
-	friend std::shared_ptr<Renderer> graphics::Renderer::createRenderer();
+	friend std::shared_ptr<Renderer> graphics::Renderer::createRenderer(GLFWwindow* window);
 
 	std::unique_ptr<Instance> instance;
 	std::unique_ptr<Device> device;
 	std::unique_ptr<Swapchain> swapchain;
+
+	std::unique_ptr<imgui::Renderer> imguiRenderer;
 
 	glm::u32vec2 renderResolution;
 	ResolutionScalingModes scalingMode = ResolutionScalingModes::None;
@@ -92,10 +97,9 @@ class VkRenderer : public graphics::Renderer {
 	std::vector<FrameSyncData> frameSyncData;
 	std::vector<FrameCommandPool> frameCommandPools;
 
-	std::unique_ptr<imgui::Renderer> imguiRenderer;
-
 	bool swapchainNeedsRebuild = false;
 
+public:
 	std::unique_ptr<Buffer> createUniqueBuffer() override;
 	std::shared_ptr<Buffer> createSharedBuffer() override;
 

@@ -5,7 +5,7 @@
 #include <vk_gltf_viewer/deletion_queue.hpp>
 #include <vk_gltf_viewer/device.hpp>
 
-void DeletionQueue::push(std::move_only_function<void()>&& function) {
+void DeletionQueue::push(std::function<void()>&& function) {
 	deletors.emplace_back(std::move(function));
 }
 

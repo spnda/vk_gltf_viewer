@@ -131,17 +131,17 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 		});
 
 		if (oldPrimitiveBuffer) {
-			device.get().timelineDeletionQueue->push([buffer = std::move(oldPrimitiveBuffer)]() mutable {
+			device.get().timelineDeletionQueue->push(make_shared_function([buffer = std::move(oldPrimitiveBuffer)]() mutable {
 				buffer.reset();
-			});
+			}));
 		}
 	}
 
 	{
 		if (materialBuffer) {
-			device.get().timelineDeletionQueue->push([buffer = std::move(materialBuffer)]() mutable {
+			device.get().timelineDeletionQueue->push(make_shared_function([buffer = std::move(materialBuffer)]() mutable {
 				buffer.reset();
-			});
+			}));
 		}
 
 		const VkBufferCreateInfo bufferCreateInfo {

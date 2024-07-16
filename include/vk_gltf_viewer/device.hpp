@@ -15,7 +15,7 @@
 #include <vulkan/sync_pools.hpp>
 
 #include <vk_gltf_viewer/deletion_queue.hpp>
-#include <vk_gltf_viewer/resource_table.hpp>
+#include <graphics/resource_table.hpp>
 #if defined(VKV_NV_AFTERMATH)
 #include <nvidia/aftermath.hpp>
 #endif
@@ -51,7 +51,7 @@ struct Device {
 	/** A timeline deletion queue for the frame rendering */
 	std::unique_ptr<TimelineDeletionQueue> timelineDeletionQueue;
 
-	std::unique_ptr<ResourceTable> resourceTable;
+	std::unique_ptr<graphics::vulkan::VkResourceTable> resourceTable;
 
 	/** The main graphics & present queue */
 	std::uint32_t graphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;

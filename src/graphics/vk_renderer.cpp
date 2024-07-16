@@ -16,13 +16,17 @@ void gvk::VkScene::updateTransformBuffer(std::size_t frameIndex) {
 	ZoneScoped;
 }
 
-void gvk::VkScene::addMesh(std::shared_ptr<Mesh> sharedMesh) {
+graphics::InstanceIndex gvk::VkScene::addMesh(std::shared_ptr<Mesh> sharedMesh) {
 	ZoneScoped;
 	meshes.emplace_back(std::move(sharedMesh));
 
 	// TODO: Can we invalidate less often somehow?
 	for (auto& drawBuffer : drawBuffers)
 		drawBuffer.isMeshletBufferBuilt = false;
+}
+
+void gvk::VkScene::updateTransform(graphics::InstanceIndex instance, glm::fmat4x4 transform) {
+	ZoneScoped;
 }
 
 void gvk::VkScene::updateDrawBuffers(std::size_t frameIndex, float dt) {
@@ -58,6 +62,9 @@ std::shared_ptr<graphics::Mesh> gvk::VkRenderer::createSharedMesh(std::span<glsl
 
 void gvk::VkRenderer::updateResolution(glm::u32vec2 resolution) {
 	ZoneScoped;
+	swapchain = Swapchain::recreate(std::move(swapchain));
+
+	swapchainNeedsRebuild = false;
 }
 
 void gvk::VkRenderer::prepareFrame(std::size_t frameIndex) {

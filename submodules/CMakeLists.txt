@@ -130,6 +130,7 @@ if (EXISTS "${VKV_DEPS_DIR}/imgui")
 
     add_library(imgui)
     add_library(imgui::imgui ALIAS imgui)
+    target_compile_features(imgui PUBLIC cxx_std_11)
     add_source_directory(TARGET imgui FOLDER "${IMGUI_DIRECTORY}")
     add_source_directory(TARGET imgui FOLDER "${IMGUI_DIRECTORY}/misc/cpp/")
 
@@ -177,7 +178,7 @@ if (EXISTS "${VKV_DEPS_DIR}/ktx-software")
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${TEMPORARY_RUNTIME_OUTPUT_DIRECTORY})
 endif()
 
-if (EXISTS "${VKV_DEPS_DIR}/nv-aftermath")
+if (EXISTS "${VKV_DEPS_DIR}/nv-aftermath" AND NOT APPLE)
     message(STATUS "vk_gltf_viewer: Found NVIDIA Aftermath")
 
     add_library(nv_aftermath SHARED IMPORTED GLOBAL)
@@ -197,7 +198,7 @@ if (EXISTS "${VKV_DEPS_DIR}/nv-aftermath")
     endif()
 endif()
 
-if(EXISTS "${VKV_DEPS_DIR}/dlss")
+if(EXISTS "${VKV_DEPS_DIR}/dlss" AND NOT APPLE)
     message(STATUS "vk_gltf_viewer: Found NVIDIA DLSS")
 
     add_library(nv_dlss SHARED IMPORTED GLOBAL)
@@ -219,6 +220,19 @@ if(EXISTS "${VKV_DEPS_DIR}/dlss")
             IMPORTED_CONFIGURATIONS "RELEASE;DEBUG"
         )
     endif()
+endif()
+
+if(EXISTS "${VKV_DEPS_DIR}/metal-cpp" AND APPLE)
+    add_library(metal-cpp INTERFACE)
+    add_library(metal::cpp ALIAS metal-cpp)
+    target_include_directories(metal-cpp INTERFACE "${VKV_DEPS_DIR}/metal-cpp")
+    target_link_libraries(metal-cpp INTERFACE
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework AppKit"
+            "-framework Foundation"
+            "-framework QuartzCore"
+    )
 endif()
 
 return(PROPAGATE SHADER_INCLUDE_DIRS)

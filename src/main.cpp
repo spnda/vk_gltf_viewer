@@ -18,7 +18,6 @@ int wmain(int argc, wchar_t* argv[]) {
 #else
 int main(int argc, char* argv[]) {
 #endif
-
 	std::vector<std::filesystem::path> gltfs(argc - 1);
 	for (std::size_t i = 0; i < gltfs.size(); ++i) {
 		gltfs[i] = argv[i + 1];
@@ -38,6 +37,10 @@ int main(int argc, char* argv[]) {
 	setpriority(PRIO_PROCESS, getpid(), PRIO_MAX);
 #endif
 
+#if defined(__APPLE__)
+	auto* autoreleasePool = NS::AutoreleasePool::alloc()->init();
+#endif
+
 	initializeScheduler();
 
 	// Create the application. We only use the unique_ptr here to be able to run the ctor within
@@ -55,5 +58,8 @@ int main(int argc, char* argv[]) {
 
 	taskScheduler.WaitforAllAndShutdown();
 
+#if defined(__APPLE__)
+	autoreleasePool->release();
+#endif
 	return 0;
 }

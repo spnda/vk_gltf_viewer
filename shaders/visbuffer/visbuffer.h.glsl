@@ -35,13 +35,13 @@ layout(buffer_reference, scalar, buffer_reference_align = 8) restrict readonly b
 #endif
 
 struct VisbufferPushConstants {
-	BUFFER_REF(MeshletDraws) drawBuffer MEMBER_INIT(0);
+	BUFFER_REF(MeshletDraws, MeshletDraw) drawBuffer MEMBER_INIT(0);
 	uint meshletDrawCount MEMBER_INIT(0);
 
-	BUFFER_REF(TransformBuffer) transformBuffer MEMBER_INIT(0);
-	BUFFER_REF(Primitives) primitiveBuffer MEMBER_INIT(0);
-	BUFFER_REF(CameraBuffer) cameraBuffer MEMBER_INIT(0);
-	BUFFER_REF(Materials) materialBuffer MEMBER_INIT(0);
+	BUFFER_REF(TransformBuffer, mat4) transformBuffer MEMBER_INIT(0);
+	BUFFER_REF(Primitives, Primitive) primitiveBuffer MEMBER_INIT(0);
+	BUFFER_REF(CameraBuffer, Camera) cameraBuffer MEMBER_INIT(0);
+	BUFFER_REF(Materials, Material) materialBuffer MEMBER_INIT(0);
 
 	ResourceTableHandle depthPyramid;
 };
@@ -50,11 +50,12 @@ struct VisbufferResolvePushConstants {
 	ResourceTableHandle visbufferHandle;
 	ResourceTableHandle outputImageHandle;
 
-	BUFFER_REF(MeshletDraws) drawBuffer MEMBER_INIT(0);
-	BUFFER_REF(Primitives) primitiveBuffer MEMBER_INIT(0);
-	BUFFER_REF(Materials) materialBuffer MEMBER_INIT(0);
+	BUFFER_REF(MeshletDraws, MeshletDraw) drawBuffer MEMBER_INIT(0);
+	BUFFER_REF(Primitives, Primitive) primitiveBuffer MEMBER_INIT(0);
+	BUFFER_REF(Materials, Material) materialBuffer MEMBER_INIT(0);
 };
 
+#ifndef SHADER_METAL
 uint packVisBuffer(PARAMETER_COPY(uint) drawIndex, PARAMETER_COPY(uint) primitiveId) {
 	return (drawIndex << triangleBits) | primitiveId;
 }
@@ -63,8 +64,9 @@ void unpackVisBuffer(PARAMETER_COPY(uint) visBuffer, PARAMETER_REF(uint) drawInd
 	primitiveId = visBuffer & ((1 << triangleBits) - 1);
 	drawIndex = visBuffer >> triangleBits;
 }
+#endif
 
-const uint visbufferClearValue = ~0U;
+GLSL_CONSTANT uint visbufferClearValue = ~0U;
 
 GLSL_NAMESPACE_END
 #endif

@@ -11,7 +11,7 @@
 #include <tracy/Tracy.hpp>
 
 #include <vk_gltf_viewer/scheduler.hpp>
-#include <imgui/renderer.hpp>
+#include <graphics/imgui/vk_renderer.hpp>
 
 #include <vulkan/vk.hpp>
 #include <vulkan/debug_utils.hpp>
@@ -26,12 +26,13 @@
 #include <imgui_impl_glfw.h> // Include after imgui.hpp
 
 namespace fs = std::filesystem;
+namespace gvk = graphics::vulkan;
 
-namespace imgui {
+namespace graphics::vulkan::imgui {
 	const auto pipelineCacheFile = std::filesystem::current_path() / "cache/imgui.cache";
 } // namespace imgui
 
-imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchainImageFormat) : device(_device) {
+gvk::imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchainImageFormat) : device(_device) {
 	ZoneScoped;
 	vk::PipelineCacheLoadTask cacheLoadTask(device.get(), &pipelineCache, pipelineCacheFile);
 	taskScheduler.AddTaskSetToPipe(&cacheLoadTask);
@@ -49,7 +50,7 @@ imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchai
 
 	auto& io = ImGui::GetIO();
 	io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
-	io.BackendRendererName = "imgui::ImGuiRenderer";
+	io.BackendRendererName = "vulkan::imgui::Renderer";
 	io.BackendPlatformName = "Vulkan";
 
 	// Create the sampler. It is static, therefore we will pass it as an immutable sampler to the
@@ -130,7 +131,7 @@ imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swapchai
 	vkDestroyShaderModule(device.get(), vertexShader, vk::allocationCallbacks.get());
 }
 
-imgui::Renderer::~Renderer() {
+gvk::imgui::Renderer::~Renderer() {
 	ZoneScoped;
 	vk::PipelineCacheSaveTask cacheSaveTask(device.get(), &pipelineCache, pipelineCacheFile);
 
@@ -160,7 +161,7 @@ imgui::Renderer::~Renderer() {
 	}
 }
 
-void imgui::Renderer::createFontAtlas() {
+void gvk::imgui::Renderer::createFontAtlas() {
 	ZoneScoped;
 	auto* fonts = ImGui::GetIO().Fonts;
 	fonts->Build();
@@ -295,7 +296,7 @@ void imgui::Renderer::createFontAtlas() {
 	});
 }
 
-void imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize) {
+void gvk::imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize vertexSize, VkDeviceSize indexSize) {
 	ZoneScoped;
 	// We will allocate at least space for 10.000 vertices, which is already more than most UIs will use.
 	constexpr VkDeviceSize minimumVertexCount = 10'000;
@@ -331,7 +332,7 @@ void imgui::Renderer::createGeometryBuffers(std::size_t index, VkDeviceSize vert
 	}
 }
 
-void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainImageView, glm::u32vec2 framebufferSize, std::size_t currentFrame) {
+void gvk::imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainImageView, glm::u32vec2 framebufferSize, std::size_t currentFrame) {
 	ZoneScoped;
 	auto* drawData = ImGui::GetDrawData();
 
@@ -458,11 +459,11 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 				continue;
 			}
 
-			const glm::u32vec2 clipMin = {
+			const glm::u32vec2 clipMin {
 				fastgltf::max(0U, static_cast<std::uint32_t>((cmd.ClipRect.x - clipOffset.x) * clipScale.x)),
 				fastgltf::max(0U, static_cast<std::uint32_t>((cmd.ClipRect.y - clipOffset.y) * clipScale.y))
 			};
-			const glm::u32vec2 clipMax = {
+			const glm::u32vec2 clipMax {
 				fastgltf::min(outputSize.x, static_cast<std::uint32_t>((cmd.ClipRect.z - clipOffset.x) * clipScale.x)),
 				fastgltf::min(outputSize.y, static_cast<std::uint32_t>((cmd.ClipRect.w - clipOffset.y) * clipScale.y))
 			};
@@ -507,7 +508,7 @@ void imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapchainI
 	vkCmdEndRendering(commandBuffer);
 }
 
-VkResult imgui::Renderer::initFrameData(std::uint32_t frameCount) {
+VkResult gvk::imgui::Renderer::initFrameData(std::uint32_t frameCount) {
 	ZoneScoped;
 	// Create the index/vertex buffers. As the swapchain implementation might have multiple
 	// swapchain images, meaning we have multiple frames in flight, we'll need unique buffers
@@ -519,7 +520,7 @@ VkResult imgui::Renderer::initFrameData(std::uint32_t frameCount) {
 	return VK_SUCCESS;
 }
 
-void imgui::Renderer::newFrame() {
+void gvk::imgui::Renderer::newFrame() {
 	ZoneScoped;
 	ImGui_ImplGlfw_NewFrame();
 }

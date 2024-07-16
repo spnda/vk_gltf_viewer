@@ -18,7 +18,7 @@
 #include <vk_gltf_viewer/image.hpp>
 #include <vk_gltf_viewer/buffer.hpp>
 
-namespace imgui {
+namespace graphics::vulkan::imgui {
 	struct PerFrameBuffers {
 		std::unique_ptr<ScopedBuffer> vertexBuffer;
 		VkDeviceAddress vertexBufferAddress = 0;

@@ -289,9 +289,11 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 	ZoneScoped;
 	glsl::Primitive primitive;
 	// TODO: More explicit way of setting defaults?
-	primitive.materialIndex = gltfPrimitive.materialIndex.transform([](auto x) {
-		return x + 1;
-	}).value_or(0U);
+	if (gltfPrimitive.materialIndex) {
+		primitive.materialIndex = *gltfPrimitive.materialIndex + 1;
+	} else {
+		primitive.materialIndex = 0;
+	}
 
 	// The code says this is possible, the spec says otherwise.
 	auto* positionIt = gltfPrimitive.findAttribute("POSITION");

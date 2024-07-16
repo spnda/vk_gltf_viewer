@@ -2,6 +2,7 @@
 
 #include <tracy/Tracy.hpp>
 
+#include <fastgltf/util.hpp>
 #include <vk_gltf_viewer/scheduler.hpp>
 
 struct PinnedTaskRunLoop : enki::IPinnedTask {
@@ -15,11 +16,11 @@ struct PinnedTaskRunLoop : enki::IPinnedTask {
 	}
 };
 
-std::array<PinnedTaskRunLoop, std::to_underlying(PinnedThreadId::Count)> pinnedTaskRunners;
+std::array<PinnedTaskRunLoop, fastgltf::to_underlying(PinnedThreadId::Count)> pinnedTaskRunners;
 
 void initializeScheduler() {
 	ZoneScoped;
-	auto pinnedThreadCount = std::to_underlying(PinnedThreadId::Count);
+	auto pinnedThreadCount = fastgltf::to_underlying(PinnedThreadId::Count);
 
 	enki::TaskSchedulerConfig config;
 	config.numTaskThreadsToCreate += pinnedThreadCount;
@@ -36,5 +37,5 @@ void initializeScheduler() {
 
 std::uint32_t getPinnedThreadNum(PinnedThreadId id) {
 	assert(!taskScheduler.GetIsShutdownRequested());
-	return (taskScheduler.GetNumTaskThreads() - std::to_underlying(PinnedThreadId::Count)) + std::to_underlying(id);
+	return (taskScheduler.GetNumTaskThreads() - fastgltf::to_underlying(PinnedThreadId::Count)) + fastgltf::to_underlying(id);
 }

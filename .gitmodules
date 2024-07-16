@@ -49,3 +49,6 @@
 [submodule "submodules/dlss"]
 	path = submodules/dlss
 	url = http://github.com/NVIDIA/DLSS.git
+[submodule "submodules/metal-cpp"]
+	path = submodules/metal-cpp
+	url = https://github.com/bkaradzic/metal-cpp

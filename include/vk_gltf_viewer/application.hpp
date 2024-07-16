@@ -10,13 +10,16 @@
 #include <vulkan/vk.hpp>
 #include <vulkan/command_pool.hpp>
 
+#if defined(VKV_NV_DLSS)
 #include <nvsdk_ngx_defs.h>
+#endif
+
+#include <graphics/renderer.hpp>
 
 #include <vk_gltf_viewer/device.hpp>
 #include <vk_gltf_viewer/swapchain.hpp>
 #include <vk_gltf_viewer/deletion_queue.hpp>
 #include <vk_gltf_viewer/image.hpp>
-#include <imgui/renderer.hpp>
 #include <vk_gltf_viewer/assets.hpp>
 #include <vk_gltf_viewer/camera.hpp>
 
@@ -99,6 +102,10 @@ class Application {
 	/** The global deletion queue for all sorts of objects */
 	DeletionQueue deletionQueue;
 
+	std::shared_ptr<graphics::Renderer> renderer;
+
+	std::shared_ptr<graphics::Scene> scene;
+
 	GLFWwindow* window;
 	VkSurfaceKHR surface = VK_NULL_HANDLE;
 
@@ -121,8 +128,6 @@ class Application {
 
 	std::vector<FrameSyncData> frameSyncData;
 	std::vector<FrameCommandPool> frameCommandPools;
-
-	std::unique_ptr<imgui::Renderer> imguiRenderer;
 
 	std::unique_ptr<Camera> camera;
 

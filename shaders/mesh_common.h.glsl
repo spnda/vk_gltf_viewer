@@ -100,10 +100,10 @@ struct MeshletDraw {
 };
 
 struct Primitive {
-	BUFFER_REF(VertexIndices) vertexIndexBuffer MEMBER_INIT(0);
-	BUFFER_REF(PrimitiveIndices) primitiveIndexBuffer MEMBER_INIT(0);
-	BUFFER_REF(Vertices) vertexBuffer MEMBER_INIT(0);
-	BUFFER_REF(Meshlets) meshletBuffer MEMBER_INIT(0);
+	BUFFER_REF(VertexIndices, uint) vertexIndexBuffer MEMBER_INIT(0);
+	BUFFER_REF(PrimitiveIndices, uint8_t) primitiveIndexBuffer MEMBER_INIT(0);
+	BUFFER_REF(Vertices, Vertex) vertexBuffer MEMBER_INIT(0);
+	BUFFER_REF(Meshlets, Meshlet) meshletBuffer MEMBER_INIT(0);
 
 	vec3 aabbExtents;
 	vec3 aabbCenter;

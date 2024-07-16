@@ -14,7 +14,7 @@ target_link_libraries(vk_gltf_viewer PRIVATE fastgltf wuffs dds_image ktx_read::
 target_link_libraries(vk_gltf_viewer PRIVATE glfw::glfw imgui::imgui enkiTS::enkiTS Tracy::Client fmt::fmt glm::glm)
 target_link_libraries(vk_gltf_viewer PRIVATE Vulkan::Headers Vulkan::Utils volk::volk_headers vk-bootstrap::vk-bootstrap Vulkan::MemoryAllocator)
 
-if (ENABLE_NV_AFTERMATH AND TARGET nv::aftermath)
+if(ENABLE_NV_AFTERMATH AND TARGET nv::aftermath)
     message(STATUS "vk_gltf_viewer: Enabling use of NV Aftermath")
     target_link_libraries(vk_gltf_viewer PRIVATE nv::aftermath)
     target_compile_definitions(vk_gltf_viewer PRIVATE "VKV_NV_AFTERMATH=1")
@@ -25,7 +25,13 @@ if(TARGET nv::dlss)
     target_compile_definitions(vk_gltf_viewer PRIVATE "VKV_NV_DLSS=1")
 endif()
 
+if(TARGET metal-cpp)
+    target_link_libraries(vk_gltf_viewer PRIVATE metal::cpp)
+    target_compile_definitions(vk_gltf_viewer PRIVATE "VKV_METAL=1")
+endif()
+
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/graphics")
+add_source_directory(TARGET vk_gltf_viewer FOLDER "src/graphics/imgui")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/imgui")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/nvidia")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vk_gltf_viewer")
@@ -33,6 +39,7 @@ add_source_directory(TARGET vk_gltf_viewer FOLDER "src/vulkan")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "src")
 
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/graphics")
+add_source_directory(TARGET vk_gltf_viewer FOLDER "include/graphics/imgui")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/imgui")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/nvidia")
 add_source_directory(TARGET vk_gltf_viewer FOLDER "include/vk_gltf_viewer")
@@ -57,22 +64,63 @@ foreach(HEADER_FILE ${SHADER_HEADER_FILES})
     target_sources(vk_gltf_viewer PUBLIC ${HEADER_FILE})
 endforeach()
 
-# Try and search for glslangValidator, which we use to compile shaders
-find_program(GLSLANG_EXECUTABLE glslangValidator)
-if (NOT GLSLANG_EXECUTABLE)
-    message(FATAL_ERROR "Failed to find glslangValidator executable required for compiling shaders")
-endif()
+#- Recursive shader include parser -------------------------------------------------------------------------------------
 
-message(STATUS "vk_gltf_viewer: Found glslangValidator: ${GLSLANG_EXECUTABLE}")
+function(parse_includes RETURN_LIST CONTENTS)
+    foreach(LINE IN LISTS ${CONTENTS})
+        if (LINE MATCHES "^#include ")
+            string(LENGTH ${LINE} LINE_LENGTH)
+            math(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
+            string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
+            string(SUBSTRING ${LINE} 9 1 INCLUDE_CHAR)
+
+            # We'll ignore files which are included with <> instead of "".
+            # We consider these to be C++ header includes wrapped in defined(__cplusplus) guards.
+            string(SUBSTRING ${LINE} 9 1 INCLUDE_CHAR)
+            if (${INCLUDE_CHAR} STREQUAL "<")
+                continue()
+            endif()
+
+            # Search for the shader in the include directories (note that these are ordered).
+            foreach(INCL_DIR IN LISTS LOCAL_INCLUDE_DIRS)
+                set(INCLUDED_FILE_ABS ${INCL_DIR}/${INCLUDED_FILE})
+                if(EXISTS ${INCLUDED_FILE_ABS})
+                    list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_ABS})
+
+                    # Load the included file, and parse it recursively
+                    file(STRINGS ${INCLUDED_FILE_ABS} INCLUDED_FILE_CONTENTS)
+                    parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
+                    set(SHADER_FOUND TRUE)
+                endif()
+            endforeach()
+
+            if (NOT ${SHADER_FOUND})
+                message(STATUS "Failed to find included file: ${INCLUDED_FILE}")
+            endif()
+            set(SHADER_FOUND "")
+        endif()
+    endforeach()
+
+    return(PROPAGATE ${RETURN_LIST})
+endfunction()
+
+#- GLSL/SPIR-V shaders -------------------------------------------------------------------------------------------------
+
+# Try and search for glslang, which we use to compile shaders
+find_program(GLSLANG_EXECUTABLE glslang)
+if (NOT GLSLANG_EXECUTABLE)
+    message(FATAL_ERROR "Failed to find glslang executable required for compiling shaders")
+endif()
+message(STATUS "vk_gltf_viewer: Found glslang: ${GLSLANG_EXECUTABLE}")
 
 list(APPEND SHADER_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/shaders")
 
 # Get a list of all GLSL shaders in the shaders directory and generate CMake targets for them
 # This piece of code is largely copied/refactored from my shader_processor project.
 # https://github.com/spnda/shader_processor/blob/a4a2fe2a60549b245503c4c9f6c2a4dfff19eb44/CMakeLists.txt#L9-L71
-file(GLOB_RECURSE SHADER_FILES "shaders/*.glsl" "shaders/**/*.glsl")
-set(SHADER_C_NAMES "") # List holding all compiled shader names
-foreach(SHADER_FILE ${SHADER_FILES})
+file(GLOB_RECURSE GLSL_SHADER_FILES "shaders/*.glsl" "shaders/**/*.glsl")
+set(GLSL_SHADER_C_NAMES "") # List holding all compiled shader names
+foreach(SHADER_FILE ${GLSL_SHADER_FILES})
     cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
 
     # Rudimentary parsing to detect if this file is a header or not
@@ -92,45 +140,6 @@ foreach(SHADER_FILE ${SHADER_FILES})
     # Match glslang's behaviour by first searching the shader's directory, and then
     # searching the root shaders directory and other include directories.
     set(LOCAL_INCLUDE_DIRS "${SHADER_FOLDER};${SHADER_INCLUDE_DIRS}")
-
-    # Recursively parses file includes
-    function(parse_includes RETURN_LIST CONTENTS)
-        foreach(LINE IN LISTS ${CONTENTS})
-            if (LINE MATCHES "^#include ")
-                string(LENGTH ${LINE} LINE_LENGTH)
-                math(EXPR LINE_LENGTH "${LINE_LENGTH}-10-1") # Remove #include and the last "
-                string(SUBSTRING ${LINE} 10 ${LINE_LENGTH} INCLUDED_FILE)
-                string(SUBSTRING ${LINE} 9 1 INCLUDE_CHAR)
-
-                # We'll ignore files which are included with <> instead of "".
-                # We consider these to be C++ header includes wrapped in defined(__cplusplus) guards.
-                string(SUBSTRING ${LINE} 9 1 INCLUDE_CHAR)
-                if (${INCLUDE_CHAR} STREQUAL "<")
-                    continue()
-                endif()
-
-                # Search for the shader in the include directories (note that these are ordered).
-                foreach(INCL_DIR IN LISTS LOCAL_INCLUDE_DIRS)
-                    set(INCLUDED_FILE_ABS ${INCL_DIR}/${INCLUDED_FILE})
-                    if(EXISTS ${INCLUDED_FILE_ABS})
-                        list(APPEND ${RETURN_LIST} ${INCLUDED_FILE_ABS})
-
-                        # Load the included file, and parse it recursively
-                        file(STRINGS ${INCLUDED_FILE_ABS} INCLUDED_FILE_CONTENTS)
-                        parse_includes(${RETURN_LIST} INCLUDED_FILE_CONTENTS)
-                        set(SHADER_FOUND TRUE)
-                    endif()
-                endforeach()
-
-                if (NOT ${SHADER_FOUND})
-                    message(STATUS "Failed to find included file: ${INCLUDED_FILE}")
-                endif()
-                set(SHADER_FOUND "")
-            endif()
-        endforeach()
-
-        return(PROPAGATE ${RETURN_LIST})
-    endfunction()
 
     # Read the file and parse includes recursively
     file(STRINGS ${SHADER_FILE} FILE_CONTENTS)
@@ -160,7 +169,7 @@ foreach(SHADER_FILE ${SHADER_FILES})
         COMMENT "Packaging ${SHADER_FILE}"
     )
 
-    list(APPEND SHADER_C_NAMES ${SHADER_FILENAME_C})
+    list(APPEND GLSL_SHADER_C_NAMES ${SHADER_FILENAME_C})
 
     # Finally, add the generated source file as a target source
     target_sources(vk_gltf_viewer PRIVATE ${SPIRV_CPP_FILE})
@@ -170,12 +179,54 @@ endforeach()
 # This effectively creates a list of "extern std::span" for each shader, which are all defined in
 # their respective cpp files, as generated above.
 set(SHADER_DATA_SPANS "")
-foreach(SHADER_NAME IN LISTS SHADER_C_NAMES)
+foreach(SHADER_NAME IN LISTS GLSL_SHADER_C_NAMES)
     list(APPEND SHADER_DATA_SPANS "\nextern const std::span<const std::uint32_t> ${SHADER_NAME}")
 endforeach()
-
 configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/spirv_manifest.hpp.in" "${CMAKE_CURRENT_BINARY_DIR}/include/spirv_manifest.hpp")
 target_include_directories(vk_gltf_viewer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/include)
+
+#- Metal shaders -------------------------------------------------------------------------------------------------------
+
+file(GLOB_RECURSE MSL_SHADER_FILES "shaders/*.metal" "shaders/**/*.metal")
+set(MSL_SHADER_IR_FILES "")
+foreach(SHADER_FILE ${MSL_SHADER_FILES})
+    message(STATUS "vk_gltf_viewer: Found shader: ${SHADER_FILE}")
+    cmake_path(GET SHADER_FILE FILENAME SHADER_FILENAME)
+    cmake_path(GET SHADER_FILE PARENT_PATH SHADER_FOLDER)
+
+    # Match glslang's behaviour by first searching the shader's directory, and then
+    # searching the root shaders directory and other include directories.
+    set(LOCAL_INCLUDE_DIRS "${SHADER_FOLDER};${SHADER_INCLUDE_DIRS}")
+
+    # Read the file and parse includes recursively
+    file(STRINGS ${SHADER_FILE} FILE_CONTENTS)
+    set(FILE_INCLUDES "")
+    parse_includes(FILE_INCLUDES FILE_CONTENTS)
+    list(REMOVE_DUPLICATES FILE_INCLUDES)
+    message(STATUS "Found Metal includes: ${FILE_INCLUDES}")
+
+    # Compile Metal source to AIR file
+    add_custom_command(
+        OUTPUT ${SHADER_FILENAME}.air
+        COMMAND xcrun metal "-I$<JOIN:${LOCAL_INCLUDE_DIRS},;-I>" -o ${SHADER_FILENAME}.air -c ${SHADER_FILE}
+        DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
+        COMMENT "Compiling ${SHADER_FILE}"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMAND_EXPAND_LISTS
+    )
+    list(APPEND MSL_SHADER_IR_FILES ${SHADER_FILENAME}.air)
+endforeach()
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shaders.metallib
+    COMMAND xcrun metallib -o ${CMAKE_CURRENT_BINARY_DIR}/shaders.metallib ${MSL_SHADER_IR_FILES}
+    DEPENDS ${MSL_SHADER_IR_FILES}
+    COMMENT "Packaging Metal library"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMAND_EXPAND_LISTS
+)
+add_custom_target(metal_shader_library DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shaders.metallib)
+add_dependencies(vk_gltf_viewer metal_shader_library)
 
 # Copy all required runtime DLLs into the build directory
 add_custom_command(TARGET vk_gltf_viewer POST_BUILD
