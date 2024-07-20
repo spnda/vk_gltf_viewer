@@ -83,31 +83,11 @@ void generateCameraFrustum(const glm::mat4x4& vp, std::array<glm::vec4, 6>& frus
 	}
 }
 
-Camera::Camera(const Device& _device, std::size_t frameOverlap) : device(_device) {
-	ZoneScoped;
-	cameraBuffers.resize(frameOverlap);
-
-	for (std::size_t i = 0; auto& cameraBuffer : cameraBuffers) {
-		const VmaAllocationCreateInfo allocationInfo {
-			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
-			.usage = VMA_MEMORY_USAGE_AUTO,
-			.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-		};
-		const VkBufferCreateInfo bufferInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(glsl::Camera),
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		};
-		cameraBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferInfo, &allocationInfo);
-		vk::setDebugUtilsName(device.get(), cameraBuffer->getHandle(), fmt::format("Camera buffer {}", i++));
-	}
-}
+Camera::Camera() = default;
 
 Camera::~Camera() noexcept = default;
 
-void Camera::updateCamera(std::size_t currentFrame, GLFWwindow* window, double deltaTime, glm::u32vec2 framebufferExtent) {
-	ScopedMap<glsl::Camera> mappedCamera(*cameraBuffers[currentFrame]);
-
+void Camera::updateCamera(GLFWwindow* window, double deltaTime, glm::u32vec2 framebufferExtent) {
 	// Update the acceleration vector based on keyboard input
 	{
 		auto& acc = accelerationVector;
@@ -175,20 +155,16 @@ void Camera::updateCamera(std::size_t currentFrame, GLFWwindow* window, double d
 	static constexpr auto fov = glm::radians(75.0f);
 	const auto aspectRatio = static_cast<float>(framebufferExtent.x) / static_cast<float>(framebufferExtent.y);
 	auto projectionMatrix = glm::perspectiveRH_ZO(fov, aspectRatio, zNear, zFar);
-	projectionMatrix[1][1] *= -1;
+	// projectionMatrix[1][1] *= -1;
 
-	auto& camera = *mappedCamera.get();
-	camera.prevViewProjection = camera.viewProjection;
-	camera.prevOcclusionViewProjection = camera.occlusionViewProjection;
+	prevViewProjection = viewProjection;
+	prevOcclusionViewProjection = occlusionViewProjection;
 
-	// mappedCamera.get()->projection = reverseDepth(projectionMatrix);
-	mappedCamera.get()->viewProjection = reverseDepth(projectionMatrix) * view;
-	viewProjection = mappedCamera.get()->viewProjection;
-	//mappedCamera.get()->views[0].viewProjection = reverseDepth(projectionMatrix) * mappedCamera.get()->view;
+	viewProjection = reverseDepth(projectionMatrix) * view;
 
 	if (!freezeCullingMatrix)
-		mappedCamera.get()->occlusionViewProjection = viewProjection;
+		occlusionViewProjection = viewProjection;
 
 	if (!freezeCameraFrustum)
-		generateCameraFrustum(mappedCamera.get()->viewProjection, mappedCamera.get()->frustum);
+		generateCameraFrustum(viewProjection, frustum);
 }

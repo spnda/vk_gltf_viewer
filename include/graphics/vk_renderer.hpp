@@ -50,7 +50,7 @@ class VkScene : graphics::Scene {
 	void updateTransformBuffer(std::size_t frameIndex);
 
 public:
-	InstanceIndex addMesh(std::shared_ptr<Mesh> mesh) override;
+	InstanceIndex addMeshInstance(std::shared_ptr<Mesh> mesh) override;
 	void updateTransform(InstanceIndex instance, glm::fmat4x4 transform) override;
 
 	void updateDrawBuffers(std::size_t frameIndex, float dt);
@@ -103,7 +103,9 @@ public:
 	std::unique_ptr<Buffer> createUniqueBuffer() override;
 	std::shared_ptr<Buffer> createSharedBuffer() override;
 
-	std::shared_ptr<Mesh> createSharedMesh(std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer) override;
+	std::shared_ptr<Mesh> createSharedMesh(
+			std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
+			glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) override;
 
 	bool canRender() override {
 		return !swapchainNeedsRebuild;
@@ -112,6 +114,6 @@ public:
 	void updateResolution(glm::u32vec2 resolution) override;
 
 	void prepareFrame(std::size_t frameIndex) override;
-	bool draw(std::size_t frameIndex, Scene& world, float dt) override;
+	bool draw(std::size_t frameIndex, Scene& world, const glsl::Camera& camera, float dt) override;
 };
 } // namespace graphics::vulkan

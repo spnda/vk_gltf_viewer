@@ -55,7 +55,6 @@ struct VisbufferResolvePushConstants {
 	BUFFER_REF(Materials, Material) materialBuffer MEMBER_INIT(0);
 };
 
-#ifndef SHADER_METAL
 uint packVisBuffer(PARAMETER_COPY(uint) drawIndex, PARAMETER_COPY(uint) primitiveId) {
 	return (drawIndex << triangleBits) | primitiveId;
 }
@@ -64,7 +63,6 @@ void unpackVisBuffer(PARAMETER_COPY(uint) visBuffer, PARAMETER_REF(uint) drawInd
 	primitiveId = visBuffer & ((1 << triangleBits) - 1);
 	drawIndex = visBuffer >> triangleBits;
 }
-#endif
 
 GLSL_CONSTANT uint visbufferClearValue = ~0U;
 

@@ -13,14 +13,15 @@
 #include <ui/ui.h.glsl>
 
 #include <graphics/imgui/mtl_renderer.hpp>
+#include <graphics/mtl_renderer.hpp>
 
 namespace gmtl = graphics::metal;
 
-gmtl::imgui::Renderer::Renderer(NS::SharedPtr<MTL::Device> nDevice, NS::SharedPtr<MTL::Library> globalLibrary, std::shared_ptr<MtlResourceTable> nResourceTable)
+gmtl::imgui::Renderer::Renderer(NS::SharedPtr<MTL::Device> nDevice, NS::SharedPtr<MTL::Library> globalLibrary, std::shared_ptr<MtlResourceTable> nResourceTable, MTL::PixelFormat imageFormat)
 		: device(std::move(nDevice)), resourceTable(std::move(nResourceTable)) {
 	ZoneScoped;
-	MTL::Function* vertexFunction = globalLibrary->newFunction(NS::String::string("ui_vert", NS::UTF8StringEncoding))->autorelease();
-	MTL::Function* fragmentFunction = globalLibrary->newFunction(NS::String::string("ui_frag", NS::UTF8StringEncoding))->autorelease();
+	auto* vertexFunction = globalLibrary->newFunction(NS::String::string("ui_vert", NS::UTF8StringEncoding))->autorelease();
+	auto* fragmentFunction = globalLibrary->newFunction(NS::String::string("ui_frag", NS::UTF8StringEncoding))->autorelease();
 
 	auto* pipelineDescriptor = MTL::RenderPipelineDescriptor::alloc()->init()->autorelease();
 	pipelineDescriptor->setVertexFunction(vertexFunction);
@@ -28,7 +29,7 @@ gmtl::imgui::Renderer::Renderer(NS::SharedPtr<MTL::Device> nDevice, NS::SharedPt
 	pipelineDescriptor->setRasterSampleCount(1);
 
 	auto* colorAttachment = pipelineDescriptor->colorAttachments()->object(0);
-	colorAttachment->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA8Unorm_sRGB);
+	colorAttachment->setPixelFormat(imageFormat);
 	colorAttachment->setBlendingEnabled(true);
 	colorAttachment->setRgbBlendOperation(MTL::BlendOperationAdd);
 	colorAttachment->setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);
@@ -77,7 +78,7 @@ gmtl::imgui::Renderer::Renderer(NS::SharedPtr<MTL::Device> nDevice, NS::SharedPt
 	fontAtlasHandle = resourceTable->allocateSampledImage(fontAtlas, fontAtlasSampler);
 	io.Fonts->SetTexID(fontAtlasHandle);
 
-	buffers.resize(3); // TODO: Get the actual frame overlap count
+	buffers.resize(frameOverlap);
 }
 
 gmtl::imgui::Renderer::~Renderer() noexcept {
@@ -142,7 +143,7 @@ void gmtl::imgui::Renderer::draw(MTL::CommandBuffer* commandBuffer, CA::MetalDra
 	auto* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init()->autorelease();
 	auto* colorAttachment = renderPassDescriptor->colorAttachments()->object(0);
 	colorAttachment->init();
-	colorAttachment->setLoadAction(MTL::LoadActionClear);
+	colorAttachment->setLoadAction(MTL::LoadActionLoad);
 	colorAttachment->setStoreAction(MTL::StoreActionStore);
 	colorAttachment->setClearColor(MTL::ClearColor::Make(0.f, 0.f, 0.f, 1.f));
 	colorAttachment->setTexture(drawable->texture());

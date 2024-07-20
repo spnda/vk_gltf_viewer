@@ -11,6 +11,9 @@
 namespace graphics {
 	using index_t = std::uint32_t; // TODO: Support dynamic index bit width?
 
+	/** The amount of frames we render ahead, regardless of what the windowing system or GPU supports */
+	static constexpr std::uint32_t frameOverlap = 3;
+
 	class Buffer {
 
 	};
@@ -26,7 +29,7 @@ namespace graphics {
 		Scene() noexcept = default;
 		virtual ~Scene() noexcept = default;
 
-		virtual InstanceIndex addMesh(std::shared_ptr<Mesh> mesh) = 0;
+		[[nodiscard]] virtual InstanceIndex addMeshInstance(std::shared_ptr<Mesh> mesh) = 0;
 		virtual void updateTransform(InstanceIndex instance, glm::fmat4x4 transform) = 0;
 	};
 
@@ -38,14 +41,16 @@ namespace graphics {
 		Renderer() noexcept = default;
 		virtual ~Renderer() noexcept = default;
 
-		static std::shared_ptr<Renderer> createRenderer(GLFWwindow* window);
+		[[nodiscard]] static std::shared_ptr<Renderer> createRenderer(GLFWwindow* window);
 
 		virtual std::unique_ptr<Buffer> createUniqueBuffer() = 0;
 		virtual std::shared_ptr<Buffer> createSharedBuffer() = 0;
 
-		virtual std::shared_ptr<Mesh> createSharedMesh(std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer) = 0;
+		[[nodiscard]] virtual std::shared_ptr<Mesh> createSharedMesh(
+				std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
+				glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) = 0;
 
-		virtual std::shared_ptr<Scene> createSharedScene() = 0;
+		[[nodiscard]] virtual std::shared_ptr<Scene> createSharedScene() = 0;
 
 		virtual glsl::ResourceTableHandle createSampledTextureHandle() = 0;
 		virtual glsl::ResourceTableHandle createStorageTextureHandle() = 0;
@@ -57,8 +62,10 @@ namespace graphics {
 		virtual bool canRender() = 0;
 
 		virtual void updateResolution(glm::u32vec2 resolution) = 0;
+		[[nodiscard]] virtual glm::u32vec2 getRenderResolution() const noexcept = 0;
 
 		virtual void prepareFrame(std::size_t frameIndex) = 0;
-		virtual bool draw(std::size_t frameIndex, Scene& scene, float dt) = 0;
+		virtual bool draw(std::size_t frameIndex, Scene& scene,
+						  const glsl::Camera& camera, float dt) = 0;
 	};
 }

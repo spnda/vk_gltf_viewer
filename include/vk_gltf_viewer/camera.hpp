@@ -8,14 +8,10 @@
 
 #include <mesh_common.h.glsl>
 
-struct Camera {
-	std::reference_wrapper<const Device> device;
-
-	std::vector<std::unique_ptr<ScopedBuffer>> cameraBuffers;
-
+struct Camera : public glsl::Camera {
 	glm::vec3 accelerationVector = glm::vec3(0.f);
 	glm::vec3 velocity = glm::vec3(0.f);
-	glm::vec3 position = glm::vec3(0.f);
+	glm::vec3 position = glm::vec3(0.f, 0.f, 5.f);
 
 	glm::vec3 direction = glm::vec3(0.f, 0.f, -1.f);
 	glm::dvec2 lastCursorPos = glm::dvec2(0.f);
@@ -29,23 +25,13 @@ struct Camera {
 	static constexpr auto cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 	static constexpr auto cameraRight = glm::vec3(0.0f, 0.0f, 1.0f);
 
-	explicit Camera(const Device& device, std::size_t frameOverlap);
+	explicit Camera();
 	~Camera() noexcept;
 
 	/** Updates the camera position and rotation using the last known window inputs */
-	void updateCamera(std::size_t currentFrame, GLFWwindow* window, double deltaTime, glm::u32vec2 framebufferExtent);
-
-	[[nodiscard]] VkDeviceAddress getCameraDeviceAddress(std::size_t currentFrame) const noexcept {
-		return cameraBuffers[currentFrame]->getDeviceAddress();
-	}
-
-	[[nodiscard]] ScopedBuffer& getCameraBuffer(std::size_t currentFrame) const noexcept {
-		return *cameraBuffers[currentFrame];
-	}
+	void updateCamera(GLFWwindow* window, double deltaTime, glm::u32vec2 framebufferExtent);
 
 	[[nodiscard]] glm::vec3 getPosition() const noexcept {
 		return position;
 	}
-
-	glm::mat4 viewProjection;
 };

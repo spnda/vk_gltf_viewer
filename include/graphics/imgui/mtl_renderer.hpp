@@ -32,7 +32,10 @@ namespace graphics::metal::imgui {
 		std::vector<GeometryBuffers> buffers;
 
 	public:
-		explicit Renderer(NS::SharedPtr<MTL::Device> device, NS::SharedPtr<MTL::Library> library, std::shared_ptr<MtlResourceTable> resourceTable);
+		explicit Renderer(NS::SharedPtr<MTL::Device> device,
+						  NS::SharedPtr<MTL::Library> library,
+						  std::shared_ptr<MtlResourceTable> resourceTable,
+						  MTL::PixelFormat imageFormat);
 		~Renderer() noexcept;
 
 		void draw(MTL::CommandBuffer* commandBuffer, CA::MetalDrawable* drawable,

@@ -6,6 +6,7 @@
 #include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/device.hpp>
 #include <vk_gltf_viewer/buffer.hpp>
+#include <graphics/renderer.hpp>
 
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
@@ -165,20 +166,21 @@ public:
 
 class AssetLoadTask : public ExceptionTaskSet {
 	friend struct World;
+	friend class Application;
 
-	std::reference_wrapper<Device> device;
+	std::shared_ptr<graphics::Renderer> renderer;
 	std::filesystem::path assetPath;
 
 	std::shared_ptr<fastgltf::Asset> asset;
 	std::vector<Mesh> meshes;
-	std::vector<std::pair<PrimitiveBuffers, glsl::Primitive>> primitives;
+	std::vector<std::shared_ptr<graphics::Mesh>> primitives;
 	std::vector<Animation> animations;
 	std::vector<glsl::Material> materials;
 
 	std::shared_ptr<fastgltf::Asset> loadGltf();
 
 public:
-	explicit AssetLoadTask(Device& device, std::filesystem::path path);
+	explicit AssetLoadTask(std::shared_ptr<graphics::Renderer> renderer, std::filesystem::path path);
 
 	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override;
 };

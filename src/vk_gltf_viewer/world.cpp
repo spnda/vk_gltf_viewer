@@ -29,8 +29,8 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 	}
 
 	primitiveBuffers.reserve(primitiveBuffers.size() + task->primitives.size());
-	for (auto& [buffers, primitive] : task->primitives)
-		primitiveBuffers.emplace_back(std::move(buffers));
+	//for (auto& [buffers, primitive] : task->primitives)
+	//	primitiveBuffers.emplace_back(std::move(buffers));
 
 	materials.reserve(materials.size() + task->materials.size());
 	for (auto& mat : task->materials)
@@ -105,10 +105,10 @@ void World::addAsset(const std::shared_ptr<AssetLoadTask>& task) {
 			task->primitives.size() * sizeof(glsl::Primitive));
 		{
 			ScopedMap<glsl::Primitive> map(*primitiveStagingBuffer);
-			for (std::size_t i = 0; auto& primitive: task->primitives) {
-				auto& p = map.get()[i++] = primitive.second;
-				p.materialIndex += materialOffset;
-			}
+			//for (std::size_t i = 0; auto& primitive: task->primitives) {
+			//	auto& p = map.get()[i++] = primitive.second;
+			//	p.materialIndex += materialOffset;
+			//}
 		}
 
 		device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),

@@ -192,24 +192,22 @@ struct CompressedBufferDataAdapter : enki::ITaskSet {
 struct PrimitiveProcessingTask : ExceptionTaskSet {
 	const fg::Asset& asset;
 	const CompressedBufferDataAdapter& adapter;
-	std::reference_wrapper<Device> device;
+	std::shared_ptr<graphics::Renderer> renderer;
 
 	std::mutex meshMutex;
 	std::vector<Mesh> meshes;
-	std::vector<std::pair<PrimitiveBuffers, glsl::Primitive>> primitives;
+	std::vector<std::shared_ptr<graphics::Mesh>> primitives;
 
 	enki::Dependency bufferDecompressDependency;
 
-	explicit PrimitiveProcessingTask(const fg::Asset& _asset, const CompressedBufferDataAdapter& _adapter, Device& _device) noexcept
-			: asset(_asset), adapter(_adapter), device(_device) {
+	explicit PrimitiveProcessingTask(const fg::Asset& _asset, const CompressedBufferDataAdapter& _adapter, std::shared_ptr<graphics::Renderer> renderer) noexcept
+			: asset(_asset), adapter(_adapter), renderer(std::move(renderer)) {
 		ZoneScoped;
 		m_SetSize = fg::max(1UZ, asset.meshes.size());
 		meshes.resize(asset.meshes.size());
 		primitives.reserve(meshes.size()); // Is definitely not enough, but we'll just live with it.
 	}
 
-	void createMeshBuffers(PrimitiveBuffers& buffers, std::size_t vertexIndexCount, std::size_t primitiveIndexCount,
-						   std::size_t vertexCount, std::size_t meshletCount);
 	void processPrimitive(std::uint64_t primitiveIdx, const fg::Primitive& primitive);
 	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override;
 };
@@ -228,61 +226,6 @@ glm::vec3 getAccessorMinMax(const decltype(fg::Accessor::min)& values) {
 			return glm::fvec3(values[0], values[1], values[2]);
 		},
 	}, values);
-}
-
-void PrimitiveProcessingTask::createMeshBuffers(
-	PrimitiveBuffers& buffers, std::size_t vertexIndexCount, std::size_t primitiveIndexCount,
-	std::size_t vertexCount, std::size_t meshletCount) {
-
-	ZoneScoped;
-	constexpr VmaAllocationCreateInfo allocationCreateInfo {
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-	};
-
-	{
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(std::uint32_t) * vertexIndexCount,
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-					 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		};
-		buffers.vertexIndexBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
-	}
-
-	{
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(std::uint8_t) * primitiveIndexCount,
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-					 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		};
-		buffers.primitiveIndexBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
-	}
-
-	{
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(glsl::Vertex) * vertexCount,
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-					 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		};
-		buffers.vertexBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
-	}
-
-	{
-		const VkBufferCreateInfo bufferCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(glsl::Meshlet) * meshletCount,
-			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-					 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		};
-		buffers.meshletBuffer = std::make_unique<ScopedBuffer>(device.get(), &bufferCreateInfo, &allocationCreateInfo);
-	}
-
 }
 
 void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const fg::Primitive& gltfPrimitive) {
@@ -318,116 +261,16 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 	assert(gltfPrimitive.indicesAccessor.has_value());
 	auto& idxAccessor = asset.accessors[gltfPrimitive.indicesAccessor.value()];
 
-	std::vector<std::uint32_t> indices(idxAccessor.count);
-	fastgltf::copyFromAccessor<std::uint32_t>(asset, idxAccessor, indices.data(), adapter);
+	std::vector<graphics::index_t> indices(idxAccessor.count);
+	fastgltf::copyFromAccessor<graphics::index_t>(
+			asset, idxAccessor, indices.data(), adapter);
 
-	// Generate the meshlets
-	constexpr float coneWeight = 0.0f; // We leave this as 0 because we're not using cluster cone culling.
-	constexpr auto maxPrimitives = fastgltf::alignDown(glsl::maxPrimitives, 4U); // meshopt requires the primitive count to be aligned to 4.
-	std::size_t maxMeshlets = meshopt_buildMeshletsBound(idxAccessor.count, glsl::maxVertices, maxPrimitives);
-	std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
-	std::vector<std::uint32_t> meshletVertices(maxMeshlets * glsl::maxVertices);
-	std::vector<std::uint8_t> meshletTriangles(maxMeshlets * maxPrimitives * 3);
-
-	{
-		primitive.meshletCount = meshopt_buildMeshlets(
-			meshlets.data(), meshletVertices.data(), meshletTriangles.data(),
-			indices.data(), indices.size(),
-			&vertices[0].position.x, vertices.size(), sizeof(decltype(vertices)::value_type),
-			glsl::maxVertices, maxPrimitives, coneWeight);
-
-		const auto& lastMeshlet = meshlets[primitive.meshletCount - 1];
-		meshletVertices.resize(lastMeshlet.vertex_count + lastMeshlet.vertex_offset);
-		meshletTriangles.resize(((lastMeshlet.triangle_count * 3 + 3) & ~3) + lastMeshlet.triangle_offset);
-		meshlets.resize(primitive.meshletCount);
-	}
-
-	std::vector<glsl::Meshlet> optimisedMeshlets; optimisedMeshlets.reserve(primitive.meshletCount);
-	for (auto& meshlet : meshlets) {
-		meshopt_optimizeMeshlet(&meshletVertices[meshlet.vertex_offset], &meshletTriangles[meshlet.triangle_offset],
-								meshlet.triangle_count, meshlet.vertex_count);
-
-		// Compute meshlet bounds
-		auto& initialVertex = vertices[meshletVertices[meshlet.vertex_offset]];
-		auto min = glm::vec3(initialVertex.position), max = glm::vec3(initialVertex.position);
-
-		for (std::size_t i = 1; i < meshlet.vertex_count; ++i) {
-			std::uint32_t vertexIndex = meshletVertices[meshlet.vertex_offset + i];
-			auto& vertex = vertices[vertexIndex];
-
-			// The glm::min and glm::max functions are all component-wise.
-			min = glm::min(min, vertex.position);
-			max = glm::max(max, vertex.position);
-		}
-
-		// We can convert the count variables to a uint8_t since glsl::maxVertices and glsl::maxPrimitives both fit in 8-bits.
-		assert(meshlet.vertex_count <= std::numeric_limits<std::uint8_t>::max());
-		assert(meshlet.triangle_count <= std::numeric_limits<std::uint8_t>::max());
-		auto center = (min + max) * 0.5f;
-		optimisedMeshlets.emplace_back(glsl::Meshlet {
-			.vertexOffset = meshlet.vertex_offset,
-			.triangleOffset = meshlet.triangle_offset,
-			.vertexCount = static_cast<std::uint8_t>(meshlet.vertex_count),
-			.triangleCount = static_cast<std::uint8_t>(meshlet.triangle_count),
-			.aabbExtents = max - center,
-			.aabbCenter = center,
-		});
-	}
-
-	PrimitiveBuffers buffers;
-	buffers.meshletCount = primitive.meshletCount;
-	createMeshBuffers(buffers, meshletVertices.size(), meshletTriangles.size(), vertices.size(), optimisedMeshlets.size());
-
-	primitive.vertexIndexBuffer = buffers.vertexIndexBuffer->getDeviceAddress();
-	primitive.primitiveIndexBuffer = buffers.primitiveIndexBuffer->getDeviceAddress();
-	primitive.vertexBuffer = buffers.vertexBuffer->getDeviceAddress();
-	primitive.meshletBuffer = buffers.meshletBuffer->getDeviceAddress();
-
-	// Create staging allocations and upload all buffers
-	{
-		PrimitiveBuffers stagingBuffers;
-		stagingBuffers.vertexIndexBuffer = device.get().createHostStagingBuffer(buffers.vertexIndexBuffer->getBufferSize());
-		stagingBuffers.primitiveIndexBuffer = device.get().createHostStagingBuffer(buffers.primitiveIndexBuffer->getBufferSize());
-		stagingBuffers.vertexBuffer = device.get().createHostStagingBuffer(buffers.vertexBuffer->getBufferSize());
-		stagingBuffers.meshletBuffer = device.get().createHostStagingBuffer(buffers.meshletBuffer->getBufferSize());
-
-		{
-			ScopedMap map(*stagingBuffers.vertexIndexBuffer);
-			std::memcpy(map.get(), meshletVertices.data(), stagingBuffers.vertexIndexBuffer->getBufferSize());
-		}
-		{
-			ScopedMap map(*stagingBuffers.primitiveIndexBuffer);
-			std::memcpy(map.get(), meshletTriangles.data(), stagingBuffers.primitiveIndexBuffer->getBufferSize());
-		}
-		{
-			ScopedMap map(*stagingBuffers.vertexBuffer);
-			std::memcpy(map.get(), vertices.data(), stagingBuffers.vertexBuffer->getBufferSize());
-		}
-		{
-			ScopedMap map(*stagingBuffers.meshletBuffer);
-			std::memcpy(map.get(), optimisedMeshlets.data(), stagingBuffers.meshletBuffer->getBufferSize());
-		}
-
-		device.get().immediateSubmit(device.get().getNextTransferQueueHandle(),
-									 device.get().uploadCommandPools[taskScheduler.GetThreadNum()],
-									 [&](auto cmd) {
-			const VkBufferCopy vertexIndexRegion { .size = buffers.vertexIndexBuffer->getBufferSize(), };
-			vkCmdCopyBuffer(cmd, stagingBuffers.vertexIndexBuffer->getHandle(), buffers.vertexIndexBuffer->getHandle(), 1, &vertexIndexRegion);
-
-			const VkBufferCopy primitiveIndexRegion { .size = buffers.primitiveIndexBuffer->getBufferSize(), };
-			vkCmdCopyBuffer(cmd, stagingBuffers.primitiveIndexBuffer->getHandle(), buffers.primitiveIndexBuffer->getHandle(), 1, &primitiveIndexRegion);
-
-			const VkBufferCopy vertexRegion { .size = buffers.vertexBuffer->getBufferSize(), };
-			vkCmdCopyBuffer(cmd, stagingBuffers.vertexBuffer->getHandle(), buffers.vertexBuffer->getHandle(), 1, &vertexRegion);
-
-			const VkBufferCopy meshletRegion { .size = buffers.meshletBuffer->getBufferSize(), };
-			vkCmdCopyBuffer(cmd, stagingBuffers.meshletBuffer->getHandle(), buffers.meshletBuffer->getHandle(), 1, &meshletRegion);
-		});
-	}
+	auto mesh = renderer->createSharedMesh(
+			vertices, indices, primitive.aabbCenter, primitive.aabbExtents);
 
 	{
 		std::lock_guard lock(meshMutex);
-		primitives[primitiveIdx] = std::make_pair(std::move(buffers), primitive);
+		primitives[primitiveIdx] = std::move(mesh);
 	}
 }
 
@@ -447,8 +290,8 @@ void PrimitiveProcessingTask::ExecuteRangeWithExceptions(enki::TaskSetPartition 
 			auto& mesh = meshes[i];
 			mesh.primitiveIndices.resize(gltfMesh.primitives.size());
 
-			for (std::size_t j = 0; auto& gltfPrimitive : gltfMesh.primitives) {
-				mesh.primitiveIndices[j++] = primitives.size();
+			for (std::size_t j = 0; j < gltfMesh.primitives.size(); ++j) {
+				mesh.primitiveIndices[j] = primitives.size();
 				primitives.emplace_back();
 			}
 		}
@@ -521,7 +364,7 @@ void MaterialLoadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t 
 	}
 }
 
-AssetLoadTask::AssetLoadTask(Device& device, fs::path path) : device(device), assetPath(std::move(path)) {
+AssetLoadTask::AssetLoadTask(std::shared_ptr<graphics::Renderer> renderer, fs::path path) : renderer(std::move(renderer)), assetPath(std::move(path)) {
 	m_SetSize = 1;
 }
 
@@ -562,7 +405,7 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	CompressedBufferDataAdapter bufferDecompressTask(*asset);
 	bufferDecompressTask.SetDependency(bufferDecompressTask.bufferLoadDependency, &bufferLoadTask);
 
-	PrimitiveProcessingTask primitiveTask(*asset, bufferDecompressTask, device.get());
+	PrimitiveProcessingTask primitiveTask(*asset, bufferDecompressTask, renderer);
 	primitiveTask.SetDependency(primitiveTask.bufferDecompressDependency, &bufferDecompressTask);
 
 	taskScheduler.AddTaskSetToPipe(&bufferLoadTask);

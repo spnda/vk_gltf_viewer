@@ -16,7 +16,7 @@ void gvk::VkScene::updateTransformBuffer(std::size_t frameIndex) {
 	ZoneScoped;
 }
 
-graphics::InstanceIndex gvk::VkScene::addMesh(std::shared_ptr<Mesh> sharedMesh) {
+graphics::InstanceIndex gvk::VkScene::addMeshInstance(std::shared_ptr<Mesh> sharedMesh) {
 	ZoneScoped;
 	meshes.emplace_back(std::move(sharedMesh));
 
@@ -44,7 +44,7 @@ std::shared_ptr<graphics::Buffer> gvk::VkRenderer::createSharedBuffer() {
 	ZoneScoped;
 }
 
-std::shared_ptr<graphics::Mesh> gvk::VkRenderer::createSharedMesh(std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer) {
+std::shared_ptr<graphics::Mesh> gvk::VkRenderer::createSharedMesh(std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer, glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) {
 	ZoneScoped;
 
 	// Generate the meshlets
@@ -82,7 +82,8 @@ void gvk::VkRenderer::prepareFrame(std::size_t frameIndex) {
 	frameCommandPools[frameIndex].commandPool.reset_pool();
 }
 
-bool gvk::VkRenderer::draw(std::size_t frameIndex, graphics::Scene& gscene, float dt) {
+bool gvk::VkRenderer::draw(std::size_t frameIndex, graphics::Scene& gscene,
+						   const glsl::Camera& camera, float dt) {
 	ZoneScoped;
 	auto& scene = dynamic_cast<VkScene&>(gscene);
 

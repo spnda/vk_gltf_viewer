@@ -31,8 +31,8 @@ namespace glsl {
 #define MEMBER_INIT(Value) = Value
 
 #define PARAMETER_COPY(Name) Name
-#define PARAMETER_REF(Name) Name&
-#define PARAMETER_CREF(Name) const Name&
+#define PARAMETER_REF(Name) device Name&
+#define PARAMETER_CREF(Name) device const Name&
 
 #elif defined(__cplusplus)
 #define SHADER_CPP 1

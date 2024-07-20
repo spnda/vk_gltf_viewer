@@ -208,7 +208,7 @@ foreach(SHADER_FILE ${MSL_SHADER_FILES})
     # Compile Metal source to AIR file
     add_custom_command(
         OUTPUT ${SHADER_FILENAME}.air
-        COMMAND xcrun metal "-I$<JOIN:${LOCAL_INCLUDE_DIRS},;-I>" -o ${SHADER_FILENAME}.air -c ${SHADER_FILE}
+        COMMAND xcrun metal "-I$<JOIN:${LOCAL_INCLUDE_DIRS},;-I>" -gline-tables-only -frecord-sources -o ${SHADER_FILENAME}.air -c ${SHADER_FILE}
         DEPENDS ${SHADER_FILE} ${FILE_INCLUDES}
         COMMENT "Compiling ${SHADER_FILE}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
