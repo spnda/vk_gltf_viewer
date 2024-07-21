@@ -48,7 +48,10 @@ static float3 hue2rgb(float hue) {
 	uint meshletCount = uint(min(ulong(glsl::maxMeshlets), meshletDrawCount - (groupId * glsl::maxMeshlets)));
 	uint baseId = payload.baseIndex = groupId * glsl::maxMeshlets;
 
-	uint visibleMeshlets = 0;
+	// We use an atomic counter for how many meshlets are visible instead of SIMD intrinsics,
+	// since those caused a GPU hang in some cases, for some reason. Might be useful to investigate
+	// that in the future, since I doubt this atomic is absolutely free.
+	threadgroup atomic<uint> visibleMeshlets;
 
 	const uint meshletLoops = (meshletCount + threadGroupWidth - 1) / threadGroupWidth;
 	for (uint i = 0; i < meshletLoops; ++i) {
@@ -69,16 +72,14 @@ static float3 hue2rgb(float hue) {
 		const auto worldAabbExtent = glsl::getWorldSpaceAabbExtent(meshlet.aabbExtents.xyz, transformMatrix);
 		visible = visible && glsl::isAabbInFrustum(worldAabbCenter, worldAabbExtent, camera.frustum);
 
-		auto payloadIndex = simd_prefix_exclusive_sum(uint(visible));
 		if (visible) {
-			payload.indices[visibleMeshlets + payloadIndex] = uint8_t(idx);
+			payload.indices[atomic_fetch_add_explicit(&visibleMeshlets, 1, memory_order_relaxed)] = uint8_t(idx);
 		}
-		visibleMeshlets += simd_sum(uint(visible));
 	}
 
 	threadgroup_barrier(mem_flags::mem_none);
 	if (threadIndex == 0) {
-		outGrid.set_threadgroups_per_grid(uint3(visibleMeshlets, 1, 1));
+		outGrid.set_threadgroups_per_grid(uint3(atomic_load_explicit(&visibleMeshlets, memory_order_relaxed), 1, 1));
 	}
 }
 
