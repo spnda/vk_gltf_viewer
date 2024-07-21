@@ -21,6 +21,7 @@ namespace glsl {
 	using u8vec3 = packed_uchar3;
 	using u8vec4 = packed_uchar4;
 	using u16vec2 = packed_ushort2;
+	using mat3 = float3x3;
 	using mat4 = float4x4;
 }
 
@@ -29,6 +30,7 @@ namespace glsl {
 #define BUFFER_REF(Name, Type) device Type*
 #define GLSL_BOOL alignas(4) bool
 #define MEMBER_INIT(Value) = Value
+#define ALIGN_AS(Value)
 
 #define PARAMETER_COPY(Name) Name
 #define PARAMETER_REF(Name) device Name&
@@ -54,6 +56,7 @@ namespace glsl {
 #define BUFFER_REF(Name, Type) VkDeviceAddress
 #define GLSL_BOOL alignas(4) bool
 #define MEMBER_INIT(Value) = Value
+#define ALIGN_AS(Value) alignas(Value)
 
 #define PARAMETER_COPY(Name) Name
 #define PARAMETER_REF(Name) Name&
@@ -69,6 +72,7 @@ namespace glsl {
 #define BUFFER_REF(Name, Type) Name
 #define GLSL_BOOL bool
 #define MEMBER_INIT(Value)
+#define ALIGN_AS(Value)
 
 #define PARAMETER_COPY(Name) in Name
 #define PARAMETER_REF(Name) inout Name

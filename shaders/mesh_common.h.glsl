@@ -18,11 +18,11 @@ GLSL_NAMESPACE_BEGIN
 GLSL_CONSTANT uint shadowMapCount = 4;
 
 struct Camera {
-	mat4 prevViewProjection;
-	mat4 prevOcclusionViewProjection;
+	ALIGN_AS(16) mat4 prevViewProjection;
+	ALIGN_AS(16) mat4 prevOcclusionViewProjection;
 
-	mat4 viewProjection;
-	mat4 occlusionViewProjection;
+	ALIGN_AS(16) mat4 viewProjection;
+	ALIGN_AS(16) mat4 occlusionViewProjection;
 	GLSL_ARRAY(vec4, frustum, 6);
 };
 
@@ -33,9 +33,17 @@ layout(buffer_reference, scalar, buffer_reference_align = 4) restrict readonly b
 #endif
 
 // TODO: These are the optimal values for NVIDIA. What about the others?
+#if defined(SHADER_GLSL)
 GLSL_CONSTANT uint maxVertices = 64;
 GLSL_CONSTANT uint maxPrimitives = 126;
 GLSL_CONSTANT uint maxMeshlets = 102;
+#else
+GLSL_CONSTANT uint maxVertices = 128;
+GLSL_CONSTANT uint maxPrimitives = 256;
+// TODO: If this is any other value, the object or mesh shader causes GPU hangs...
+//       This should be investigated... but I am not sure where to start.
+GLSL_CONSTANT uint maxMeshlets = 32; // This should best be a multiple of the threadgroup size.
+#endif
 
 // This is essentially a replacement for gl_WorkGroupID.x, but one which can store any index
 // between 0..256 instead of the linear requirement of the work group ID.

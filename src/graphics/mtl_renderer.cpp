@@ -74,6 +74,7 @@ void gmtl::MeshletScene::updateDrawBuffers(std::size_t frameIndex) {
 		if (requiredLength > length) {
 			drawBuffer.meshletDrawBuffer = NS::TransferPtr(
 					device->newBuffer(requiredLength, MTL::ResourceStorageModeShared));
+			drawBuffer.meshletDrawBuffer->setLabel(NS::String::string("Meshlet draw buffer", NS::UTF8StringEncoding));
 		}
 		std::memcpy(drawBuffer.meshletDrawBuffer->contents(), meshletDraws.data(), requiredLength);
 	}
@@ -84,6 +85,7 @@ void gmtl::MeshletScene::updateDrawBuffers(std::size_t frameIndex) {
 		if (requiredLength > length) {
 			drawBuffer.transformBuffer = NS::TransferPtr(
 					device->newBuffer(requiredLength, MTL::ResourceStorageModeShared));
+			drawBuffer.transformBuffer->setLabel(NS::String::string("Transform buffer", NS::UTF8StringEncoding));
 		}
 		std::memcpy(drawBuffer.transformBuffer->contents(), transforms.data(), requiredLength);
 	}
@@ -94,6 +96,7 @@ void gmtl::MeshletScene::updateDrawBuffers(std::size_t frameIndex) {
 		if (requiredLength > length) {
 			drawBuffer.primitiveBuffer = NS::TransferPtr(
 					device->newBuffer(requiredLength, MTL::ResourceStorageModeShared));
+			drawBuffer.primitiveBuffer->setLabel(NS::String::string("Primitive buffer", NS::UTF8StringEncoding));
 		}
 		for (std::size_t i = 0; auto& mesh : meshes)
 			static_cast<glsl::Primitive*>(drawBuffer.primitiveBuffer->contents())[i++]
@@ -143,10 +146,12 @@ gmtl::MtlRenderer::~MtlRenderer() noexcept = default;
 
 void gmtl::MtlRenderer::initVisbufferPass() {
 	ZoneScoped;
+	auto* objectFunction = globalLibrary->newFunction(NS::String::string("visbuffer_object", NS::UTF8StringEncoding))->autorelease();
 	auto* meshFunction = globalLibrary->newFunction(NS::String::string("visbuffer_mesh", NS::UTF8StringEncoding))->autorelease();
 	auto* fragFunction = globalLibrary->newFunction(NS::String::string("visbuffer_frag", NS::UTF8StringEncoding))->autorelease();
 
 	auto* pipelineDescriptor = MTL::MeshRenderPipelineDescriptor::alloc()->init()->autorelease();
+	pipelineDescriptor->setObjectFunction(objectFunction);
 	pipelineDescriptor->setMeshFunction(meshFunction);
 	pipelineDescriptor->setFragmentFunction(fragFunction);
 	pipelineDescriptor->setRasterSampleCount(1);
@@ -236,12 +241,34 @@ std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<gl
 	mesh->meshletBuffer = NS::TransferPtr(device->newBuffer(meshlets.size() * sizeof(glsl::Meshlet), MTL::StorageModeShared));
 	auto* glslMeshlets = static_cast<glsl::Meshlet*>(mesh->meshletBuffer->contents());
 	for (std::size_t i = 0; auto& meshlet : meshlets) {
-		// TODO: Optimise meshlets & compute AABB bounds
+		meshopt_optimizeMeshlet(&meshletVertices[meshlet.vertex_offset],
+								&meshletTriangles[meshlet.triangle_offset],
+								meshlet.triangle_count, meshlet.vertex_count);
+
+		// Compute meshlet bounds
+		auto& initialVertex = vertexBuffer[meshletVertices[meshlet.vertex_offset]];
+		auto min = glm::vec3(initialVertex.position), max = glm::vec3(initialVertex.position);
+
+		for (std::size_t j = 1; j < meshlet.vertex_count; ++j) {
+			std::uint32_t vertexIndex = meshletVertices[meshlet.vertex_offset + j];
+			auto& vertex = vertexBuffer[vertexIndex];
+
+			// The glm::min and glm::max functions are all component-wise.
+			min = glm::min(min, vertex.position);
+			max = glm::max(max, vertex.position);
+		}
+
+		// We can convert the count variables to a uint8_t since glsl::maxVertices and glsl::maxPrimitives both fit in 8-bits.
+		assert(meshlet.vertex_count <= std::numeric_limits<std::uint8_t>::max());
+		assert(meshlet.triangle_count <= std::numeric_limits<std::uint8_t>::max());
+		auto center = (min + max) * 0.5f;
 		glslMeshlets[i++] = glsl::Meshlet {
 			.vertexOffset = meshlet.vertex_offset,
 			.triangleOffset = meshlet.triangle_offset,
 			.vertexCount = static_cast<std::uint8_t>(meshlet.vertex_count),
 			.triangleCount = static_cast<std::uint8_t>(meshlet.triangle_count),
+			.aabbExtents = max - center,
+			.aabbCenter = center,
 		};
 	}
 
@@ -283,7 +310,7 @@ auto gmtl::MtlRenderer::getRenderResolution() const noexcept -> glm::u32vec2 {
 
 void gmtl::MtlRenderer::prepareFrame(std::size_t frameIndex) {
 	ZoneScoped;
-	dispatch_semaphore_wait(drawSemaphore, DISPATCH_TIME_FOREVER);
+	//dispatch_semaphore_wait(drawSemaphore, DISPATCH_TIME_FOREVER);
 }
 
 bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
@@ -325,6 +352,12 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 
 		auto& sceneDrawBuffers = scene.drawBuffers[frameIndex];
 
+		visbufferEncoder->setObjectBytes(&drawCount, sizeof drawCount, 0);
+		visbufferEncoder->setObjectBuffer(cameraBuffers[frameIndex].get(), 0, 1);
+		visbufferEncoder->setObjectBuffer(sceneDrawBuffers.meshletDrawBuffer.get(), 0, 2);
+		visbufferEncoder->setObjectBuffer(sceneDrawBuffers.transformBuffer.get(), 0, 3);
+		visbufferEncoder->setObjectBuffer(sceneDrawBuffers.primitiveBuffer.get(), 0, 4);
+
 		visbufferEncoder->setMeshBuffer(sceneDrawBuffers.meshletDrawBuffer.get(), 0, 0);
 		visbufferEncoder->setMeshBuffer(sceneDrawBuffers.transformBuffer.get(), 0, 1);
 		visbufferEncoder->setMeshBuffer(sceneDrawBuffers.primitiveBuffer.get(), 0, 2);
@@ -338,8 +371,7 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 		}
 
 		visbufferEncoder->drawMeshThreadgroups(
-				MTL::Size(drawCount, 1, 1),
-				//MTL::Size((drawCount + glsl::maxMeshlets - 1) / glsl::maxMeshlets, 1, 1),
+				MTL::Size((drawCount + glsl::maxMeshlets - 1) / glsl::maxMeshlets, 1, 1),
 				MTL::Size(visbufferPass.pipelineState->objectThreadExecutionWidth(), 1, 1),
 				MTL::Size(visbufferPass.pipelineState->meshThreadExecutionWidth(), 1, 1));
 
@@ -350,9 +382,9 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 
 	buffer->presentDrawable(drawable);
 
-	buffer->addCompletedHandler([&](MTL::CommandBuffer* buffer) {
+	/*buffer->addCompletedHandler([&](MTL::CommandBuffer* buffer) {
 		dispatch_semaphore_signal(drawSemaphore);
-	});
+	});*/
 
 	buffer->commit();
 
