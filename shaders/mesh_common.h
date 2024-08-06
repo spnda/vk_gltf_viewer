@@ -66,7 +66,11 @@ struct Meshlet {
 
 struct Vertex {
 	packed_fvec3 position;
+#if defined(SHADER_METAL)
+	uint32_t color;
+#else
 	packed_u8vec4 color;
+#endif
 	packed_u8vec3 normal;
 
 // Quantized float16_t vec2. TODO: glm has half float types, use those?

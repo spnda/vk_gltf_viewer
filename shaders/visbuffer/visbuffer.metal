@@ -12,6 +12,7 @@ struct MeshletVertex {
 
 struct MeshletPrimitive {
 	uint drawIndex;
+	uint id [[primitive_id]];
 	bool culled [[primitive_culled]];
 };
 
@@ -21,17 +22,6 @@ struct ObjectPayload {
 	uint baseIndex;
 	metal::array<uint8_t, shaders::maxMeshlets> indices;
 };
-
-// https://www.ronja-tutorials.com/post/041-hsv-colorspace/
-static float3 hue2rgb(float hue) {
-	hue = fract(hue); //only use fractional part of hue, making it loop
-	float r = abs(hue * 6 - 3) - 1; //red
-	float g = 2 - abs(hue * 6 - 2); //green
-	float b = 2 - abs(hue * 6 - 4); //blue
-	float3 rgb = float3(r,g,b); //combine components
-	rgb = saturate(rgb); //clamp between 0 and 1
-	return rgb;
-}
 
 /// Object shader that handles up to shaders::maxMeshlets meshlets per threadgroup.
 /// This uses frustum culling and a modified index array to have a fully GPU-driven
@@ -132,6 +122,8 @@ static float3 hue2rgb(float hue) {
 		});
 	}
 
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+
 	const auto transformDeterminant = determinant(transformMatrix);
 	const uint primitiveLoops = (meshlet.triangleCount + threadGroupWidth - 1) / threadGroupWidth;
 	for (uint i = 0; i < primitiveLoops; ++i) {
@@ -159,11 +151,13 @@ static float3 hue2rgb(float hue) {
 
 			meshletOut.set_primitive(pidx, MeshletPrimitive {
 				.drawIndex = drawIdx,
+				.id = pidx,
 				.culled = culled
 			});
 		} else {
 			meshletOut.set_primitive(pidx, MeshletPrimitive {
 				.drawIndex = drawIdx,
+				.id = pidx,
 				.culled = false, // Material is double sided, meaning we can't cull.
 			});
 		}
@@ -176,36 +170,8 @@ struct FragmentIn {
 };
 
 [[fragment]] uint visbuffer_frag(
-		FragmentIn in [[stage_in]],
-		uint primitiveId [[primitive_id]]) {
-	return shaders::packVisBuffer(in.prim.drawIndex, primitiveId);
-}
-
-[[kernel]] void visbuffer_resolve(
-		device const shaders::MeshletDraw* draws [[buffer(0)]],
-		device const shaders::Primitive* primitives [[buffer(1)]],
-		device const shaders::Material* materials [[buffer(2)]],
-		texture2d<uint, access::read> visbuffer [[texture(0)]],
-		texture2d<float, access::write> color [[texture(1)]],
-		ushort2 gid [[thread_position_in_grid]]) {
-	if (gid.x >= visbuffer.get_width() || gid.y >= visbuffer.get_height()) {
-		return;
-	}
-
-	auto data = visbuffer.read(gid).r;
-	if (data == shaders::visbufferClearValue) {
-		color.write(float4(0.f), gid);
-		return;
-	}
-
-	auto [drawIndex, primitiveId] = shaders::unpackVisBuffer(data);
-
-	device const auto& draw = draws[drawIndex];
-	device auto& primitive = primitives[draw.primitiveIndex];
-	device auto& material = materials[primitive.materialIndex];
-
-	auto resolved = float4(hue2rgb(draw.meshletIndex * 1.71f), 1.f);
-	color.write(resolved, gid);
+		FragmentIn in [[stage_in]]) {
+	return shaders::packVisBuffer(in.prim.drawIndex, in.prim.id);
 }
 
 // Vertices of a basic cube

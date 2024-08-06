@@ -204,6 +204,8 @@ struct MaterialLoadTask : enki::ITaskSet {
 	std::shared_ptr<graphics::Renderer> renderer;
 	std::vector<graphics::MaterialIndex> materials;
 
+	std::mutex materialMutex; // TODO: Should the renderer have this mutex instead?
+
 	enki::Dependency imageLoadDependency;
 
 	explicit MaterialLoadTask(const fg::Asset& asset, ImageLoadTask& imageLoadTask, std::shared_ptr<graphics::Renderer> renderer) noexcept : asset(asset), renderer(std::move(renderer)) {
@@ -224,6 +226,7 @@ void MaterialLoadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t 
 		auto& gltfMaterial = asset.materials[i];
 		auto& pbr = gltfMaterial.pbrData;
 
+		std::lock_guard lock(materialMutex);
 		materials[i] = renderer->createMaterial(shaders::Material {
 			.albedoFactor = glm::make_vec4(pbr.baseColorFactor.data()),
 			.alphaCutoff = gltfMaterial.alphaCutoff,
@@ -296,6 +299,7 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 	fastgltf::iterateAccessor<glm::vec3>(asset, posAccessor, [&](glm::vec3 val) {
 		auto& vtx = vertices.emplace_back();
 		vtx.position = val;
+		vtx.color = glm::u8vec4(255.f);
 	}, adapter);
 
 	assert(gltfPrimitive.indicesAccessor.has_value());
@@ -304,6 +308,47 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 	std::vector<graphics::index_t> indices(idxAccessor.count);
 	fastgltf::copyFromAccessor<graphics::index_t>(
 			asset, idxAccessor, indices.data(), adapter);
+
+	if (auto* normalAttribute = gltfPrimitive.findAttribute("NORMAL"); normalAttribute != gltfPrimitive.attributes.end()) {
+		fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[normalAttribute->accessorIndex], [&](glm::vec3 val, std::size_t idx) {
+			vertices[idx].normal = glm::u8vec3(val * 127.f + 127.5f);
+		}, adapter);
+	} else {
+		// Generate basic smooth vertex normals. As we quantize the normals, we have to store them first to normalize them afterwards.
+		fastgltf::StaticVector<glm::vec3> normals(posAccessor.count, glm::vec3(0.f));
+		for (std::uint32_t idx = 0; idx < idxAccessor.count / 3; ++idx) {
+			auto i = indices[idx * 3];
+			auto i1 = indices[idx * 3 + 1];
+			auto i2 = indices[idx * 3 + 2];
+
+			auto v1 = vertices[i1].position - vertices[i].position;
+			auto v2 = vertices[i2].position - vertices[i].position;
+			auto val = glm::normalize(glm::cross(v1, v2));
+
+			normals[i] += val;
+			normals[i1] += val;
+			normals[i2] += val;
+		}
+		for (std::size_t i = 0; i < normals.size(); ++i) {
+			vertices[i].normal = glm::u8vec3(glm::normalize(normals[i]) * 127.f + 127.5f);
+		}
+	}
+
+	if (auto* colorAttribute = gltfPrimitive.findAttribute("COLOR_0"); colorAttribute != gltfPrimitive.attributes.end()) {
+		// The glTF spec allows VEC3 and VEC4 for COLOR_n, with VEC3 data having to be extended with 1.0f for the fourth component.
+		auto& colorAccessor = asset.accessors[colorAttribute->accessorIndex];
+		if (colorAccessor.type == fastgltf::AccessorType::Vec4) {
+			fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, colorAccessor, [&](glm::vec4 val, std::size_t idx) {
+				val = glm::clamp(val, 0.0f, 1.0f);
+				vertices[idx].color = glm::u8vec4(val * 255.f);
+			}, adapter);
+		} else if (colorAccessor.type == fastgltf::AccessorType::Vec3) {
+			fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, colorAccessor, [&](glm::vec3 val, std::size_t idx) {
+				val = glm::clamp(val, 0.0f, 1.0f);
+				vertices[idx].color = glm::u8vec4(glm::vec4(val, 1.0f) * 255.f);
+			}, adapter);
+		}
+	}
 
 	auto* materialTask = dynamic_cast<const MaterialLoadTask*>(materialDependency.GetDependencyTask());
 	auto materialIndex = gltfPrimitive.materialIndex.has_value()

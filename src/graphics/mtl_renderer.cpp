@@ -443,11 +443,20 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 		auto& sceneDrawBuffers = scene.drawBuffers[frameIndex];
 
 		resolveEncoder->setBuffer(sceneDrawBuffers.meshletDrawBuffer.get(), 0, 0);
-		resolveEncoder->setBuffer(sceneDrawBuffers.primitiveBuffer.get(), 0, 1);
-		resolveEncoder->setBuffer(materialBuffers[frameIndex].get(), 0, 2);
+		resolveEncoder->setBuffer(sceneDrawBuffers.transformBuffer.get(), 0, 1);
+		resolveEncoder->setBuffer(sceneDrawBuffers.primitiveBuffer.get(), 0, 2);
+		resolveEncoder->setBuffer(cameraBuffers[frameIndex].get(), 0, 3);
+		resolveEncoder->setBuffer(materialBuffers[frameIndex].get(), 0, 4);
 
 		resolveEncoder->setTexture(visbufferPass.visbuffer.get(), 0);
 		resolveEncoder->setTexture(drawable->texture(), 1);
+
+		for (auto& meshes : scene.meshes) {
+			resolveEncoder->useResource(meshes.mesh->vertexIndexBuffer.get(), MTL::ResourceUsageRead);
+			resolveEncoder->useResource(meshes.mesh->primitiveIndexBuffer.get(), MTL::ResourceUsageRead);
+			resolveEncoder->useResource(meshes.mesh->vertexBuffer.get(), MTL::ResourceUsageRead);
+			resolveEncoder->useResource(meshes.mesh->meshletBuffer.get(), MTL::ResourceUsageRead);
+		}
 
 		auto threadgroupSize = MTL::Size::Make(16, 16, 1);
 		auto threadgroupCount = MTL::Size::Make(
