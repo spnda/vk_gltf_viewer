@@ -96,6 +96,7 @@ static float3 hue2rgb(float hue) {
 		device const float4x4* transforms [[buffer(1)]],
 		device const shaders::Primitive* primitives [[buffer(2)]],
 		device const shaders::Camera& camera [[buffer(3)]],
+		device const shaders::Material* materials [[buffer(4)]],
 		uint payloadIndex [[threadgroup_position_in_grid]],
 		uint threadIndex [[thread_position_in_threadgroup]],
 		uint threadGroupWidth [[threads_per_threadgroup]]) {
@@ -105,6 +106,7 @@ static float3 hue2rgb(float hue) {
 
 	device auto& primitive = primitives[draw.primitiveIndex];
 	device auto& meshlet = primitive.meshletBuffer[draw.meshletIndex];
+	device auto& material = materials[primitive.materialIndex];
 
 	if (threadIndex == 0) {
 		meshletOut.set_primitive_count(meshlet.triangleCount);
@@ -130,6 +132,7 @@ static float3 hue2rgb(float hue) {
 		});
 	}
 
+	const auto transformDeterminant = determinant(transformMatrix);
 	const uint primitiveLoops = (meshlet.triangleCount + threadGroupWidth - 1) / threadGroupWidth;
 	for (uint i = 0; i < primitiveLoops; ++i) {
 		uint pidx = threadIndex + i * threadGroupWidth;
@@ -144,15 +147,26 @@ static float3 hue2rgb(float hue) {
 		meshletOut.set_index(j + 1, idx1);
 		meshletOut.set_index(j + 2, idx2);
 
-		const auto v0 = clipVertices[idx0];
-		const auto v1 = clipVertices[idx1];
-		const auto v2 = clipVertices[idx2];
-		const auto det = determinant(float3x3(v0, v1, v2));
+		if (!material.doubleSided) {
+			const auto v0 = clipVertices[idx0];
+			const auto v1 = clipVertices[idx1];
+			const auto v2 = clipVertices[idx2];
+			const auto det = determinant(float3x3(v0, v1, v2));
 
-		meshletOut.set_primitive(pidx, MeshletPrimitive {
-			.drawIndex = drawIdx,
-			.culled = det < 0.f, // Back face culling with Y+ as up. TODO: Respect material.doubleSided
-		});
+			bool culled = transformDeterminant < 0.0f
+				? det > 0.0f // Front face culling with Y+ as up.
+				: det < 0.0f; // Back face culling with Y+ as up.
+
+			meshletOut.set_primitive(pidx, MeshletPrimitive {
+				.drawIndex = drawIdx,
+				.culled = culled
+			});
+		} else {
+			meshletOut.set_primitive(pidx, MeshletPrimitive {
+				.drawIndex = drawIdx,
+				.culled = false, // Material is double sided, meaning we can't cull.
+			});
+		}
 	}
 }
 
@@ -170,6 +184,7 @@ struct FragmentIn {
 [[kernel]] void visbuffer_resolve(
 		device const shaders::MeshletDraw* draws [[buffer(0)]],
 		device const shaders::Primitive* primitives [[buffer(1)]],
+		device const shaders::Material* materials [[buffer(2)]],
 		texture2d<uint, access::read> visbuffer [[texture(0)]],
 		texture2d<float, access::write> color [[texture(1)]],
 		ushort2 gid [[thread_position_in_grid]]) {
@@ -186,6 +201,8 @@ struct FragmentIn {
 	auto [drawIndex, primitiveId] = shaders::unpackVisBuffer(data);
 
 	device const auto& draw = draws[drawIndex];
+	device auto& primitive = primitives[draw.primitiveIndex];
+	device auto& material = materials[primitive.materialIndex];
 
 	auto resolved = float4(hue2rgb(draw.meshletIndex * 1.71f), 1.f);
 	color.write(resolved, gid);

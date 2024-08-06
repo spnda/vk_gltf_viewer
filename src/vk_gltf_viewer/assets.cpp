@@ -187,6 +187,52 @@ struct CompressedBufferDataAdapter : enki::ITaskSet {
 };
 
 /**
+ * Loads all glTF images into Vulkan images
+ */
+struct ImageLoadTask : ExceptionTaskSet {
+	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override;
+};
+
+void ImageLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
+	ZoneScoped;
+	for (auto i = range.start; i < range.end; ++i) {
+	}
+}
+
+struct MaterialLoadTask : enki::ITaskSet {
+	const fg::Asset& asset;
+	std::shared_ptr<graphics::Renderer> renderer;
+	std::vector<graphics::MaterialIndex> materials;
+
+	enki::Dependency imageLoadDependency;
+
+	explicit MaterialLoadTask(const fg::Asset& asset, ImageLoadTask& imageLoadTask, std::shared_ptr<graphics::Renderer> renderer) noexcept : asset(asset), renderer(std::move(renderer)) {
+		materials.resize(asset.materials.size() + 1);
+		m_SetSize = fg::max(1UZ, asset.materials.size());
+		m_MinRange = fg::min(16U, m_SetSize);
+	}
+
+	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override;
+};
+
+void MaterialLoadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) {
+	ZoneScoped;
+	if (asset.materials.empty())
+		return;
+
+	for (auto i = range.start; i < range.end; ++i) {
+		auto& gltfMaterial = asset.materials[i];
+		auto& pbr = gltfMaterial.pbrData;
+
+		materials[i] = renderer->createMaterial(shaders::Material {
+			.albedoFactor = glm::make_vec4(pbr.baseColorFactor.data()),
+			.alphaCutoff = gltfMaterial.alphaCutoff,
+			.doubleSided = gltfMaterial.doubleSided,
+		});
+	}
+}
+
+/**
  * Processes all glTF primitives into meshlets
  */
 struct PrimitiveProcessingTask : ExceptionTaskSet {
@@ -199,6 +245,7 @@ struct PrimitiveProcessingTask : ExceptionTaskSet {
 	std::vector<std::shared_ptr<graphics::Mesh>> primitives;
 
 	enki::Dependency bufferDecompressDependency;
+	enki::Dependency materialDependency;
 
 	explicit PrimitiveProcessingTask(const fg::Asset& _asset, const CompressedBufferDataAdapter& _adapter, std::shared_ptr<graphics::Renderer> renderer) noexcept
 			: asset(_asset), adapter(_adapter), renderer(std::move(renderer)) {
@@ -230,25 +277,18 @@ glm::vec3 getAccessorMinMax(const decltype(fg::Accessor::min)& values) {
 
 void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const fg::Primitive& gltfPrimitive) {
 	ZoneScoped;
-	shaders::Primitive primitive;
-	// TODO: More explicit way of setting defaults?
-	if (gltfPrimitive.materialIndex) {
-		primitive.materialIndex = *gltfPrimitive.materialIndex + 1;
-	} else {
-		primitive.materialIndex = 0;
-	}
-
 	// The code says this is possible, the spec says otherwise.
 	auto* positionIt = gltfPrimitive.findAttribute("POSITION");
 	assert(positionIt != gltfPrimitive.attributes.cend());
 
 	auto& posAccessor = asset.accessors[positionIt->accessorIndex];
 
+	glm::fvec3 aabbCenter, aabbExtents;
 	{
 		auto primitiveMin = getAccessorMinMax(posAccessor.min);
 		auto primitiveMax = getAccessorMinMax(posAccessor.max);
-		primitive.aabbCenter = (primitiveMin + primitiveMax) / 2.f;
-		primitive.aabbExtents = primitiveMax - primitive.aabbCenter;
+		aabbCenter = (primitiveMin + primitiveMax) / 2.f;
+		aabbExtents = primitiveMax - aabbCenter;
 	}
 
 	// Load the vertices. TODO: Directly copy into the staging buffer, instead of into a vector first.
@@ -265,8 +305,14 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 	fastgltf::copyFromAccessor<graphics::index_t>(
 			asset, idxAccessor, indices.data(), adapter);
 
+	auto* materialTask = dynamic_cast<const MaterialLoadTask*>(materialDependency.GetDependencyTask());
+	auto materialIndex = gltfPrimitive.materialIndex.has_value()
+		? materialTask->materials[*gltfPrimitive.materialIndex]
+		: renderer->getDefaultMaterialIndex();
+
 	auto mesh = renderer->createSharedMesh(
-			vertices, indices, primitive.aabbCenter, primitive.aabbExtents);
+			vertices, indices, aabbCenter, aabbExtents,
+			materialIndex);
 
 	{
 		std::lock_guard lock(meshMutex);
@@ -299,68 +345,6 @@ void PrimitiveProcessingTask::ExecuteRangeWithExceptions(enki::TaskSetPartition 
 		for (std::size_t j = 0; auto& gltfPrimitive : gltfMesh.primitives) {
 			processPrimitive(meshes[i].primitiveIndices[j++], gltfPrimitive);
 		}
-	}
-}
-
-/**
- * Loads all glTF images into Vulkan images
- */
-struct ImageLoadTask : ExceptionTaskSet {
-	void ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) override;
-};
-
-void ImageLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std::uint32_t threadnum) {
-	ZoneScoped;
-	for (auto i = range.start; i < range.end; ++i) {
-	}
-}
-
-struct MaterialLoadTask : enki::ITaskSet {
-	const fg::Asset& asset;
-	std::vector<shaders::Material> materials;
-
-	enki::Dependency imageLoadDependency;
-
-	explicit MaterialLoadTask(const fg::Asset& asset, ImageLoadTask& imageLoadTask) noexcept : asset(asset) {
-		materials.resize(asset.materials.size() + 1);
-		m_SetSize = fg::max(1UZ, asset.materials.size());
-		m_MinRange = fg::min(16U, m_SetSize);
-
-		// Add default/fallback material, as per the glTF defaults
-		// TODO: Set global defaults for when we load multiple assets?
-		materials[0] = shaders::Material {
-			.albedoFactor = glm::fvec4(1.f),
-			.albedoIndex = shaders::invalidHandle,
-			.uvScale = glm::fvec2(1.f),
-			.alphaCutoff = 0.5f,
-			.doubleSided = false,
-		};
-	}
-
-	void ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) override;
-};
-
-#include <glm/gtc/random.hpp>
-
-void MaterialLoadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t threadnum) {
-	ZoneScoped;
-	if (asset.materials.empty())
-		return;
-
-	for (auto i = range.start; i < range.end; ++i) {
-		auto& gltfMaterial = asset.materials[i];
-		auto& mat = materials[i + 1];
-
-		auto& pbr = gltfMaterial.pbrData;
-		mat.albedoFactor = glm::make_vec4(pbr.baseColorFactor.data());
-		if (pbr.baseColorTexture) {
-			mat.albedoIndex = shaders::invalidHandle;
-		} else {
-			mat.albedoIndex = shaders::invalidHandle;
-		}
-
-		mat.alphaCutoff = gltfMaterial.alphaCutoff;
-		mat.doubleSided = static_cast<std::uint32_t>(gltfMaterial.doubleSided);
 	}
 }
 
@@ -405,23 +389,19 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 	CompressedBufferDataAdapter bufferDecompressTask(*asset);
 	bufferDecompressTask.SetDependency(bufferDecompressTask.bufferLoadDependency, &bufferLoadTask);
 
-	PrimitiveProcessingTask primitiveTask(*asset, bufferDecompressTask, renderer);
-	primitiveTask.SetDependency(primitiveTask.bufferDecompressDependency, &bufferDecompressTask);
-
-	taskScheduler.AddTaskSetToPipe(&bufferLoadTask);
-
 	ImageLoadTask imageLoadTask;
 
-	MaterialLoadTask materialLoadTask(*asset, imageLoadTask);
+	MaterialLoadTask materialLoadTask(*asset, imageLoadTask, renderer);
 	materialLoadTask.SetDependency(materialLoadTask.imageLoadDependency, &imageLoadTask);
 
+	PrimitiveProcessingTask primitiveTask(*asset, bufferDecompressTask, renderer);
+	primitiveTask.SetDependency(primitiveTask.bufferDecompressDependency, &bufferDecompressTask);
+	primitiveTask.SetDependency(primitiveTask.materialDependency, &materialLoadTask);
+
+	taskScheduler.AddTaskSetToPipe(&bufferLoadTask);
 	taskScheduler.AddTaskSetToPipe(&imageLoadTask);
 
-	taskScheduler.WaitforTask(&primitiveTask);
-
-	meshes = std::move(primitiveTask.meshes);
-	primitives = std::move(primitiveTask.primitives);
-
+	taskScheduler.WaitforTask(&bufferDecompressTask);
 	animations.resize(asset->animations.size());
 	for (std::size_t i = 0; i < asset->animations.size(); ++i) {
 		auto& gltfAnimation = asset->animations[i];
@@ -446,9 +426,10 @@ void AssetLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 		}
 	}
 
+	taskScheduler.WaitforTask(&primitiveTask);
 	taskScheduler.WaitforTask(&imageLoadTask);
-
 	taskScheduler.WaitforTask(&materialLoadTask);
 
-	materials = std::move(materialLoadTask.materials);
+	meshes = std::move(primitiveTask.meshes);
+	primitives = std::move(primitiveTask.primitives);
 }

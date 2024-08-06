@@ -44,7 +44,9 @@ std::shared_ptr<graphics::Buffer> gvk::VkRenderer::createSharedBuffer() {
 	ZoneScoped;
 }
 
-std::shared_ptr<graphics::Mesh> gvk::VkRenderer::createSharedMesh(std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer, glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) {
+std::shared_ptr<graphics::Mesh> gvk::VkRenderer::createSharedMesh(
+		std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
+		glm::fvec3 aabbCenter, glm::fvec3 aabbExtents, MaterialIndex materialIndex) {
 	ZoneScoped;
 
 	// Generate the meshlets

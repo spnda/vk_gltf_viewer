@@ -24,7 +24,7 @@ graphics::InstanceIndex gmtl::MeshletScene::addMeshInstance(std::shared_ptr<Mesh
 	//auto meshletMesh = std::dynamic_pointer_cast<MeshletMesh>(mesh);
 
 	// Add to mesh list if it's not there already
-	std::uint32_t primitiveIndex;
+	std::optional<std::uint32_t> primitiveIndex;
 	{
 		auto it = meshes.begin();
 		while (it != meshes.end()) {
@@ -44,16 +44,18 @@ graphics::InstanceIndex gmtl::MeshletScene::addMeshInstance(std::shared_ptr<Mesh
 				.aabbExtents = meshletMesh->aabbExtents,
 				.aabbCenter = meshletMesh->aabbExtents,
 				.meshletCount = meshletMesh->meshletCount,
-				.materialIndex = 0,
+				.materialIndex = meshletMesh->materialIndex,
 			});
 		}
 	}
+
+	assert(primitiveIndex.has_value()); // Just to shut up some static analyzers.
 
 	auto instanceIndex = static_cast<std::uint32_t>(transforms.size());
 
 	for (std::uint32_t i = 0; i < meshletMesh->meshletCount; ++i) {
 		meshletDraws.emplace_back(shaders::MeshletDraw {
-			.primitiveIndex = primitiveIndex,
+			.primitiveIndex = *primitiveIndex,
 			.meshletIndex = i,
 			.transformIndex = instanceIndex,
 		});
@@ -143,6 +145,18 @@ gmtl::MtlRenderer::MtlRenderer(GLFWwindow* window) {
 		camera->setLabel(NS::String::string(str.c_str(), NS::UTF8StringEncoding));
 	}
 
+	// Create a default material with glTF defaults.
+	materials.emplace_back(shaders::Material {
+		.albedoFactor = glm::fvec4(1.f),
+		.albedoIndex = shaders::invalidHandle,
+		.uvOffset = glm::fvec2(0.f),
+		.uvScale = glm::fvec2(1.f),
+		.uvRotation = 0.f,
+		.alphaCutoff = 0.5f,
+		.doubleSided = false,
+	});
+	materialBuffers.resize(frameOverlap);
+
 	initVisbufferPass();
 	initVisbufferResolvePass();
 }
@@ -222,7 +236,17 @@ std::shared_ptr<graphics::Buffer> gmtl::MtlRenderer::createSharedBuffer() {
 	return std::make_shared<MtlBuffer>();
 }
 
-std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer, glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) {
+graphics::MaterialIndex gmtl::MtlRenderer::createMaterial(shaders::Material material) {
+	ZoneScoped;
+	assert(materials.size() < std::numeric_limits<MaterialIndex>::max());
+	const auto index = materials.size();
+	materials.emplace_back(material);
+	return static_cast<MaterialIndex>(index);
+}
+
+std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(
+		std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
+		glm::fvec3 aabbCenter, glm::fvec3 aabbExtents, MaterialIndex materialIndex) {
 	ZoneScoped;
 	static constexpr auto coneWeight = 0.f; // We leave this as 0 because we're not using cluster cone culling.
 	static constexpr auto maxPrimitives = fastgltf::alignDown(shaders::maxPrimitives, 4U); // meshopt requires the primitive count to be aligned to 4.
@@ -235,6 +259,7 @@ std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<sh
 	auto mesh = std::make_shared<MeshletMesh>();
 	mesh->aabbCenter = aabbCenter;
 	mesh->aabbExtents = aabbExtents;
+	mesh->materialIndex = materialIndex;
 
 	// Create vertex buffer
 	mesh->vertexBuffer = NS::TransferPtr(device->newBuffer(vertexBuffer.size_bytes(), MTL::StorageModeShared));
@@ -331,6 +356,13 @@ void gmtl::MtlRenderer::prepareFrame(std::size_t frameIndex) {
 	if (commandBufferException) {
 		std::rethrow_exception(commandBufferException);
 	}
+
+	auto& materialBuffer = materialBuffers[frameIndex];
+	if (const auto requiredSize = materials.size() * sizeof(shaders::Material);
+		!materialBuffer || materialBuffer->length() < requiredSize) {
+		materialBuffer = NS::TransferPtr(device->newBuffer(requiredSize, MTL::StorageModeShared));
+		std::memcpy(materialBuffer->contents(), materials.data(), requiredSize);
+	}
 }
 
 bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
@@ -384,6 +416,7 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 		visbufferEncoder->setMeshBuffer(sceneDrawBuffers.transformBuffer.get(), 0, 1);
 		visbufferEncoder->setMeshBuffer(sceneDrawBuffers.primitiveBuffer.get(), 0, 2);
 		visbufferEncoder->setMeshBuffer(cameraBuffers[frameIndex].get(), 0, 3);
+		visbufferEncoder->setMeshBuffer(materialBuffers[frameIndex].get(), 0, 4);
 
 		for (auto& meshes : scene.meshes) {
 			visbufferEncoder->useResource(meshes.mesh->vertexIndexBuffer.get(), MTL::ResourceUsageRead);
@@ -411,6 +444,7 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 
 		resolveEncoder->setBuffer(sceneDrawBuffers.meshletDrawBuffer.get(), 0, 0);
 		resolveEncoder->setBuffer(sceneDrawBuffers.primitiveBuffer.get(), 0, 1);
+		resolveEncoder->setBuffer(materialBuffers[frameIndex].get(), 0, 2);
 
 		resolveEncoder->setTexture(visbufferPass.visbuffer.get(), 0);
 		resolveEncoder->setTexture(drawable->texture(), 1);

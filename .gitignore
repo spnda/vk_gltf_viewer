@@ -10,3 +10,5 @@ build/
 
 # Dependencies not in Git submodules
 submodules/nv-aftermath
+
+*.DS_Store

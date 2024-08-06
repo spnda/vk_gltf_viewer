@@ -22,6 +22,7 @@ namespace graphics {
 
 	};
 
+	using MaterialIndex = std::uint32_t;
 	using InstanceIndex = std::uint32_t;
 
 	class Scene {
@@ -43,25 +44,36 @@ namespace graphics {
 
 		[[nodiscard]] static std::shared_ptr<Renderer> createRenderer(GLFWwindow* window);
 
-		virtual std::unique_ptr<Buffer> createUniqueBuffer() = 0;
-		virtual std::shared_ptr<Buffer> createSharedBuffer() = 0;
+		[[nodiscard]] virtual std::unique_ptr<Buffer> createUniqueBuffer() = 0;
+		[[nodiscard]] virtual std::shared_ptr<Buffer> createSharedBuffer() = 0;
+
+		[[nodiscard]] virtual MaterialIndex getDefaultMaterialIndex() const noexcept {
+			return 0;
+		}
+		[[nodiscard]] virtual MaterialIndex createMaterial(shaders::Material material) = 0;
 
 		[[nodiscard]] virtual std::shared_ptr<Mesh> createSharedMesh(
 				std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
-				glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) = 0;
+				glm::fvec3 aabbCenter, glm::fvec3 aabbExtents,
+				MaterialIndex materialIndex) = 0;
 
 		[[nodiscard]] virtual std::shared_ptr<Scene> createSharedScene() = 0;
 
-		virtual shaders::ResourceTableHandle createSampledTextureHandle() = 0;
-		virtual shaders::ResourceTableHandle createStorageTextureHandle() = 0;
+		[[nodiscard]] virtual shaders::ResourceTableHandle createSampledTextureHandle() = 0;
+		[[nodiscard]] virtual shaders::ResourceTableHandle createStorageTextureHandle() = 0;
 
 		/**
 		 * If this returns false, the window might be minimised or being resized, forcing us to pause rendering shortly.
 		 * In that case, glfwWaitEvents should be used.
 		 */
-		virtual bool canRender() = 0;
+		[[nodiscard]] virtual bool canRender() = 0;
 
 		virtual void updateResolution(glm::u32vec2 resolution) = 0;
+		/**
+		 * Returns the resolution at which this renders the scene. Note that this might not be
+		 * the same resolution the window has, since the renderer might use some upscaling
+		 * technique.
+		 */
 		[[nodiscard]] virtual glm::u32vec2 getRenderResolution() const noexcept = 0;
 
 		virtual void prepareFrame(std::size_t frameIndex) = 0;

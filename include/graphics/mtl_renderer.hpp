@@ -34,6 +34,7 @@ public:
 	glm::fvec3 aabbCenter;
 
 	std::uint32_t meshletCount;
+	std::uint32_t materialIndex;
 
 	explicit MeshletMesh() = default;
 	~MeshletMesh() noexcept = default;
@@ -51,7 +52,7 @@ struct MeshletSceneMesh {
 
 	explicit MeshletSceneMesh(std::shared_ptr<MeshletMesh>& mesh, shaders::Primitive primitive)
 			: mesh(mesh), primitive(primitive) {}
-	MeshletSceneMesh(MeshletSceneMesh&& other) : mesh(std::move(other.mesh)), primitive(other.primitive) {}
+	MeshletSceneMesh(MeshletSceneMesh&& other) noexcept : mesh(std::move(other.mesh)), primitive(other.primitive) {}
 };
 
 class MeshletScene : public graphics::Scene {
@@ -113,6 +114,9 @@ class MtlRenderer : public graphics::Renderer {
 
 	std::vector<NS::SharedPtr<MTL::Buffer>> cameraBuffers;
 
+	std::vector<shaders::Material> materials;
+	std::vector<NS::SharedPtr<MTL::Buffer>> materialBuffers;
+
 	VisbufferPass visbufferPass;
 	VisbufferResolvePass visbufferResolvePass;
 
@@ -126,9 +130,12 @@ public:
 	std::unique_ptr<Buffer> createUniqueBuffer() override;
 	std::shared_ptr<Buffer> createSharedBuffer() override;
 
+	MaterialIndex createMaterial(shaders::Material material) override;
+
 	std::shared_ptr<Mesh> createSharedMesh(
 			std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
-			glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) override;
+			glm::fvec3 aabbCenter, glm::fvec3 aabbExtents,
+			MaterialIndex materialIndex) override;
 
 	std::shared_ptr<Scene> createSharedScene() override;
 

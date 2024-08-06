@@ -105,7 +105,8 @@ public:
 
 	std::shared_ptr<Mesh> createSharedMesh(
 			std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
-			glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) override;
+			glm::fvec3 aabbCenter, glm::fvec3 aabbExtents,
+			MaterialIndex materialIndex) override;
 
 	bool canRender() override {
 		return !swapchainNeedsRebuild;
