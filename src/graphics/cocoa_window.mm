@@ -16,6 +16,7 @@ CA::MetalLayer* graphics::metal::createMetalLayer(GLFWwindow* window) {
 	glfwGetFramebufferSize(window, &width, &height);
 	layer.drawableSize = CGSizeMake(width, height);
 	layer.displaySyncEnabled = YES;
+	layer.framebufferOnly = NO;
 
 	NSWindow* nswindow = glfwGetCocoaWindow(window);
 	nswindow.contentView.layer = layer; // NOLINT

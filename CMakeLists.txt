@@ -231,5 +231,7 @@ add_dependencies(vk_gltf_viewer metal_shader_library)
 # Copy all required runtime DLLs into the build directory
 add_custom_command(TARGET vk_gltf_viewer POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy -t $<TARGET_FILE_DIR:vk_gltf_viewer> $<TARGET_RUNTIME_DLLS:vk_gltf_viewer>
+  # TODO: Avoid duplicatnig the library file?
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/shaders.metallib $<TARGET_FILE_DIR:vk_gltf_viewer>/shaders.metallib
   COMMAND_EXPAND_LISTS
 )

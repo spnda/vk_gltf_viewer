@@ -243,7 +243,7 @@ void Application::renderUi() {
 				ImGui::Text("Position: <%.2f, %.2f, %.2f>", pos.x, pos.y, pos.z);
 				ImGui::DragFloat("Camera speed multiplier", &camera->speedMultiplier);
 
-				ImGui::SeparatorText("Debug");
+				ImGui::SeparatorText("Culling");
 				ImGui::Checkbox("Freeze Camera frustum", &camera->freezeCameraFrustum);
 				ImGui::Checkbox("Freeze Occlusion matrix", &camera->freezeCullingMatrix);
 				//ImGui::Checkbox("Freeze animations", &world->freezeAnimations);

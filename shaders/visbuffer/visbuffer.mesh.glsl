@@ -91,6 +91,8 @@ void main() {
 			const vec3 v1 = clipVertices[indices.y];
 			const vec3 v2 = clipVertices[indices.z];
 			const float det = determinant(mat3(v0, v1, v2));
+
+			// Vulkan has Y+ as down.
 			if (transformDet < 0.0f) {
 				gl_MeshPrimitivesEXT[pidx].gl_CullPrimitiveEXT = det < 0.0f; // Front face culling
 			} else {

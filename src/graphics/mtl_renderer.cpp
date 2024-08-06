@@ -11,6 +11,8 @@
 #include <graphics/mtl_renderer.hpp>
 
 #include <fastgltf/util.hpp>
+#include <Metal/MTLComputeCommandEncoder.hpp>
+#include <Metal/MTLComputePipeline.hpp>
 
 namespace gmtl = graphics::metal;
 
@@ -140,6 +142,7 @@ gmtl::MtlRenderer::MtlRenderer(GLFWwindow* window) {
 	}
 
 	initVisbufferPass();
+	initVisbufferResolvePass();
 }
 
 gmtl::MtlRenderer::~MtlRenderer() noexcept = default;
@@ -158,9 +161,6 @@ void gmtl::MtlRenderer::initVisbufferPass() {
 
 	auto* visbufferAttachment = pipelineDescriptor->colorAttachments()->object(0);
 	visbufferAttachment->setPixelFormat(MTL::PixelFormatR32Uint);
-
-	auto* colorAttachment = pipelineDescriptor->colorAttachments()->object(1);
-	colorAttachment->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
 
 	pipelineDescriptor->setDepthAttachmentPixelFormat(MTL::PixelFormatDepth32Float);
 
@@ -193,6 +193,21 @@ void gmtl::MtlRenderer::initVisbufferPass() {
 	depthDesc->setStorageMode(MTL::StorageModePrivate);
 
 	visbufferPass.depthTexture = NS::TransferPtr(device->newTexture(depthDesc));
+}
+
+void gmtl::MtlRenderer::initVisbufferResolvePass() {
+	ZoneScoped;
+	auto* resolveFunction = globalLibrary->newFunction(NS::String::string("visbuffer_resolve", NS::UTF8StringEncoding))->autorelease();
+
+	auto* pipelineDescriptor = MTL::ComputePipelineDescriptor::alloc()->init()->autorelease();
+	pipelineDescriptor->setComputeFunction(resolveFunction);
+
+	NS::Error* error = nullptr;
+	visbufferResolvePass.pipelineState = NS::TransferPtr(
+			device->newComputePipelineState(pipelineDescriptor, MTL::PipelineOptionNone, nullptr, &error));
+	if (!visbufferResolvePass.pipelineState) {
+		fmt::print("{}", error->localizedDescription()->utf8String());
+	}
 }
 
 std::unique_ptr<graphics::Buffer> gmtl::MtlRenderer::createUniqueBuffer() {
@@ -310,7 +325,10 @@ auto gmtl::MtlRenderer::getRenderResolution() const noexcept -> glm::u32vec2 {
 
 void gmtl::MtlRenderer::prepareFrame(std::size_t frameIndex) {
 	ZoneScoped;
-	//dispatch_semaphore_wait(drawSemaphore, DISPATCH_TIME_FOREVER);
+	dispatch_semaphore_wait(drawSemaphore, DISPATCH_TIME_FOREVER);
+	if (commandBufferException) {
+		std::rethrow_exception(commandBufferException);
+	}
 }
 
 bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
@@ -325,7 +343,9 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 	scene.updateDrawBuffers(frameIndex);
 	*static_cast<glsl::Camera*>(cameraBuffers[frameIndex]->contents()) = camera;
 
-	auto* buffer = commandQueue->commandBuffer();
+	auto* bufferDesc = MTL::CommandBufferDescriptor::alloc()->init()->autorelease();
+	bufferDesc->setErrorOptions(MTL::CommandBufferErrorOptionEncoderExecutionStatus);
+	auto* buffer = commandQueue->commandBuffer(bufferDesc);
 
 	auto drawCount = scene.meshletDraws.size();
 	if (drawCount > 0) {
@@ -334,11 +354,6 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 		visbufferAttachment->setLoadAction(MTL::LoadActionClear);
 		visbufferAttachment->setStoreAction(MTL::StoreActionStore);
 		visbufferAttachment->setTexture(visbufferPass.visbuffer.get());
-
-		auto* colorAttachment = visbufferPassDescriptor->colorAttachments()->object(1);
-		colorAttachment->setLoadAction(MTL::LoadActionClear);
-		colorAttachment->setStoreAction(MTL::StoreActionStore);
-		colorAttachment->setTexture(drawable->texture());
 
 		auto* depthAttachment = MTL::RenderPassDepthAttachmentDescriptor::alloc()->init()->autorelease();
 		depthAttachment->setLoadAction(MTL::LoadActionClear);
@@ -370,6 +385,9 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 			visbufferEncoder->useResource(meshes.mesh->meshletBuffer.get(), MTL::ResourceUsageRead);
 		}
 
+		// We cull manually per primitive in the mesh shader
+		visbufferEncoder->setCullMode(MTL::CullModeNone);
+
 		visbufferEncoder->drawMeshThreadgroups(
 				MTL::Size((drawCount + glsl::maxMeshlets - 1) / glsl::maxMeshlets, 1, 1),
 				MTL::Size(visbufferPass.pipelineState->objectThreadExecutionWidth(), 1, 1),
@@ -378,13 +396,58 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 		visbufferEncoder->endEncoding();
 	}
 
+	if (drawCount > 0) {
+		auto* resolveEncoder = buffer->computeCommandEncoder();
+		resolveEncoder->setComputePipelineState(visbufferResolvePass.pipelineState.get());
+
+		auto& sceneDrawBuffers = scene.drawBuffers[frameIndex];
+
+		resolveEncoder->setBuffer(sceneDrawBuffers.meshletDrawBuffer.get(), 0, 0);
+		resolveEncoder->setBuffer(sceneDrawBuffers.primitiveBuffer.get(), 0, 1);
+
+		resolveEncoder->setTexture(visbufferPass.visbuffer.get(), 0);
+		resolveEncoder->setTexture(drawable->texture(), 1);
+
+		auto threadgroupSize = MTL::Size::Make(16, 16, 1);
+		auto threadgroupCount = MTL::Size::Make(
+			(visbufferPass.visbuffer->width() + threadgroupSize.width - 1) / threadgroupSize.width,
+			(visbufferPass.visbuffer->height() + threadgroupSize.height - 1) / threadgroupSize.height,
+			1);
+		resolveEncoder->dispatchThreadgroups(threadgroupCount, threadgroupSize);
+
+		resolveEncoder->endEncoding();
+	} else {
+		// TODO: Clear image to black or something?
+	}
+
 	imguiRenderer->draw(buffer, drawable, getRenderResolution(), frameIndex);
 
 	buffer->presentDrawable(drawable);
 
-	/*buffer->addCompletedHandler([&](MTL::CommandBuffer* buffer) {
+	buffer->addCompletedHandler([&](MTL::CommandBuffer* buffer) {
+		ZoneScoped;
 		dispatch_semaphore_signal(drawSemaphore);
-	});*/
+
+		if (buffer->status() == MTL::CommandBufferStatusError) {
+			auto* error = buffer->error();
+			if (error) {
+				fmt::print(stderr, "Command buffer error: {}\n", error->localizedDescription()->utf8String());
+
+				auto* encoderInfos = static_cast<NS::Array*>(
+						error->userInfo()->object(MTL::CommandBufferEncoderInfoErrorKey));
+				for (std::size_t i = 0; i < encoderInfos->count(); ++i) {
+					auto* info = static_cast<MTL::CommandBufferEncoderInfo*>(encoderInfos->object(i));
+					for (std::size_t j = 0; j < info->debugSignposts()->count(); ++j) {
+						auto* signpost = static_cast<NS::String*>(info->debugSignposts()->object(j));
+						fmt::print(stderr, "Signpost {}: {}", j, signpost->utf8String());
+					}
+				}
+			}
+
+			commandBufferException = std::make_exception_ptr(
+					std::runtime_error("Failed to execute command buffer"));
+		}
+	});
 
 	buffer->commit();
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <exception>
+
 #include <graphics/renderer.hpp>
 
 #include <Foundation/NSSharedPtr.hpp>
@@ -83,6 +85,10 @@ struct VisbufferPass {
 	NS::SharedPtr<MTL::Texture> depthTexture;
 };
 
+struct VisbufferResolvePass {
+	NS::SharedPtr<MTL::ComputePipelineState> pipelineState;
+};
+
 class MtlRenderer : public graphics::Renderer {
 	friend std::shared_ptr<Renderer> graphics::Renderer::createRenderer(GLFWwindow* window);
 
@@ -94,6 +100,7 @@ class MtlRenderer : public graphics::Renderer {
 	CA::MetalLayer* layer;
 	NS::SharedPtr<MTL::CommandQueue> commandQueue;
 	dispatch_semaphore_t drawSemaphore;
+	std::exception_ptr commandBufferException;
 
 	std::shared_ptr<MtlResourceTable> resourceTable;
 
@@ -104,8 +111,10 @@ class MtlRenderer : public graphics::Renderer {
 	std::vector<NS::SharedPtr<MTL::Buffer>> cameraBuffers;
 
 	VisbufferPass visbufferPass;
+	VisbufferResolvePass visbufferResolvePass;
 
 	void initVisbufferPass();
+	void initVisbufferResolvePass();
 
 public:
 	explicit MtlRenderer(GLFWwindow* window);

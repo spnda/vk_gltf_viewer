@@ -1,4 +1,5 @@
 #include <metal_stdlib>
+#include <metal_atomic>
 
 #include "visbuffer.h.glsl"
 #include "mesh_common.h.glsl"
@@ -13,7 +14,6 @@ struct MeshletVertex {
 struct MeshletPrimitive {
 	uint drawIndex;
 	bool culled [[primitive_culled]];
-	float4 color [[flat]];
 };
 
 using Meshlet = mesh<MeshletVertex, MeshletPrimitive, glsl::maxVertices, glsl::maxPrimitives, topology::triangle>;
@@ -34,6 +34,9 @@ static float3 hue2rgb(float hue) {
 	return rgb;
 }
 
+/// Object shader that handles up to glsl::maxMeshlets meshlets per threadgroup.
+/// This uses frustum culling and a modified index array to have a fully GPU-driven
+/// pipeline and cull as many meshlets as possible.
 [[object]] void visbuffer_object(
 		object_data ObjectPayload& payload [[payload]],
 		mesh_grid_properties outGrid,
@@ -83,6 +86,10 @@ static float3 hue2rgb(float hue) {
 	}
 }
 
+/// Mesh shader that handles a single meshlet/draw per threadgroup.
+/// Since a meshlet can have a variable amount of primitives and vertices,
+/// we use fancy loops to properly process them, at the cost of potentially
+/// processing the last element multiple times.
 [[mesh]] void visbuffer_mesh(
 		Meshlet meshletOut,
 		object_data const ObjectPayload& payload [[payload]],
@@ -107,6 +114,8 @@ static float3 hue2rgb(float hue) {
 	device auto& transformMatrix = transforms[draw.transformIndex];
 	auto mvp = camera.viewProjection * transformMatrix;
 
+	threadgroup metal::array<float3, glsl::maxVertices> clipVertices;
+
 	const uint vertexLoops = (meshlet.vertexCount + threadGroupWidth - 1) / threadGroupWidth;
 	for (uint i = 0; i < vertexLoops; ++i) {
 		uint vidx = threadIndex + i * threadGroupWidth;
@@ -116,6 +125,7 @@ static float3 hue2rgb(float hue) {
 		device const auto& vtx = primitive.vertexBuffer[vertexIndex];
 
 		auto pos = mvp * float4(vtx.position, 1.f);
+		clipVertices[vidx] = pos.xyw;
 		meshletOut.set_vertex(vidx, MeshletVertex {
 			.position = pos,
 		});
@@ -127,14 +137,22 @@ static float3 hue2rgb(float hue) {
 		pidx = min(pidx, meshlet.triangleCount - 1U);
 
 		auto j = pidx * 3;
-		meshletOut.set_index(j + 0, primitive.primitiveIndexBuffer[meshlet.triangleOffset + j + 0]);
-		meshletOut.set_index(j + 1, primitive.primitiveIndexBuffer[meshlet.triangleOffset + j + 1]);
-		meshletOut.set_index(j + 2, primitive.primitiveIndexBuffer[meshlet.triangleOffset + j + 2]);
+		auto idx0 = primitive.primitiveIndexBuffer[meshlet.triangleOffset + j + 0];
+		auto idx1 = primitive.primitiveIndexBuffer[meshlet.triangleOffset + j + 1];
+		auto idx2 = primitive.primitiveIndexBuffer[meshlet.triangleOffset + j + 2];
+
+		meshletOut.set_index(j + 0, idx0);
+		meshletOut.set_index(j + 1, idx1);
+		meshletOut.set_index(j + 2, idx2);
+
+		const auto v0 = clipVertices[idx0];
+		const auto v1 = clipVertices[idx1];
+		const auto v2 = clipVertices[idx2];
+		const auto det = determinant(float3x3(v0, v1, v2));
 
 		meshletOut.set_primitive(pidx, MeshletPrimitive {
 			.drawIndex = drawIdx,
-			.culled = false,
-			.color = float4(hue2rgb(draw.meshletIndex * 1.71f), 1),
+			.culled = det < 0.f, // Back face culling with Y+ as up. TODO: Respect material.doubleSided
 		});
 	}
 }
@@ -144,22 +162,93 @@ struct FragmentIn {
 	MeshletPrimitive prim;
 };
 
-struct FragmentOut {
-	uint visbuffer [[color(0)]];
-	float4 color [[color(1)]];
-};
-
-/*[[fragment]] uint visbuffer_frag(
+[[fragment]] uint visbuffer_frag(
 		FragmentIn in [[stage_in]],
 		uint primitiveId [[primitive_id]]) {
 	return glsl::packVisBuffer(in.prim.drawIndex, primitiveId);
-}*/
+}
 
-[[fragment]] FragmentOut visbuffer_frag(
-		FragmentIn in [[stage_in]],
-		uint primitiveId [[primitive_id]]) {
+struct VisbufferData {
+	uint drawIndex;
+	uint primitiveId;
+};
+VisbufferData unpackVisBuffer(uint visbuffer) {
 	return {
-		.visbuffer = glsl::packVisBuffer(in.prim.drawIndex, primitiveId),
-		.color = in.prim.color,
+		.drawIndex = visbuffer >> glsl::triangleBits,
+		.primitiveId = visbuffer & ((1 << glsl::triangleBits) - 1),
+	};
+}
+
+[[kernel]] void visbuffer_resolve(
+		device const glsl::MeshletDraw* draws [[buffer(0)]],
+		device const glsl::Primitive* primitives [[buffer(1)]],
+		texture2d<uint, access::read> visbuffer [[texture(0)]],
+		texture2d<float, access::write> color [[texture(1)]],
+		ushort2 gid [[thread_position_in_grid]]) {
+	if (gid.x >= visbuffer.get_width() || gid.y >= visbuffer.get_height()) {
+		return;
+	}
+
+	auto data = visbuffer.read(gid).r;
+	auto [drawIndex, primitiveId] = unpackVisBuffer(data);
+
+	device auto& draw = draws[drawIndex];
+
+	auto resolved = float4(hue2rgb(draw.meshletIndex * 1.71f), 1);
+	color.write(resolved, gid);
+}
+
+// Vertices of a basic cube
+constant const auto positions = metal::array<float3, 8> {
+	float3(1, -1, -1),
+	float3(1, 1, -1),
+	float3(-1, 1, -1),
+	float3(-1, -1, -1),
+	float3(1, -1, 1),
+	float3(1, 1, 1),
+	float3(-1, -1, 1),
+	float3(-1, 1, 1)
+};
+
+// Edge indices for a basic cube
+constant const auto edges = metal::array<uint, 12*2> {
+	0, 1,
+	0, 3,
+	0, 4,
+	2, 1,
+	2, 3,
+	2, 7,
+	6, 3,
+	6, 4,
+	6, 7,
+	5, 1,
+	5, 4,
+	5, 7
+};
+
+struct MeshletAabbOutput {
+	float4 pos [[position]];
+};
+
+/// This vertex shader generates a cube for each meshlet AABB, which we use
+/// together with the visibility result buffer to perform occlusion culling.
+[[vertex]] MeshletAabbOutput meshlet_aabb_vert(
+		device const glsl::MeshletDraw* draws [[buffer(0)]],
+		device const float4x4* transforms [[buffer(1)]],
+		device const glsl::Primitive* primitives [[buffer(2)]],
+		device const glsl::Camera& camera [[buffer(3)]],
+		uint instanceId [[instance_id]],
+		uint vertexId [[vertex_id]]) {
+
+	device const auto& draw = draws[instanceId];
+	device const auto& transformMatrix = transforms[draw.transformIndex];
+	device const auto& primitive = primitives[draw.primitiveIndex];
+	device const auto& meshlet = primitive.meshletBuffer[draw.meshletIndex];
+
+	auto position = positions[edges[vertexId]];
+	auto pos = position * meshlet.aabbExtents + meshlet.aabbCenter;
+
+	return {
+		.pos = camera.viewProjection * transformMatrix * float4(pos, 1.f),
 	};
 }

@@ -38,11 +38,9 @@ GLSL_CONSTANT uint maxVertices = 64;
 GLSL_CONSTANT uint maxPrimitives = 126;
 GLSL_CONSTANT uint maxMeshlets = 102;
 #else
-GLSL_CONSTANT uint maxVertices = 128;
-GLSL_CONSTANT uint maxPrimitives = 256;
-// TODO: If this is any other value, the object or mesh shader causes GPU hangs...
-//       This should be investigated... but I am not sure where to start.
-GLSL_CONSTANT uint maxMeshlets = 32; // This should best be a multiple of the threadgroup size.
+GLSL_CONSTANT uint maxVertices = 64;
+GLSL_CONSTANT uint maxPrimitives = 128;
+GLSL_CONSTANT uint maxMeshlets = 64; // This should best be a multiple of the threadgroup size.
 #endif
 
 // This is essentially a replacement for gl_WorkGroupID.x, but one which can store any index
