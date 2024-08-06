@@ -10,7 +10,7 @@
 #include <Metal/MTLLibrary.hpp>
 #include <Metal/MTLDrawable.hpp>
 
-#include <ui/ui.h.glsl>
+#include <ui/ui.h>
 
 #include <graphics/imgui/mtl_renderer.hpp>
 #include <graphics/mtl_renderer.hpp>
@@ -135,7 +135,7 @@ void gmtl::imgui::Renderer::draw(MTL::CommandBuffer* commandBuffer, CA::MetalDra
 	const auto clipScale = glm::fvec2(drawData->FramebufferScale); // (1,1) unless using retina display which are often (2,2)
 
 	auto outputSize = glm::u32vec2(displaySize * clipScale);
-	glsl::UiPushConstants constants {
+	shaders::UiPushConstants constants {
 		.scale = 2.f / displaySize,
 		.translate = -1.0F - displayPos * constants.scale,
 	};
@@ -206,7 +206,7 @@ void gmtl::imgui::Renderer::draw(MTL::CommandBuffer* commandBuffer, CA::MetalDra
 
 			pass->useResource(fontAtlas, MTL::ResourceUsageSample);
 
-			if (auto texId = cmd.GetTexID(); texId == glsl::invalidHandle) {
+			if (auto texId = cmd.GetTexID(); texId == shaders::invalidHandle) {
 				constants.imageIndex = fontAtlasHandle;
 			} else {
 				// TODO: Figure out how to make other textures resident.
@@ -214,8 +214,8 @@ void gmtl::imgui::Renderer::draw(MTL::CommandBuffer* commandBuffer, CA::MetalDra
 			}
 			constants.vertices = frameBuffers.vertexBuffer->gpuAddress() + (vertexOffset + cmd.VtxOffset) * sizeof(ImDrawVert);
 
-			pass->setVertexBytes(&constants, sizeof(glsl::UiPushConstants), 0);
-			pass->setFragmentBytes(&constants, sizeof(glsl::UiPushConstants), 0);
+			pass->setVertexBytes(&constants, sizeof(shaders::UiPushConstants), 0);
+			pass->setFragmentBytes(&constants, sizeof(shaders::UiPushConstants), 0);
 
 			pass->drawIndexedPrimitives(
 				MTL::PrimitiveTypeTriangle,

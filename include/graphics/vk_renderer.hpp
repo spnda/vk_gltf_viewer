@@ -20,7 +20,7 @@
 
 namespace graphics::vulkan {
 struct VkMesh : graphics::Mesh {
-	/** The buffer handles corresponding to the buffers in each glsl::Primitive. */
+	/** The buffer handles corresponding to the buffers in each shaders::Primitive. */
 	std::unique_ptr<ScopedBuffer> vertexIndexBuffer;
 	std::unique_ptr<ScopedBuffer> primitiveIndexBuffer;
 	std::unique_ptr<ScopedBuffer> vertexBuffer;
@@ -104,7 +104,7 @@ public:
 	std::shared_ptr<Buffer> createSharedBuffer() override;
 
 	std::shared_ptr<Mesh> createSharedMesh(
-			std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
+			std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
 			glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) override;
 
 	bool canRender() override {
@@ -114,6 +114,6 @@ public:
 	void updateResolution(glm::u32vec2 resolution) override;
 
 	void prepareFrame(std::size_t frameIndex) override;
-	bool draw(std::size_t frameIndex, Scene& world, const glsl::Camera& camera, float dt) override;
+	bool draw(std::size_t frameIndex, Scene& world, const shaders::Camera& camera, float dt) override;
 };
 } // namespace graphics::vulkan

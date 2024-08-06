@@ -8,7 +8,7 @@
 namespace gvk = graphics::vulkan;
 namespace gmtl = graphics::metal;
 
-glsl::ResourceTableHandle graphics::ResourceTable::findFirstFreeHandle(std::vector<std::uint64_t>& bitmap) {
+shaders::ResourceTableHandle graphics::ResourceTable::findFirstFreeHandle(std::vector<std::uint64_t>& bitmap) {
 	ZoneScoped;
 	std::lock_guard lock(bitmapMutex);
 	for (std::size_t i = 0; i < bitmap.size(); ++i) {
@@ -29,22 +29,22 @@ glsl::ResourceTableHandle graphics::ResourceTable::findFirstFreeHandle(std::vect
 	throw std::runtime_error("Failed to find free handle");
 }
 
-void graphics::ResourceTable::freeHandle(std::vector<std::uint64_t>& bitmap, glsl::ResourceTableHandle handle) {
+void graphics::ResourceTable::freeHandle(std::vector<std::uint64_t>& bitmap, shaders::ResourceTableHandle handle) {
 	std::lock_guard lock(bitmapMutex);
 	auto i = handle / 64;
 	bitmap[i] &= ~(std::uint64_t(1U) << (handle % 64));
 }
 
-void graphics::ResourceTable::removeStorageImageHandle(glsl::ResourceTableHandle handle) noexcept {
+void graphics::ResourceTable::removeStorageImageHandle(shaders::ResourceTableHandle handle) noexcept {
 	ZoneScoped;
-	if (handle == glsl::invalidHandle)
+	if (handle == shaders::invalidHandle)
 		return;
 	freeHandle(storageImageBitmap, handle);
 }
 
-void graphics::ResourceTable::removeSampledImageHandle(glsl::ResourceTableHandle handle) noexcept {
+void graphics::ResourceTable::removeSampledImageHandle(shaders::ResourceTableHandle handle) noexcept {
 	ZoneScoped;
-	if (handle == glsl::invalidHandle)
+	if (handle == shaders::invalidHandle)
 		return;
 	freeHandle(sampledImageBitmap, handle);
 }
@@ -75,13 +75,13 @@ gvk::VkResourceTable::VkResourceTable(Device& _device) : device(_device) {
 	// This needs to match what resource_table.h.glsl has.
 	const std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings {{
 		{
-			.binding = glsl::sampledImageBinding,
+			.binding = shaders::sampledImageBinding,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			.descriptorCount = properties.maxDescriptorSetUpdateAfterBindSampledImages,
 			.stageFlags = VK_SHADER_STAGE_ALL,
 		},
 		{
-			.binding = glsl::storageImageBinding,
+			.binding = shaders::storageImageBinding,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			.descriptorCount = properties.maxDescriptorSetUpdateAfterBindStorageImages,
 			.stageFlags = VK_SHADER_STAGE_ALL,
@@ -124,7 +124,7 @@ gvk::VkResourceTable::~VkResourceTable() noexcept {
 	vkDestroyDescriptorPool(device.get(), pool, vk::allocationCallbacks.get());
 }
 
-glsl::ResourceTableHandle gvk::VkResourceTable::allocateStorageImage(VkImageView view, VkImageLayout imageLayout) noexcept {
+shaders::ResourceTableHandle gvk::VkResourceTable::allocateStorageImage(VkImageView view, VkImageLayout imageLayout) noexcept {
 	ZoneScoped;
 	auto handle = findFirstFreeHandle(storageImageBitmap);
 
@@ -135,7 +135,7 @@ glsl::ResourceTableHandle gvk::VkResourceTable::allocateStorageImage(VkImageView
 	const VkWriteDescriptorSet write {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.dstSet = set,
-			.dstBinding = glsl::storageImageBinding,
+			.dstBinding = shaders::storageImageBinding,
 			.dstArrayElement = handle,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -145,7 +145,7 @@ glsl::ResourceTableHandle gvk::VkResourceTable::allocateStorageImage(VkImageView
 	return handle;
 }
 
-glsl::ResourceTableHandle gvk::VkResourceTable::allocateSampledImage(VkImageView view, VkImageLayout imageLayout, VkSampler sampler) noexcept {
+shaders::ResourceTableHandle gvk::VkResourceTable::allocateSampledImage(VkImageView view, VkImageLayout imageLayout, VkSampler sampler) noexcept {
 	ZoneScoped;
 	auto handle = findFirstFreeHandle(sampledImageBitmap);
 
@@ -157,7 +157,7 @@ glsl::ResourceTableHandle gvk::VkResourceTable::allocateSampledImage(VkImageView
 	const VkWriteDescriptorSet write {
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.dstSet = set,
-			.dstBinding = glsl::sampledImageBinding,
+			.dstBinding = shaders::sampledImageBinding,
 			.dstArrayElement = handle,
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -188,7 +188,7 @@ gmtl::MtlResourceTable::~MtlResourceTable() noexcept {
 	sampledImageBuffer->release();
 }
 
-glsl::ResourceTableHandle gmtl::MtlResourceTable::allocateStorageImage(MTL::Texture* texture) noexcept {
+shaders::ResourceTableHandle gmtl::MtlResourceTable::allocateStorageImage(MTL::Texture* texture) noexcept {
 	ZoneScoped;
 	auto handle = findFirstFreeHandle(storageImageBitmap);
 
@@ -196,7 +196,7 @@ glsl::ResourceTableHandle gmtl::MtlResourceTable::allocateStorageImage(MTL::Text
 	return handle;
 }
 
-glsl::ResourceTableHandle gmtl::MtlResourceTable::allocateSampledImage(MTL::Texture* texture, MTL::SamplerState* sampler) noexcept {
+shaders::ResourceTableHandle gmtl::MtlResourceTable::allocateSampledImage(MTL::Texture* texture, MTL::SamplerState* sampler) noexcept {
 	ZoneScoped;
 	auto handle = findFirstFreeHandle(storageImageBitmap);
 

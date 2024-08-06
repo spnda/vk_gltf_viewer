@@ -1,9 +1,8 @@
 #include <metal_stdlib>
-#include <metal_atomic>
 
-#include "visbuffer.h.glsl"
-#include "mesh_common.h.glsl"
-#include "culling.h.glsl"
+#include "visbuffer.h"
+#include "mesh_common.h"
+#include "culling.h"
 
 using namespace metal;
 
@@ -16,11 +15,11 @@ struct MeshletPrimitive {
 	bool culled [[primitive_culled]];
 };
 
-using Meshlet = mesh<MeshletVertex, MeshletPrimitive, glsl::maxVertices, glsl::maxPrimitives, topology::triangle>;
+using Meshlet = mesh<MeshletVertex, MeshletPrimitive, shaders::maxVertices, shaders::maxPrimitives, topology::triangle>;
 
 struct ObjectPayload {
 	uint baseIndex;
-	metal::array<uint8_t, glsl::maxMeshlets> indices;
+	metal::array<uint8_t, shaders::maxMeshlets> indices;
 };
 
 // https://www.ronja-tutorials.com/post/041-hsv-colorspace/
@@ -34,22 +33,22 @@ static float3 hue2rgb(float hue) {
 	return rgb;
 }
 
-/// Object shader that handles up to glsl::maxMeshlets meshlets per threadgroup.
+/// Object shader that handles up to shaders::maxMeshlets meshlets per threadgroup.
 /// This uses frustum culling and a modified index array to have a fully GPU-driven
 /// pipeline and cull as many meshlets as possible.
 [[object]] void visbuffer_object(
 		object_data ObjectPayload& payload [[payload]],
 		mesh_grid_properties outGrid,
 		constant const ulong& meshletDrawCount [[buffer(0)]],
-		device const glsl::Camera& camera [[buffer(1)]],
-		device const glsl::MeshletDraw* draws [[buffer(2)]],
+		device const shaders::Camera& camera [[buffer(1)]],
+		device const shaders::MeshletDraw* draws [[buffer(2)]],
 		device const float4x4* transforms [[buffer(3)]],
-		device const glsl::Primitive* primitives [[buffer(4)]],
+		device const shaders::Primitive* primitives [[buffer(4)]],
 		uint groupId [[threadgroup_position_in_grid]],
 		uint threadIndex [[thread_position_in_threadgroup]],
 		uint threadGroupWidth [[threads_per_threadgroup]]) {
-	uint meshletCount = uint(min(ulong(glsl::maxMeshlets), meshletDrawCount - (groupId * glsl::maxMeshlets)));
-	uint baseId = payload.baseIndex = groupId * glsl::maxMeshlets;
+	uint meshletCount = uint(min(ulong(shaders::maxMeshlets), meshletDrawCount - (groupId * shaders::maxMeshlets)));
+	uint baseId = payload.baseIndex = groupId * shaders::maxMeshlets;
 
 	// We use an atomic counter for how many meshlets are visible instead of SIMD intrinsics,
 	// since those caused a GPU hang in some cases, for some reason. Might be useful to investigate
@@ -72,8 +71,8 @@ static float3 hue2rgb(float hue) {
 
 		// Frustum culling
 		const auto worldAabbCenter = (transformMatrix * float4(meshlet.aabbCenter, 1.0f)).xyz;
-		const auto worldAabbExtent = glsl::getWorldSpaceAabbExtent(meshlet.aabbExtents.xyz, transformMatrix);
-		visible = visible && glsl::isAabbInFrustum(worldAabbCenter, worldAabbExtent, camera.frustum);
+		const auto worldAabbExtent = shaders::getWorldSpaceAabbExtent(meshlet.aabbExtents.xyz, transformMatrix);
+		visible = visible && shaders::isAabbInFrustum(worldAabbCenter, worldAabbExtent, camera.frustum);
 
 		if (visible) {
 			payload.indices[atomic_fetch_add_explicit(&visibleMeshlets, 1, memory_order_relaxed)] = uint8_t(idx);
@@ -93,10 +92,10 @@ static float3 hue2rgb(float hue) {
 [[mesh]] void visbuffer_mesh(
 		Meshlet meshletOut,
 		object_data const ObjectPayload& payload [[payload]],
-		device const glsl::MeshletDraw* draws [[buffer(0)]],
+		device const shaders::MeshletDraw* draws [[buffer(0)]],
 		device const float4x4* transforms [[buffer(1)]],
-		device const glsl::Primitive* primitives [[buffer(2)]],
-		device const glsl::Camera& camera [[buffer(3)]],
+		device const shaders::Primitive* primitives [[buffer(2)]],
+		device const shaders::Camera& camera [[buffer(3)]],
 		uint payloadIndex [[threadgroup_position_in_grid]],
 		uint threadIndex [[thread_position_in_threadgroup]],
 		uint threadGroupWidth [[threads_per_threadgroup]]) {
@@ -114,7 +113,7 @@ static float3 hue2rgb(float hue) {
 	device auto& transformMatrix = transforms[draw.transformIndex];
 	auto mvp = camera.viewProjection * transformMatrix;
 
-	threadgroup metal::array<float3, glsl::maxVertices> clipVertices;
+	threadgroup metal::array<float3, shaders::maxVertices> clipVertices;
 
 	const uint vertexLoops = (meshlet.vertexCount + threadGroupWidth - 1) / threadGroupWidth;
 	for (uint i = 0; i < vertexLoops; ++i) {
@@ -165,23 +164,12 @@ struct FragmentIn {
 [[fragment]] uint visbuffer_frag(
 		FragmentIn in [[stage_in]],
 		uint primitiveId [[primitive_id]]) {
-	return glsl::packVisBuffer(in.prim.drawIndex, primitiveId);
-}
-
-struct VisbufferData {
-	uint drawIndex;
-	uint primitiveId;
-};
-VisbufferData unpackVisBuffer(uint visbuffer) {
-	return {
-		.drawIndex = visbuffer >> glsl::triangleBits,
-		.primitiveId = visbuffer & ((1 << glsl::triangleBits) - 1),
-	};
+	return shaders::packVisBuffer(in.prim.drawIndex, primitiveId);
 }
 
 [[kernel]] void visbuffer_resolve(
-		device const glsl::MeshletDraw* draws [[buffer(0)]],
-		device const glsl::Primitive* primitives [[buffer(1)]],
+		device const shaders::MeshletDraw* draws [[buffer(0)]],
+		device const shaders::Primitive* primitives [[buffer(1)]],
 		texture2d<uint, access::read> visbuffer [[texture(0)]],
 		texture2d<float, access::write> color [[texture(1)]],
 		ushort2 gid [[thread_position_in_grid]]) {
@@ -190,11 +178,16 @@ VisbufferData unpackVisBuffer(uint visbuffer) {
 	}
 
 	auto data = visbuffer.read(gid).r;
-	auto [drawIndex, primitiveId] = unpackVisBuffer(data);
+	if (data == shaders::visbufferClearValue) {
+		color.write(float4(0.f), gid);
+		return;
+	}
 
-	device auto& draw = draws[drawIndex];
+	auto [drawIndex, primitiveId] = shaders::unpackVisBuffer(data);
 
-	auto resolved = float4(hue2rgb(draw.meshletIndex * 1.71f), 1);
+	device const auto& draw = draws[drawIndex];
+
+	auto resolved = float4(hue2rgb(draw.meshletIndex * 1.71f), 1.f);
 	color.write(resolved, gid);
 }
 
@@ -233,10 +226,10 @@ struct MeshletAabbOutput {
 /// This vertex shader generates a cube for each meshlet AABB, which we use
 /// together with the visibility result buffer to perform occlusion culling.
 [[vertex]] MeshletAabbOutput meshlet_aabb_vert(
-		device const glsl::MeshletDraw* draws [[buffer(0)]],
+		device const shaders::MeshletDraw* draws [[buffer(0)]],
 		device const float4x4* transforms [[buffer(1)]],
-		device const glsl::Primitive* primitives [[buffer(2)]],
-		device const glsl::Camera& camera [[buffer(3)]],
+		device const shaders::Primitive* primitives [[buffer(2)]],
+		device const shaders::Camera& camera [[buffer(3)]],
 		uint instanceId [[instance_id]],
 		uint vertexId [[vertex_id]]) {
 

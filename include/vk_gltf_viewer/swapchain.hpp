@@ -7,7 +7,7 @@
 
 #include <vk_gltf_viewer/device.hpp>
 
-#include <resource_table.h.glsl>
+#include <resource_table.h>
 
 constexpr glm::u32vec2 toVector(VkExtent2D extent) noexcept {
 	return {extent.width, extent.height};
@@ -18,7 +18,7 @@ struct Swapchain {
 
 	std::vector<VkImage> images;
 	std::vector<VkImageView> imageViews;
-	std::vector<glsl::ResourceTableHandle> imageViewHandles;
+	std::vector<shaders::ResourceTableHandle> imageViewHandles;
 
 	std::reference_wrapper<const Device> device;
 	VkSurfaceKHR surface = VK_NULL_HANDLE;

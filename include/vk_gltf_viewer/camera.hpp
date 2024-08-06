@@ -6,9 +6,9 @@
 
 #include <GLFW/glfw3.h>
 
-#include <mesh_common.h.glsl>
+#include <mesh_common.h>
 
-struct Camera : public glsl::Camera {
+struct Camera : public shaders::Camera {
 	glm::vec3 accelerationVector = glm::vec3(0.f);
 	glm::vec3 velocity = glm::vec3(0.f);
 	glm::vec3 position = glm::vec3(0.f, 0.f, 5.f);

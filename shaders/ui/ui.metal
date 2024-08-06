@@ -1,6 +1,6 @@
 #include <metal_math>
 
-#include "ui.h.glsl"
+#include "ui.h"
 
 using namespace metal;
 
@@ -12,7 +12,7 @@ struct RasterizerOutput {
 
 [[vertex]] RasterizerOutput ui_vert(
 		uint vertexId [[vertex_id]],
-		const constant glsl::UiPushConstants& constants [[buffer(0)]]) {
+		const constant shaders::UiPushConstants& constants [[buffer(0)]]) {
     const device auto& vert = constants.vertices[vertexId];
 	auto pos = vert.pos * constants.scale + constants.translate;
 	return RasterizerOutput {
@@ -24,8 +24,8 @@ struct RasterizerOutput {
 
 [[fragment]] float4 ui_frag(
 		RasterizerOutput input [[stage_in]],
-		const constant glsl::UiPushConstants& constants [[buffer(0)]],
-		const constant glsl::ResourceTableBuffer& resourceTable [[buffer(1)]]) {
+		const constant shaders::UiPushConstants& constants [[buffer(0)]],
+		const constant shaders::ResourceTableBuffer& resourceTable [[buffer(1)]]) {
 	device auto& entry = resourceTable.sampled_textures_heap[constants.imageIndex];
 	return input.color * entry.tex.sample(entry.sampler, input.uv);
 }

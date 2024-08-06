@@ -1,17 +1,17 @@
-#ifndef CULLING_GLSL_H
-#define CULLING_GLSL_H
+#ifndef SHADERS_CULLING_H
+#define SHADERS_CULLING_H
 
-#include "common.h.glsl"
-GLSL_NAMESPACE_BEGIN
+#include "common.h"
+SHADER_NAMESPACE_BEGIN
 
 // Frustum culling using 6 planes on an AABB
 #if defined(SHADER_METAL)
-bool isAabbInFrustum(metal::float3 center, metal::float3 extents, device const metal::array<metal::packed_float4, 6>& frustum) {
+FUNCTION_INLINE bool isAabbInFrustum(metal::float3 center, metal::float3 extents, device const metal::array<metal::packed_float4, 6>& frustum) {
 #else
-bool isAabbInFrustum(PARAMETER_COPY(vec3) center, PARAMETER_COPY(vec3) extents, PARAMETER_COPY(vec4) frustum[6]) {
+FUNCTION_INLINE bool isAabbInFrustum(fvec3 center, fvec3 extents, fvec4 frustum[6]) {
 #endif
 	for (uint i = 0; i < 6; ++i) {
-		const vec4 plane = frustum[i];
+		const fvec4 plane = frustum[i];
 
 		const float radius = dot(extents, abs(plane.xyz));
 		const float distance = dot(plane.xyz, center) - plane.w;
@@ -23,22 +23,18 @@ bool isAabbInFrustum(PARAMETER_COPY(vec3) center, PARAMETER_COPY(vec3) extents, 
 }
 
 // See https://gist.github.com/cmf028/81e8d3907035640ee0e3fdd69ada543f#file-aabb_transform-comp-L109-L132
-vec3 getWorldSpaceAabbExtent(PARAMETER_COPY(vec3) extent, PARAMETER_COPY(mat4) transform) {
-	const mat3 transformExtents = mat3(
+FUNCTION_INLINE fvec3 getWorldSpaceAabbExtent(fvec3 extent, fmat4 transform) {
+	const fmat3 transformExtents = fmat3(
 		abs(transform[0].xyz),
 		abs(transform[1].xyz),
 		abs(transform[2].xyz)
 	);
-#if !defined(SHADER_METAL)
 	return transformExtents * extent;
-#else
-	return transformExtents * metal::float3(extent);
-#endif
 }
 
-#if !defined(SHADER_METAL)
+#if defined(SHADER_GLSL)
 // Vertices of a basic cube
-GLSL_CONSTANT vec3 aabbPositions[8] = vec3[8](
+SHADER_CONSTANT vec3 aabbPositions[8] = vec3[8](
     vec3(1, -1, -1),
     vec3(1, 1, -1),
     vec3(-1, 1, -1),
@@ -65,5 +61,5 @@ vec3[2] projectAabb(vec3 center, vec3 extent, mat4 viewProjection) {
 }
 #endif
 
-GLSL_NAMESPACE_END
+SHADER_NAMESPACE_END
 #endif

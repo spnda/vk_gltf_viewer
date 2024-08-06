@@ -47,9 +47,9 @@ struct MeshletDrawBuffers {
 
 struct MeshletSceneMesh {
 	std::shared_ptr<MeshletMesh> mesh;
-	glsl::Primitive primitive;
+	shaders::Primitive primitive;
 
-	explicit MeshletSceneMesh(std::shared_ptr<MeshletMesh>& mesh, glsl::Primitive primitive)
+	explicit MeshletSceneMesh(std::shared_ptr<MeshletMesh>& mesh, shaders::Primitive primitive)
 			: mesh(mesh), primitive(primitive) {}
 	MeshletSceneMesh(MeshletSceneMesh&& other) : mesh(std::move(other.mesh)), primitive(other.primitive) {}
 };
@@ -60,7 +60,7 @@ public:
 
 	std::vector<MeshletSceneMesh> meshes;
 	std::vector<glm::fmat4x4> transforms;
-	std::vector<glsl::MeshletDraw> meshletDraws;
+	std::vector<shaders::MeshletDraw> meshletDraws;
 
 	std::vector<MeshletDrawBuffers> drawBuffers;
 
@@ -80,6 +80,9 @@ CA::MetalLayer* createMetalLayer(GLFWwindow* window);
 struct VisbufferPass {
 	NS::SharedPtr<MTL::RenderPipelineState> pipelineState;
 	NS::SharedPtr<MTL::DepthStencilState> depthState;
+
+	/** The pipeline used to draw AABBs to determine the  */
+	NS::SharedPtr<MTL::RenderPipelineState> aabbPipelineState;
 
 	NS::SharedPtr<MTL::Texture> visbuffer;
 	NS::SharedPtr<MTL::Texture> depthTexture;
@@ -124,13 +127,13 @@ public:
 	std::shared_ptr<Buffer> createSharedBuffer() override;
 
 	std::shared_ptr<Mesh> createSharedMesh(
-			std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
+			std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
 			glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) override;
 
 	std::shared_ptr<Scene> createSharedScene() override;
 
-	glsl::ResourceTableHandle createSampledTextureHandle() override;
-	glsl::ResourceTableHandle createStorageTextureHandle() override;
+	shaders::ResourceTableHandle createSampledTextureHandle() override;
+	shaders::ResourceTableHandle createStorageTextureHandle() override;
 
 	bool canRender() override {
 		return true; // TODO: Detect window being minimized or sth
@@ -141,6 +144,6 @@ public:
 
 	void prepareFrame(std::size_t frameIndex) override;
 	bool draw(std::size_t frameIndex, Scene& world,
-			  const glsl::Camera& camera, float dt) override;
+			  const shaders::Camera& camera, float dt) override;
 };
 }

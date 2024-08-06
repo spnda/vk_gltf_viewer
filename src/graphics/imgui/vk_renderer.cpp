@@ -63,12 +63,12 @@ gvk::imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swa
 	vk::setDebugUtilsName(device.get(), fontAtlasSampler, "ImGui font-atlas sampler");
 
 	// Create the pipeline layout
-	const VkPushConstantRange pushConstantRange = {
+	constexpr VkPushConstantRange pushConstantRange {
 		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		.offset = 0,
-		.size = sizeof(glsl::UiPushConstants),
+		.size = sizeof(shaders::UiPushConstants),
 	};
-	const VkPipelineLayoutCreateInfo layoutCreateInfo = {
+	const VkPipelineLayoutCreateInfo layoutCreateInfo {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = 1,
 		.pSetLayouts = &device.get().resourceTable->getLayout(),
@@ -82,13 +82,13 @@ gvk::imgui::Renderer::Renderer(Device& _device, GLFWwindow* window, VkFormat swa
 
 	// Create the pipeline
 	const VkFormat colorAttachmentFormat = swapchainImageFormat;
-	const VkPipelineRenderingCreateInfo renderingCreateInfo = {
+	const VkPipelineRenderingCreateInfo renderingCreateInfo {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 		.colorAttachmentCount = 1,
 		.pColorAttachmentFormats = &colorAttachmentFormat,
 	};
 
-	const VkPipelineColorBlendAttachmentState blendAttachment = {
+	const VkPipelineColorBlendAttachmentState blendAttachment {
 		.blendEnable = VK_TRUE,
 		.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
 		.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
@@ -445,7 +445,7 @@ void gvk::imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapc
 	auto outputSize = glm::u32vec2(displaySize * clipScale);
 
 	// Update the scale and translate floats for the vertex shader.
-	glsl::UiPushConstants pushConstants {
+	shaders::UiPushConstants pushConstants {
 		.scale = 2.f / displaySize,
 		.translate = -1.0F - displayPos * pushConstants.scale,
 	};
@@ -484,7 +484,7 @@ void gvk::imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapc
 			};
 			vkCmdSetScissor(commandBuffer, 0, 1, &rect);
 
-			if (auto texId = cmd.GetTexID(); texId == glsl::invalidHandle) {
+			if (auto texId = cmd.GetTexID(); texId == shaders::invalidHandle) {
 				// If no texture ID was specified, we default to the font atlas.
 				pushConstants.imageIndex = fontAtlasHandle;
 			} else {
@@ -492,7 +492,7 @@ void gvk::imgui::Renderer::draw(VkCommandBuffer commandBuffer, VkImageView swapc
 			}
 			pushConstants.vertices = frameBuffers.vertexBufferAddress + (vertexOffset + cmd.VtxOffset) * sizeof(ImDrawVert);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-							   0, sizeof(glsl::UiPushConstants), &pushConstants);
+							   0, sizeof(shaders::UiPushConstants), &pushConstants);
 
 			vkCmdBindIndexBuffer(commandBuffer, *frameBuffers.indexBuffer,
 								 (cmd.IdxOffset + static_cast<std::uint32_t>(indexOffset)) * sizeof(ImDrawIdx),

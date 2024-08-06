@@ -5,8 +5,8 @@
 
 #include <GLFW/glfw3.h>
 
-#include <mesh_common.h.glsl>
-#include <resource_table.h.glsl>
+#include <mesh_common.h>
+#include <resource_table.h>
 
 namespace graphics {
 	using index_t = std::uint32_t; // TODO: Support dynamic index bit width?
@@ -47,13 +47,13 @@ namespace graphics {
 		virtual std::shared_ptr<Buffer> createSharedBuffer() = 0;
 
 		[[nodiscard]] virtual std::shared_ptr<Mesh> createSharedMesh(
-				std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
+				std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer,
 				glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) = 0;
 
 		[[nodiscard]] virtual std::shared_ptr<Scene> createSharedScene() = 0;
 
-		virtual glsl::ResourceTableHandle createSampledTextureHandle() = 0;
-		virtual glsl::ResourceTableHandle createStorageTextureHandle() = 0;
+		virtual shaders::ResourceTableHandle createSampledTextureHandle() = 0;
+		virtual shaders::ResourceTableHandle createStorageTextureHandle() = 0;
 
 		/**
 		 * If this returns false, the window might be minimised or being resized, forcing us to pause rendering shortly.
@@ -66,6 +66,6 @@ namespace graphics {
 
 		virtual void prepareFrame(std::size_t frameIndex) = 0;
 		virtual bool draw(std::size_t frameIndex, Scene& scene,
-						  const glsl::Camera& camera, float dt) = 0;
+						  const shaders::Camera& camera, float dt) = 0;
 	};
 }

@@ -3,7 +3,7 @@
 
 #include <fmt/std.h>
 
-#include <mesh_common.h.glsl>
+#include <mesh_common.h>
 
 #include <vk_gltf_viewer/assets.hpp>
 
@@ -230,7 +230,7 @@ glm::vec3 getAccessorMinMax(const decltype(fg::Accessor::min)& values) {
 
 void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const fg::Primitive& gltfPrimitive) {
 	ZoneScoped;
-	glsl::Primitive primitive;
+	shaders::Primitive primitive;
 	// TODO: More explicit way of setting defaults?
 	if (gltfPrimitive.materialIndex) {
 		primitive.materialIndex = *gltfPrimitive.materialIndex + 1;
@@ -252,7 +252,7 @@ void PrimitiveProcessingTask::processPrimitive(std::uint64_t primitiveIdx, const
 	}
 
 	// Load the vertices. TODO: Directly copy into the staging buffer, instead of into a vector first.
-	std::vector<glsl::Vertex> vertices; vertices.reserve(posAccessor.count);
+	std::vector<shaders::Vertex> vertices; vertices.reserve(posAccessor.count);
 	fastgltf::iterateAccessor<glm::vec3>(asset, posAccessor, [&](glm::vec3 val) {
 		auto& vtx = vertices.emplace_back();
 		vtx.position = val;
@@ -317,7 +317,7 @@ void ImageLoadTask::ExecuteRangeWithExceptions(enki::TaskSetPartition range, std
 
 struct MaterialLoadTask : enki::ITaskSet {
 	const fg::Asset& asset;
-	std::vector<glsl::Material> materials;
+	std::vector<shaders::Material> materials;
 
 	enki::Dependency imageLoadDependency;
 
@@ -328,9 +328,9 @@ struct MaterialLoadTask : enki::ITaskSet {
 
 		// Add default/fallback material, as per the glTF defaults
 		// TODO: Set global defaults for when we load multiple assets?
-		materials[0] = glsl::Material {
+		materials[0] = shaders::Material {
 			.albedoFactor = glm::fvec4(1.f),
-			.albedoIndex = glsl::invalidHandle,
+			.albedoIndex = shaders::invalidHandle,
 			.uvScale = glm::fvec2(1.f),
 			.alphaCutoff = 0.5f,
 			.doubleSided = false,
@@ -354,9 +354,9 @@ void MaterialLoadTask::ExecuteRange(enki::TaskSetPartition range, std::uint32_t 
 		auto& pbr = gltfMaterial.pbrData;
 		mat.albedoFactor = glm::make_vec4(pbr.baseColorFactor.data());
 		if (pbr.baseColorTexture) {
-			mat.albedoIndex = glsl::invalidHandle;
+			mat.albedoIndex = shaders::invalidHandle;
 		} else {
-			mat.albedoIndex = glsl::invalidHandle;
+			mat.albedoIndex = shaders::invalidHandle;
 		}
 
 		mat.alphaCutoff = gltfMaterial.alphaCutoff;

@@ -1,17 +1,17 @@
-#ifndef RESOURCE_TABLE_GLSL_H
-#define RESOURCE_TABLE_GLSL_H
+#ifndef SHADERS_RESOURCE_TABLE_H
+#define SHADERS_RESOURCE_TABLE_H
 
 #if defined(__METAL_VERSION__)
 #include <metal_texture>
 #endif
 
-#include "common.h.glsl"
-GLSL_NAMESPACE_BEGIN
+#include "common.h"
+SHADER_NAMESPACE_BEGIN
 
-GLSL_CONSTANT uint sampledImageBinding = 0;
-GLSL_CONSTANT uint storageImageBinding = 1;
+SHADER_CONSTANT uint32_t sampledImageBinding = 0;
+SHADER_CONSTANT uint32_t storageImageBinding = 1;
 
-#if defined(__METAL_VERSION__)
+#if defined(SHADER_METAL)
 struct SampledTextureEntry {
     metal::texture2d<float> tex;
     metal::sampler sampler;
@@ -22,8 +22,8 @@ struct ResourceTableBuffer {
     device uint64_t* storage_image_heap;
 };
 
-using ResourceTableHandle = metal::uint;
-#elif defined(__cplusplus)
+using ResourceTableHandle = metal::uint32_t;
+#elif defined(SHADER_CPP)
 using ResourceTableHandle = std::uint32_t;
 #else
 layout(set = 0, binding = sampledImageBinding) uniform sampler2D sampled_textures_heap[];
@@ -36,7 +36,7 @@ layout(set = 0, binding = storageImageBinding, rgba8) uniform writeonly image2D 
 #define ResourceTableHandle uint
 #endif
 
-GLSL_CONSTANT ResourceTableHandle invalidHandle = ~0U;
+SHADER_CONSTANT ResourceTableHandle invalidHandle = ~0U;
 
-GLSL_NAMESPACE_END
+SHADER_NAMESPACE_END
 #endif

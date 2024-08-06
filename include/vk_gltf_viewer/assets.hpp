@@ -11,9 +11,9 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 
-#include <mesh_common.h.glsl>
+#include <mesh_common.h>
 
-/** The buffer handles corresponding to the buffers in each glsl::Primitive. */
+/** The buffer handles corresponding to the buffers in each shaders::Primitive. */
 struct PrimitiveBuffers {
 	std::unique_ptr<ScopedBuffer> vertexIndexBuffer;
 	std::unique_ptr<ScopedBuffer> primitiveIndexBuffer;
@@ -140,7 +140,7 @@ struct World {
 	std::vector<PrimitiveBuffers> primitiveBuffers;
 	std::unique_ptr<ScopedBuffer> primitiveBuffer;
 
-	std::vector<glsl::Material> materials;
+	std::vector<shaders::Material> materials;
 	std::unique_ptr<ScopedBuffer> materialBuffer;
 
 	std::vector<Animation> animations;
@@ -175,7 +175,7 @@ class AssetLoadTask : public ExceptionTaskSet {
 	std::vector<Mesh> meshes;
 	std::vector<std::shared_ptr<graphics::Mesh>> primitives;
 	std::vector<Animation> animations;
-	std::vector<glsl::Material> materials;
+	std::vector<shaders::Material> materials;
 
 	std::shared_ptr<fastgltf::Asset> loadGltf();
 

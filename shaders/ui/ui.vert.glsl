@@ -1,8 +1,8 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-#include "ui.h.glsl"
-#include "srgb.h.glsl"
+#include "ui.h"
+#include "srgb.h"
 
 layout(location = 0) out FragmentInput outp;
 

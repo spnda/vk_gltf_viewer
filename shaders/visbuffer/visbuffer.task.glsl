@@ -7,9 +7,9 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-#include "visbuffer.h.glsl"
-#include "mesh_common.h.glsl"
-#include "culling.h.glsl"
+#include "visbuffer.h"
+#include "mesh_common.h"
+#include "culling.h"
 
 layout(constant_id = 0) const uint subgroupSize = 32;
 

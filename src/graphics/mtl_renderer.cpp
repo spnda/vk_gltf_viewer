@@ -14,6 +14,8 @@
 #include <Metal/MTLComputeCommandEncoder.hpp>
 #include <Metal/MTLComputePipeline.hpp>
 
+#include "visbuffer/visbuffer.h"
+
 namespace gmtl = graphics::metal;
 
 graphics::InstanceIndex gmtl::MeshletScene::addMeshInstance(std::shared_ptr<Mesh> mesh) {
@@ -34,7 +36,7 @@ graphics::InstanceIndex gmtl::MeshletScene::addMeshInstance(std::shared_ptr<Mesh
 		}
 		if (it == meshes.end()) {
 			primitiveIndex = meshes.size();
-			meshes.emplace_back(meshletMesh, glsl::Primitive {
+			meshes.emplace_back(meshletMesh, shaders::Primitive {
 				.vertexIndexBuffer = meshletMesh->vertexIndexBuffer->gpuAddress(),
 				.primitiveIndexBuffer = meshletMesh->primitiveIndexBuffer->gpuAddress(),
 				.vertexBuffer = meshletMesh->vertexBuffer->gpuAddress(),
@@ -50,7 +52,7 @@ graphics::InstanceIndex gmtl::MeshletScene::addMeshInstance(std::shared_ptr<Mesh
 	auto instanceIndex = static_cast<std::uint32_t>(transforms.size());
 
 	for (std::uint32_t i = 0; i < meshletMesh->meshletCount; ++i) {
-		meshletDraws.emplace_back(glsl::MeshletDraw {
+		meshletDraws.emplace_back(shaders::MeshletDraw {
 			.primitiveIndex = primitiveIndex,
 			.meshletIndex = i,
 			.transformIndex = instanceIndex,
@@ -94,14 +96,14 @@ void gmtl::MeshletScene::updateDrawBuffers(std::size_t frameIndex) {
 
 	{
 		auto length = drawBuffer.primitiveBuffer ? drawBuffer.primitiveBuffer->length() : 0;
-		auto requiredLength = meshes.size() * sizeof(glsl::Primitive);
+		auto requiredLength = meshes.size() * sizeof(shaders::Primitive);
 		if (requiredLength > length) {
 			drawBuffer.primitiveBuffer = NS::TransferPtr(
 					device->newBuffer(requiredLength, MTL::ResourceStorageModeShared));
 			drawBuffer.primitiveBuffer->setLabel(NS::String::string("Primitive buffer", NS::UTF8StringEncoding));
 		}
 		for (std::size_t i = 0; auto& mesh : meshes)
-			static_cast<glsl::Primitive*>(drawBuffer.primitiveBuffer->contents())[i++]
+			static_cast<shaders::Primitive*>(drawBuffer.primitiveBuffer->contents())[i++]
 				= mesh.primitive;
 	}
 }
@@ -136,7 +138,7 @@ gmtl::MtlRenderer::MtlRenderer(GLFWwindow* window) {
 
 	cameraBuffers.resize(frameOverlap);
 	for (std::size_t i = 0; auto& camera : cameraBuffers) {
-		camera = NS::TransferPtr(device->newBuffer(sizeof(glsl::Camera), MTL::StorageModeShared));
+		camera = NS::TransferPtr(device->newBuffer(sizeof(shaders::Camera), MTL::StorageModeShared));
 		auto str = fmt::format("Camera buffer {}", i++);
 		camera->setLabel(NS::String::string(str.c_str(), NS::UTF8StringEncoding));
 	}
@@ -220,14 +222,14 @@ std::shared_ptr<graphics::Buffer> gmtl::MtlRenderer::createSharedBuffer() {
 	return std::make_shared<MtlBuffer>();
 }
 
-std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer, glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) {
+std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer, glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) {
 	ZoneScoped;
 	static constexpr auto coneWeight = 0.f; // We leave this as 0 because we're not using cluster cone culling.
-	static constexpr auto maxPrimitives = fastgltf::alignDown(glsl::maxPrimitives, 4U); // meshopt requires the primitive count to be aligned to 4.
-	std::size_t maxMeshlets = meshopt_buildMeshletsBound(indexBuffer.size(), glsl::maxVertices, maxPrimitives);
+	static constexpr auto maxPrimitives = fastgltf::alignDown(shaders::maxPrimitives, 4U); // meshopt requires the primitive count to be aligned to 4.
+	std::size_t maxMeshlets = meshopt_buildMeshletsBound(indexBuffer.size(), shaders::maxVertices, maxPrimitives);
 
 	std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
-	std::vector<std::uint32_t> meshletVertices(maxMeshlets * glsl::maxVertices);
+	std::vector<std::uint32_t> meshletVertices(maxMeshlets * shaders::maxVertices);
 	std::vector<std::uint8_t> meshletTriangles(maxMeshlets * maxPrimitives * 3);
 
 	auto mesh = std::make_shared<MeshletMesh>();
@@ -244,7 +246,7 @@ std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<gl
 			meshlets.data(), meshletVertices.data(), meshletTriangles.data(),
 			indexBuffer.data(), indexBuffer.size(),
 			&vertexBuffer[0].position.x, vertexBuffer.size(), sizeof(decltype(vertexBuffer)::value_type),
-			glsl::maxVertices, maxPrimitives, coneWeight);
+			shaders::maxVertices, maxPrimitives, coneWeight);
 
 		const auto& lastMeshlet = meshlets[mesh->meshletCount - 1];
 		meshletVertices.resize(lastMeshlet.vertex_count + lastMeshlet.vertex_offset);
@@ -253,8 +255,8 @@ std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<gl
 	}
 
 	// Create meshlet buffer & transform meshlets
-	mesh->meshletBuffer = NS::TransferPtr(device->newBuffer(meshlets.size() * sizeof(glsl::Meshlet), MTL::StorageModeShared));
-	auto* glslMeshlets = static_cast<glsl::Meshlet*>(mesh->meshletBuffer->contents());
+	mesh->meshletBuffer = NS::TransferPtr(device->newBuffer(meshlets.size() * sizeof(shaders::Meshlet), MTL::StorageModeShared));
+	auto* glslMeshlets = static_cast<shaders::Meshlet*>(mesh->meshletBuffer->contents());
 	for (std::size_t i = 0; auto& meshlet : meshlets) {
 		meshopt_optimizeMeshlet(&meshletVertices[meshlet.vertex_offset],
 								&meshletTriangles[meshlet.triangle_offset],
@@ -273,11 +275,11 @@ std::shared_ptr<graphics::Mesh> gmtl::MtlRenderer::createSharedMesh(std::span<gl
 			max = glm::max(max, vertex.position);
 		}
 
-		// We can convert the count variables to a uint8_t since glsl::maxVertices and glsl::maxPrimitives both fit in 8-bits.
+		// We can convert the count variables to a uint8_t since shaders::maxVertices and shaders::maxPrimitives both fit in 8-bits.
 		assert(meshlet.vertex_count <= std::numeric_limits<std::uint8_t>::max());
 		assert(meshlet.triangle_count <= std::numeric_limits<std::uint8_t>::max());
 		auto center = (min + max) * 0.5f;
-		glslMeshlets[i++] = glsl::Meshlet {
+		glslMeshlets[i++] = shaders::Meshlet {
 			.vertexOffset = meshlet.vertex_offset,
 			.triangleOffset = meshlet.triangle_offset,
 			.vertexCount = static_cast<std::uint8_t>(meshlet.vertex_count),
@@ -302,12 +304,12 @@ std::shared_ptr<graphics::Scene> gmtl::MtlRenderer::createSharedScene() {
 	return std::make_shared<MeshletScene>(device, graphics::frameOverlap);
 }
 
-glsl::ResourceTableHandle gmtl::MtlRenderer::createSampledTextureHandle() {
+shaders::ResourceTableHandle gmtl::MtlRenderer::createSampledTextureHandle() {
 	ZoneScoped;
 	return resourceTable->allocateSampledImage(nullptr, nullptr);
 }
 
-glsl::ResourceTableHandle gmtl::MtlRenderer::createStorageTextureHandle() {
+shaders::ResourceTableHandle gmtl::MtlRenderer::createStorageTextureHandle() {
 	ZoneScoped;
 	return resourceTable->allocateStorageImage(nullptr);
 }
@@ -332,7 +334,7 @@ void gmtl::MtlRenderer::prepareFrame(std::size_t frameIndex) {
 }
 
 bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
-							 const glsl::Camera& camera, float dt) {
+							 const shaders::Camera& camera, float dt) {
 	ZoneScoped;
 	auto* pool = NS::AutoreleasePool::alloc()->init();
 
@@ -341,7 +343,7 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 	auto* drawable = layer->nextDrawable();
 
 	scene.updateDrawBuffers(frameIndex);
-	*static_cast<glsl::Camera*>(cameraBuffers[frameIndex]->contents()) = camera;
+	*static_cast<shaders::Camera*>(cameraBuffers[frameIndex]->contents()) = camera;
 
 	auto* bufferDesc = MTL::CommandBufferDescriptor::alloc()->init()->autorelease();
 	bufferDesc->setErrorOptions(MTL::CommandBufferErrorOptionEncoderExecutionStatus);
@@ -354,6 +356,11 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 		visbufferAttachment->setLoadAction(MTL::LoadActionClear);
 		visbufferAttachment->setStoreAction(MTL::StoreActionStore);
 		visbufferAttachment->setTexture(visbufferPass.visbuffer.get());
+
+		// We need to clear using the visbuffer clear value. Metal only uses doubles in its ClearColor struct,
+		// but 2^32 (which is visbufferClearValue currently) is perfectly representable by a double precision float,
+		// so this will work for now.
+		visbufferAttachment->setClearColor(MTL::ClearColor::Make(static_cast<double>(shaders::visbufferClearValue), 0., 0., 0.));
 
 		auto* depthAttachment = MTL::RenderPassDepthAttachmentDescriptor::alloc()->init()->autorelease();
 		depthAttachment->setLoadAction(MTL::LoadActionClear);
@@ -389,7 +396,7 @@ bool gmtl::MtlRenderer::draw(std::size_t frameIndex, graphics::Scene& gworld,
 		visbufferEncoder->setCullMode(MTL::CullModeNone);
 
 		visbufferEncoder->drawMeshThreadgroups(
-				MTL::Size((drawCount + glsl::maxMeshlets - 1) / glsl::maxMeshlets, 1, 1),
+				MTL::Size((drawCount + shaders::maxMeshlets - 1) / shaders::maxMeshlets, 1, 1),
 				MTL::Size(visbufferPass.pipelineState->objectThreadExecutionWidth(), 1, 1),
 				MTL::Size(visbufferPass.pipelineState->meshThreadExecutionWidth(), 1, 1));
 

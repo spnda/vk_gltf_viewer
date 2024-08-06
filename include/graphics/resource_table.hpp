@@ -12,7 +12,7 @@
 #include <Metal/MTLBuffer.hpp>
 #endif
 
-#include <resource_table.h.glsl>
+#include <resource_table.h>
 
 struct Device;
 
@@ -24,16 +24,16 @@ namespace graphics {
 		std::vector<std::uint64_t> storageImageBitmap;
 		std::mutex bitmapMutex;
 
-		glsl::ResourceTableHandle findFirstFreeHandle(std::vector<std::uint64_t> &bitmap);
+		shaders::ResourceTableHandle findFirstFreeHandle(std::vector<std::uint64_t> &bitmap);
 
-		void freeHandle(std::vector<std::uint64_t> &bitmap, glsl::ResourceTableHandle handle);
+		void freeHandle(std::vector<std::uint64_t> &bitmap, shaders::ResourceTableHandle handle);
 
 	public:
 		explicit ResourceTable() = default;
 		virtual ~ResourceTable() noexcept = default;
 
-		void removeStorageImageHandle(glsl::ResourceTableHandle handle) noexcept;
-		void removeSampledImageHandle(glsl::ResourceTableHandle handle) noexcept;
+		void removeStorageImageHandle(shaders::ResourceTableHandle handle) noexcept;
+		void removeSampledImageHandle(shaders::ResourceTableHandle handle) noexcept;
 	};
 
 	namespace vulkan {
@@ -56,8 +56,8 @@ namespace graphics {
 				return set;
 			}
 
-			[[nodiscard]] glsl::ResourceTableHandle allocateStorageImage(VkImageView view, VkImageLayout imageLayout) noexcept;
-			[[nodiscard]] glsl::ResourceTableHandle allocateSampledImage(VkImageView view, VkImageLayout imageLayout, VkSampler sampler) noexcept;
+			[[nodiscard]] shaders::ResourceTableHandle allocateStorageImage(VkImageView view, VkImageLayout imageLayout) noexcept;
+			[[nodiscard]] shaders::ResourceTableHandle allocateSampledImage(VkImageView view, VkImageLayout imageLayout, VkSampler sampler) noexcept;
 		};
 	}
 
@@ -79,8 +79,8 @@ namespace graphics {
 			explicit MtlResourceTable(NS::SharedPtr<MTL::Device> device);
 			~MtlResourceTable() noexcept override;
 
-			[[nodiscard]] glsl::ResourceTableHandle allocateStorageImage(MTL::Texture* texture) noexcept;
-			[[nodiscard]] glsl::ResourceTableHandle allocateSampledImage(MTL::Texture* texture, MTL::SamplerState* sampler) noexcept;
+			[[nodiscard]] shaders::ResourceTableHandle allocateStorageImage(MTL::Texture* texture) noexcept;
+			[[nodiscard]] shaders::ResourceTableHandle allocateSampledImage(MTL::Texture* texture, MTL::SamplerState* sampler) noexcept;
 		};
 	}
 #endif

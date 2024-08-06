@@ -23,7 +23,7 @@
 #include <vk_gltf_viewer/assets.hpp>
 #include <spirv_manifest.hpp>
 
-#include <visbuffer/visbuffer.h.glsl>
+#include <visbuffer/visbuffer.h>
 
 #include <fastgltf/tools.hpp>
 

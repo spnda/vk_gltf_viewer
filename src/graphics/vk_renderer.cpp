@@ -44,15 +44,15 @@ std::shared_ptr<graphics::Buffer> gvk::VkRenderer::createSharedBuffer() {
 	ZoneScoped;
 }
 
-std::shared_ptr<graphics::Mesh> gvk::VkRenderer::createSharedMesh(std::span<glsl::Vertex> vertexBuffer, std::span<index_t> indexBuffer, glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) {
+std::shared_ptr<graphics::Mesh> gvk::VkRenderer::createSharedMesh(std::span<shaders::Vertex> vertexBuffer, std::span<index_t> indexBuffer, glm::fvec3 aabbCenter, glm::fvec3 aabbExtents) {
 	ZoneScoped;
 
 	// Generate the meshlets
 	constexpr float coneWeight = 0.0f; // We leave this as 0 because we're not using cluster cone culling.
-	constexpr auto maxPrimitives = fastgltf::alignDown(glsl::maxPrimitives, 4U); // meshopt requires the primitive count to be aligned to 4.
-	std::size_t maxMeshlets = meshopt_buildMeshletsBound(indexBuffer.size(), glsl::maxVertices, maxPrimitives);
+	constexpr auto maxPrimitives = fastgltf::alignDown(shaders::maxPrimitives, 4U); // meshopt requires the primitive count to be aligned to 4.
+	std::size_t maxMeshlets = meshopt_buildMeshletsBound(indexBuffer.size(), shaders::maxVertices, maxPrimitives);
 	std::vector<meshopt_Meshlet> meshlets(maxMeshlets);
-	std::vector<std::uint32_t> meshletVertices(maxMeshlets * glsl::maxVertices);
+	std::vector<std::uint32_t> meshletVertices(maxMeshlets * shaders::maxVertices);
 	std::vector<std::uint8_t> meshletTriangles(maxMeshlets * maxPrimitives * 3);
 
 
@@ -83,7 +83,7 @@ void gvk::VkRenderer::prepareFrame(std::size_t frameIndex) {
 }
 
 bool gvk::VkRenderer::draw(std::size_t frameIndex, graphics::Scene& gscene,
-						   const glsl::Camera& camera, float dt) {
+						   const shaders::Camera& camera, float dt) {
 	ZoneScoped;
 	auto& scene = dynamic_cast<VkScene&>(gscene);
 

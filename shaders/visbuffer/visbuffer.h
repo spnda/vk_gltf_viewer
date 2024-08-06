@@ -1,22 +1,23 @@
-#ifndef VISBUFFER_GLSL_H
-#define VISBUFFER_GLSL_H
+#ifndef SHADERS_VISBUFFER_H
+#define SHADERS_VISBUFFER_H
 
 #if !defined(__cplusplus)
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 #endif
 
-#include "common.h.glsl"
-#include "mesh_common.h.glsl"
-#include "resource_table.h.glsl"
+#include "common.h"
+#include "mesh_common.h"
+#include "resource_table.h"
 
-GLSL_NAMESPACE_BEGIN
+SHADER_NAMESPACE_BEGIN
 
-GLSL_CONSTANT uint triangleBits = 7; // Enough to fit 127 unique triangles
-GLSL_CONSTANT uint drawIndexBits = 32 - triangleBits; // 25 bits for the drawIndex, which limits us
+SHADER_CONSTANT uint32_t triangleBits = 7; // Enough to fit 127 unique triangles
+SHADER_CONSTANT uint32_t drawIndexBits = 32 - triangleBits; // 25 bits for the drawIndex, which limits us
 													  // to 33'554'432 meshlets for rendering.
+SHADER_CONSTANT uint32_t visbufferClearValue = ~0U;
 
-#if !defined(__cplusplus)
+#if defined(SHADER_GLSL)
 layout(buffer_reference, scalar, buffer_reference_align = 4) restrict readonly buffer Materials {
 	Material materials[];
 };
@@ -26,7 +27,7 @@ layout(buffer_reference, scalar, buffer_reference_align = 4) restrict readonly b
 };
 
 layout(buffer_reference, scalar, buffer_reference_align = 4) restrict readonly buffer TransformBuffer {
-	mat4 transforms[];
+	fmat4 transforms[];
 };
 
 layout(buffer_reference, scalar, buffer_reference_align = 8) restrict readonly buffer Primitives {
@@ -36,35 +37,46 @@ layout(buffer_reference, scalar, buffer_reference_align = 8) restrict readonly b
 
 struct VisbufferPushConstants {
 	BUFFER_REF(MeshletDraws, MeshletDraw) drawBuffer MEMBER_INIT(0);
-	uint meshletDrawCount MEMBER_INIT(0);
+	uint32_t meshletDrawCount MEMBER_INIT(0);
 
-	BUFFER_REF(TransformBuffer, mat4) transformBuffer MEMBER_INIT(0);
+	BUFFER_REF(TransformBuffer, fmat4) transformBuffer MEMBER_INIT(0);
 	BUFFER_REF(Primitives, Primitive) primitiveBuffer MEMBER_INIT(0);
 	BUFFER_REF(CameraBuffer, Camera) cameraBuffer MEMBER_INIT(0);
 	BUFFER_REF(Materials, Material) materialBuffer MEMBER_INIT(0);
 
-	ResourceTableHandle depthPyramid;
+	ResourceTableHandle depthPyramid MEMBER_INIT(invalidHandle);
 };
 
 struct VisbufferResolvePushConstants {
-	ResourceTableHandle visbufferHandle;
-	ResourceTableHandle outputImageHandle;
+	ResourceTableHandle visbufferHandle MEMBER_INIT(invalidHandle);
+	ResourceTableHandle outputImageHandle MEMBER_INIT(invalidHandle);
 
 	BUFFER_REF(MeshletDraws, MeshletDraw) drawBuffer MEMBER_INIT(0);
 	BUFFER_REF(Primitives, Primitive) primitiveBuffer MEMBER_INIT(0);
 	BUFFER_REF(Materials, Material) materialBuffer MEMBER_INIT(0);
 };
 
-uint packVisBuffer(PARAMETER_COPY(uint) drawIndex, PARAMETER_COPY(uint) primitiveId) {
+FUNCTION_INLINE uint32_t packVisBuffer(uint32_t drawIndex, uint32_t primitiveId) {
 	return (drawIndex << triangleBits) | primitiveId;
 }
 
-void unpackVisBuffer(PARAMETER_COPY(uint) visBuffer, PARAMETER_REF(uint) drawIndex, PARAMETER_REF(uint) primitiveId) {
+#if !defined(SHADER_GLSL)
+struct VisbufferData {
+	uint32_t drawIndex;
+	uint32_t primitiveId;
+};
+FUNCTION_INLINE VisbufferData unpackVisBuffer(uint32_t visbuffer) {
+	return {
+		.drawIndex = visbuffer >> triangleBits,
+		.primitiveId = visbuffer & ((1 << triangleBits) - 1),
+	};
+}
+#else
+void unpackVisBuffer(uint32_t visBuffer, out uint32_t drawIndex, out uint32_t primitiveId) {
 	primitiveId = visBuffer & ((1 << triangleBits) - 1);
 	drawIndex = visBuffer >> triangleBits;
 }
+#endif
 
-GLSL_CONSTANT uint visbufferClearValue = ~0U;
-
-GLSL_NAMESPACE_END
+SHADER_NAMESPACE_END
 #endif

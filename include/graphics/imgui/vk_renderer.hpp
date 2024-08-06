@@ -2,8 +2,8 @@
 
 #include <vector>
 
-#include <ui/ui.h.glsl>
-#include <resource_table.h.glsl>
+#include <ui/ui.h>
+#include <resource_table.h>
 
 #include <GLFW/glfw3.h>
 
@@ -40,7 +40,7 @@ namespace graphics::vulkan::imgui {
 		VkImageView fontAtlasView = VK_NULL_HANDLE;
 		VkSampler fontAtlasSampler = VK_NULL_HANDLE;
 		glm::u32vec2 fontAtlasExtent = {};
-		glsl::ResourceTableHandle fontAtlasHandle = glsl::invalidHandle;
+		shaders::ResourceTableHandle fontAtlasHandle = shaders::invalidHandle;
 
 		VkPipeline pipeline = VK_NULL_HANDLE;
 		VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;

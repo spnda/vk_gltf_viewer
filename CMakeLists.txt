@@ -225,7 +225,7 @@ add_custom_command(
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMAND_EXPAND_LISTS
 )
-add_custom_target(metal_shader_library DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shaders.metallib)
+add_custom_target(metal_shader_library DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shaders.metallib SOURCES ${MSL_SHADER_FILES})
 add_dependencies(vk_gltf_viewer metal_shader_library)
 
 # Copy all required runtime DLLs into the build directory
