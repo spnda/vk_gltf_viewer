@@ -106,7 +106,7 @@ if (EXISTS "${VKV_DEPS_DIR}/enkits")
     message(STATUS "vk_gltf_viewer: Found enkiTS")
     option(ENKITS_BUILD_C_INTERFACE "" OFF)
     option(ENKITS_BUILD_EXAMPLES "" OFF)
-    add_subdirectory("${VKV_DEPS_DIR}/enkiTS")
+    add_subdirectory("${VKV_DEPS_DIR}/enkits")
     add_library(enkiTS::enkiTS ALIAS enkiTS)
 endif()
 
