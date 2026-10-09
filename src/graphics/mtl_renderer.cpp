@@ -45,8 +45,8 @@ graphics::instance_index gmtl::meshlet_scene::add_mesh_instance(std::shared_ptr<
 				.vertex_index_buffer = meshletMesh->vertex_index_buffer->gpuAddress(),
 				.primitive_index_buffer = meshletMesh->primitive_index_buffer->gpuAddress(),
 				.position_buffer = meshletMesh->position_buffer->gpuAddress(),
-				.vertex_buffer = meshletMesh->vertex_buffer->gpuAddress(),
 				.meshlet_buffer = meshletMesh->meshlet_buffer->gpuAddress(),
+				.vertex_buffer = meshletMesh->vertex_buffer->gpuAddress(),
 				.uv_buffers = transform_array(meshletMesh->uv_buffers, [](auto& buffer) { return buffer ? buffer->gpuAddress() : 0; }),
 				.aabb_extents = meshletMesh->aabb_extents,
 				.aabb_center = meshletMesh->aabb_extents,
@@ -322,8 +322,6 @@ gmtl::meshlet_renderer::meshlet_renderer(GLFWwindow* window) : renderer(window) 
 	ZoneScoped;
 	// pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
 
-	open_alert();
-
 	device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
 
 	layer = create_metal_layer(window);
@@ -335,6 +333,7 @@ gmtl::meshlet_renderer::meshlet_renderer(GLFWwindow* window) : renderer(window) 
 	draw_semaphore = dispatch_semaphore_create(frame_overlap);
 
 	resource_table = std::make_shared<mtl_resource_table>(device);
+	command_queue->addResidencySet(resource_table->residency_set.get());
 
 	auto* libraryUrl = NS::URL::alloc()->initFileURLWithPath(MTLSTR("shaders.metallib"))->autorelease();
 
@@ -776,7 +775,6 @@ bool gmtl::meshlet_renderer::draw(const std::size_t frame_index, graphics::scene
 				if (uv_buffer)
 					encoder->useResource(uv_buffer.get(), MTL::ResourceUsageRead);
 		}
-		resource_table->encode_usage(encoder);
 
 		encoder->setObjectBytes(&drawCount, sizeof drawCount, 0);
 		encoder->setObjectBuffer(camera_buffers[frame_index].get(), 0, 1);
@@ -996,6 +994,7 @@ bool gmtl::meshlet_renderer::draw(const std::size_t frame_index, graphics::scene
 		}
 	});
 
+	resource_table->commit_residency();
 	buffer->commit();
 
 	pool->release();

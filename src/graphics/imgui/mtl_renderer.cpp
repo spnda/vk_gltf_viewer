@@ -41,7 +41,8 @@ gmtl::imgui::imgui_renderer::imgui_renderer(NS::SharedPtr<MTL::Device> nDevice, 
 	NS::Error* error = nullptr;
 	pipeline_state = device->newRenderPipelineState(pipelineDescriptor, &error);
 	if (!pipeline_state) {
-		fmt::print("{}", error->localizedDescription()->utf8String());
+		throw std::runtime_error(fmt::format(
+			"{}", error->localizedDescription()->utf8String()));
 	}
 
 	auto& io = ImGui::GetIO();
@@ -156,7 +157,6 @@ void gmtl::imgui::imgui_renderer::draw(MTL::CommandBuffer* commandBuffer,
 	pass->setRenderPipelineState(pipeline_state);
 
 	pass->setFragmentBuffer(resource_table->sampled_image_buffer, 0, 1);
-	resource_table->encode_usage(pass);
 
 	pass->useResource(frameBuffers.vertexBuffer.get(), MTL::ResourceUsageRead);
 	pass->useResource(frameBuffers.indexBuffer.get(), MTL::ResourceUsageRead);

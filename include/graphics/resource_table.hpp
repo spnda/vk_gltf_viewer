@@ -12,6 +12,7 @@
 #include <Metal/MTLDevice.hpp>
 #include <Metal/MTLBuffer.hpp>
 #include <Metal/MTLCommandEncoder.hpp>
+#include <Metal/MTLResidencySet.hpp>
 #endif
 
 #include <resource_table.h>
@@ -73,16 +74,16 @@ namespace graphics {
 				MTL::ResourceID sampler;
 			};
 
+		public:
 			NS::SharedPtr<MTL::Device> device;
+			NS::SharedPtr<MTL::ResidencySet> residency_set;
 
-			/** List of resources to make resident */
-			std::unordered_map<shaders::resource_table_handle_t, NS::SharedPtr<MTL::Resource>> resources;
+			std::unordered_map<shaders::resource_table_handle_t, NS::SharedPtr<MTL::Texture>> resources;
+			bool residency_dirty = false;
 			std::mutex resource_mutex;
 
-		public:
 			MTL::Buffer* sampled_image_buffer = nullptr;
 
-		public:
 			explicit mtl_resource_table(NS::SharedPtr<MTL::Device> device);
 			~mtl_resource_table() noexcept override;
 
@@ -90,15 +91,7 @@ namespace graphics {
 
 			void remove_sampled_image_handle(shaders::resource_table_handle_t handle) noexcept override;
 
-			template <typename T>
-			void encode_usage(T* encoder) {
-				ZoneScoped;
-				std::lock_guard lock(resource_mutex);
-				for (auto& [_, resource] : resources) {
-					assert(resource.get() != nullptr);
-					encoder->useResource(resource.get(), MTL::ResourceUsageRead);
-				}
-			}
+			void commit_residency();
 		};
 	}
 #endif

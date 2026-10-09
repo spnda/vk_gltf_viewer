@@ -170,6 +170,17 @@ void gvk::vk_resource_table::remove_storage_image_handle(shaders::resource_table
 #if defined(VKV_METAL)
 gmtl::mtl_resource_table::mtl_resource_table(NS::SharedPtr<MTL::Device> pDevice) : device(std::move(pDevice)) {
 	ZoneScoped;
+	auto* descriptor = MTL::ResidencySetDescriptor::alloc()->init();
+	descriptor->setLabel(NS::String::string("Global resource table", NS::UTF8StringEncoding));
+	// descriptor->initialCapacity();
+
+	NS::Error* error = nullptr;
+	residency_set = NS::TransferPtr(device->newResidencySet(descriptor, &error));
+	if (error != nullptr) {
+		throw std::runtime_error(fmt::format(
+			"{}", error->localizedDescription()->utf8String()));
+	}
+
 	/** The feature set tables say there's a limit of 1M textures that can be used
 	 * That number is arbitrary, and there is no actual limit beyond memory capacity.
 	 * For simplicity, we'll also just use 1M which should be enough in all cases. */
@@ -188,14 +199,16 @@ gmtl::mtl_resource_table::~mtl_resource_table() noexcept {
 shaders::resource_table_handle_t gmtl::mtl_resource_table::allocate_sampled_image(NS::SharedPtr<MTL::Texture> texture, NS::SharedPtr<MTL::SamplerState> sampler) noexcept {
 	ZoneScoped;
 	assert(texture && sampler);
-	auto handle = find_first_free_handle(sampled_image_bitmap);
+	const auto handle = find_first_free_handle(sampled_image_bitmap);
 
 	auto& data = static_cast<sampled_texture_entry*>(sampled_image_buffer->contents())[handle];
 	data.tex = texture->gpuResourceID();
 	data.sampler = sampler->gpuResourceID();
 
 	std::lock_guard lock(resource_mutex);
+	residency_set->addAllocation(texture.get());
 	resources[handle] = std::move(texture);
+	residency_dirty = true;
 	return handle;
 }
 
@@ -203,8 +216,18 @@ void gmtl::mtl_resource_table::remove_sampled_image_handle(shaders::resource_tab
 	ZoneScoped;
 	std::lock_guard lock(resource_mutex);
 	assert(resources.contains(handle));
+	const auto texture = resources[handle];
 	resources.erase(handle);
+	residency_set->removeAllocation(texture.get());
+	residency_dirty = true;
 	resource_table::remove_sampled_image_handle(handle);
+}
+
+void graphics::metal::mtl_resource_table::commit_residency() {
+	ZoneScoped;
+	std::lock_guard lock(resource_mutex);
+	if (std::exchange(residency_dirty, false))
+		residency_set->commit();
 }
 
 #endif
