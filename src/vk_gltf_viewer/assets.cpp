@@ -684,7 +684,10 @@ void primitive_processing_task_t::process_primitive(std::uint64_t primitive_idx,
 		assert(idx < uvs.size() && idx >= 0);
 
 		auto& accessor = asset.accessors[accessor_index];
-		uvs[idx].assign_range(fastgltf::iterateAccessor<glm::fvec2>(asset, accessor));
+		uvs[idx].reserve(accessor.count);
+		for (auto uv : fastgltf::iterateAccessor<glm::fvec2>(asset, accessor)) {
+			uvs[idx].emplace_back(uv);
+		}
 	}
 
 	if (uvs[0].empty()) {

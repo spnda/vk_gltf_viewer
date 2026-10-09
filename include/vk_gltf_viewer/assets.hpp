@@ -1,7 +1,8 @@
 #pragma once
 
-#include <span>
+#include <algorithm>
 #include <filesystem>
+#include <span>
 
 #include <vk_gltf_viewer/scheduler.hpp>
 #include <vk_gltf_viewer/device.hpp>
@@ -56,7 +57,7 @@ struct animation_sampler_t {
 
 		time = std::fmod(time, input.back()); // Ugly hack to loop animations
 
-		auto it = std::lower_bound(input.begin(), input.end(), time);
+		auto it = std::ranges::lower_bound(input, time);
 		if (it == input.cbegin()) {
 			if (interpolation == fastgltf::AnimationInterpolation::CubicSpline)
 				return T::fromPointer(&values[(1) * component_count]);

@@ -197,8 +197,8 @@ struct rgb16unorm {
 	mtl::r16unorm<float> g;
 	mtl::r16unorm<float> b;
 
-	rgb16unorm() = default;
-	rgb16unorm(float3 value) : r(value.r), g(value.g), b(value.b) {}
+	rgb16unorm() thread = default;
+	rgb16unorm(float3 value) thread : r(value.r), g(value.g), b(value.b) {}
 
 	explicit operator float3() thread {
 		return float3(float(r), float(g), float(b));

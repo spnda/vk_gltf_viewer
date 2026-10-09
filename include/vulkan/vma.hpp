@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 // Simple header for including VMA. We include volk.h beforehand to avoid the VMA to
 // include vulkan.h and windows.h.
 #define VK_NO_PROTOTYPES
