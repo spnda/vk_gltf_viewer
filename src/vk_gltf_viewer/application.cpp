@@ -326,9 +326,10 @@ void application::render_ui() {
 			if (ImGui::BeginTabItem("General")) {
 				ImGui::SeparatorText("Performance");
 
-				ImGui::Text("Frametime: %.2f ms", deltaTime * 1000.);
-				ImGui::Text("FPS: %.2f", 1. / deltaTime);
-				ImGui::Text("AFPS: %.2f rad/s", 2. * std::numbers::pi_v<double> / deltaTime); // Angular FPS
+				const auto& io = ImGui::GetIO();
+				ImGui::Text("Frametime: %.2f ms", 1000.f / io.Framerate);
+				ImGui::Text("FPS: %.2f", io.Framerate);
+				ImGui::Text("AFPS: %.2f rad/s", 2. * std::numbers::pi_v<double> * io.Framerate); // Angular FPS
 
 				ImGui::EndTabItem();
 			}
