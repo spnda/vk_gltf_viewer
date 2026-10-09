@@ -194,12 +194,14 @@ shaders::resource_table_handle_t gmtl::mtl_resource_table::allocate_sampled_imag
 	data.tex = texture->gpuResourceID();
 	data.sampler = sampler->gpuResourceID();
 
+	std::lock_guard lock(resource_mutex);
 	resources[handle] = std::move(texture);
 	return handle;
 }
 
 void gmtl::mtl_resource_table::remove_sampled_image_handle(shaders::resource_table_handle_t handle) noexcept {
 	ZoneScoped;
+	std::lock_guard lock(resource_mutex);
 	assert(resources.contains(handle));
 	resources.erase(handle);
 	resource_table::remove_sampled_image_handle(handle);

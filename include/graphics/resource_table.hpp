@@ -18,15 +18,6 @@
 
 struct Device;
 
-namespace std {
-	template <typename T>
-	struct hash<NS::SharedPtr<T>> {
-		std::size_t operator()(const NS::SharedPtr<T>& t) const noexcept {
-			return std::hash<T*>()(t.get());
-		}
-	};
-}
-
 namespace graphics {
 	class resource_table {
 	protected:
@@ -86,6 +77,7 @@ namespace graphics {
 
 			/** List of resources to make resident */
 			std::unordered_map<shaders::resource_table_handle_t, NS::SharedPtr<MTL::Resource>> resources;
+			std::mutex resource_mutex;
 
 		public:
 			MTL::Buffer* sampled_image_buffer = nullptr;
@@ -101,6 +93,7 @@ namespace graphics {
 			template <typename T>
 			void encode_usage(T* encoder) {
 				ZoneScoped;
+				std::lock_guard lock(resource_mutex);
 				for (auto& [_, resource] : resources) {
 					assert(resource.get() != nullptr);
 					encoder->useResource(resource.get(), MTL::ResourceUsageRead);
