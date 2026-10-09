@@ -111,8 +111,10 @@ namespace vk {
 	template <> struct VulkanObjectType<VkPerformanceConfigurationINTEL> { constexpr static auto VALUE = VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL; };
 	template <> struct VulkanObjectType<VkDeferredOperationKHR> { constexpr static auto VALUE = VK_OBJECT_TYPE_DEFERRED_OPERATION_KHR; };
 	template <> struct VulkanObjectType<VkIndirectCommandsLayoutNV> { constexpr static auto VALUE = VK_OBJECT_TYPE_INDIRECT_COMMANDS_LAYOUT_NV; };
+#ifdef VK_ENABLE_BETA_EXTENSIONS
 	template <> struct VulkanObjectType<VkCudaModuleNV> { constexpr static auto VALUE = VK_OBJECT_TYPE_CUDA_MODULE_NV; };
 	template <> struct VulkanObjectType<VkCudaFunctionNV> { constexpr static auto VALUE = VK_OBJECT_TYPE_CUDA_FUNCTION_NV; };
+#endif
 #ifdef VK_FUCHSIA_buffer_collection
 	template <> struct VulkanObjectType<VkBufferCollectionFUCHSIA> { constexpr static auto VALUE = VK_OBJECT_TYPE_BUFFER_COLLECTION_FUCHSIA; };
 #endif

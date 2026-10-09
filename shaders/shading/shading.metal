@@ -98,8 +98,8 @@ half3 conductor_fresnel(half3 f0, half3 bsdf, half VdotH) {
 	auto NdotL = mtl::saturate(mtl::dot(normal, light));
 	auto VdotH = mtl::dot(view, halfv);
 
-	constexpr auto ambient = half3(0.1h);
 	constexpr auto light_intensity = 250.h;
+	constexpr auto ambient = 0.05h * light_intensity;
 
 	auto diffuse = light_intensity * NdotL * diffuse_brdf(albedo);
 	auto specular = light_intensity * NdotL * specular_brdf(roughness, NdotL, NdotV, NdotH, mtl::cross(normal, halfv));
