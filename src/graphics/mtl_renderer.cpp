@@ -18,6 +18,7 @@
 #include <Metal/MTLPipeline.hpp>
 #include <Metal/MTLSampler.hpp>
 
+#include "shading/shading.h"
 #include "visbuffer/visbuffer.h"
 
 namespace gmtl = graphics::metal;
@@ -91,7 +92,8 @@ void gmtl::meshlet_scene::update_draw_buffers(std::size_t frameIndex) {
 					device->newBuffer(requiredLength, MTL::ResourceStorageModeShared));
 			draw_buffer.meshlet_draw_buffer->setLabel(MTLSTR("Meshlet draw buffer"));
 		}
-		std::memcpy(draw_buffer.meshlet_draw_buffer->contents(), meshlet_draws.data(), requiredLength);
+		if (requiredLength > 0)
+			std::memcpy(draw_buffer.meshlet_draw_buffer->contents(), meshlet_draws.data(), requiredLength);
 	}
 
 	{
@@ -102,7 +104,8 @@ void gmtl::meshlet_scene::update_draw_buffers(std::size_t frameIndex) {
 					device->newBuffer(requiredLength, MTL::ResourceStorageModeShared));
 			draw_buffer.transform_buffer->setLabel(MTLSTR("Transform buffer"));
 		}
-		std::memcpy(draw_buffer.transform_buffer->contents(), transforms.data(), requiredLength);
+		if (requiredLength > 0)
+			std::memcpy(draw_buffer.transform_buffer->contents(), transforms.data(), requiredLength);
 	}
 
 	{
@@ -157,7 +160,8 @@ void gmtl::visbuffer_pass::init_pass(meshlet_renderer& renderer) {
 	visbuffer_pipeline = NS::TransferPtr(
 			device->newRenderPipelineState(visbuffer_pipeline_desc, MTL::PipelineOptionNone, nullptr, &error));
 	if (!visbuffer_pipeline) {
-		fmt::print("{}", error->localizedDescription()->utf8String());
+		throw std::runtime_error(fmt::format(
+			"{}", error->localizedDescription()->utf8String()));
 	}
 
 	auto* gbuffer_tile_function = renderer.global_library->newFunction(MTLSTR("gbuffer_generation"));
@@ -171,7 +175,8 @@ void gmtl::visbuffer_pass::init_pass(meshlet_renderer& renderer) {
 	gbuffer_tile_pipeline = NS::TransferPtr(
 		device->newRenderPipelineState(gbuffer_tile_desc, MTL::PipelineOptionNone, nullptr, &error));
 	if (!gbuffer_tile_pipeline) {
-		fmt::print("{}", error->localizedDescription()->utf8String());
+		throw std::runtime_error(fmt::format(
+			"{}", error->localizedDescription()->utf8String()));
 	}
 
 	// Create the depth state with reverse depth
@@ -214,7 +219,7 @@ void gmtl::visbuffer_pass::update_resolution(meshlet_renderer& renderer) {
 
 	auto* mv_desc = MTL::TextureDescriptor::texture2DDescriptor(
 		motion_vector_format, size.x, size.y, false);
-	mv_desc->setUsage(MTL::TextureUsageRenderTarget | renderer.temporal_scaler->motionTextureUsage());
+	mv_desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead | renderer.temporal_scaler->motionTextureUsage());
 	mv_desc->setStorageMode(MTL::StorageModePrivate);
 
 	motion_vector_texture = NS::TransferPtr(device->newTexture(mv_desc));
@@ -232,19 +237,79 @@ void gmtl::visbuffer_pass::update_resolution(meshlet_renderer& renderer) {
 void gmtl::shading_pass::init_pass(meshlet_renderer& renderer) {
 	auto& device = renderer.device;
 
-	auto* gbuffer_tile_function = renderer.global_library->newFunction(MTLSTR("gbuffer_shading"));
-	auto* gbuffer_tile_desc = MTL::TileRenderPipelineDescriptor::alloc()->init()->autorelease();
-	gbuffer_tile_desc->setTileFunction(gbuffer_tile_function);
-
-	gbuffer_tile_desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
-	for (std::size_t i = 1; auto& format : gbuffer_formats)
-		gbuffer_tile_desc->colorAttachments()->object(i++)->setPixelFormat(format);
-
 	NS::Error* error = nullptr;
-	shading_pass_pipeline = NS::TransferPtr(
-		device->newRenderPipelineState(gbuffer_tile_desc, MTL::PipelineOptionNone, nullptr, &error));
-	if (!shading_pass_pipeline) {
-		fmt::print("{}", error->localizedDescription()->utf8String());
+	{
+		auto* gbuffer_tile_function = renderer.global_library->newFunction(MTLSTR("gbuffer_shading"));
+		assert(gbuffer_tile_function);
+
+		auto* gbuffer_tile_desc = MTL::TileRenderPipelineDescriptor::alloc()->init()->autorelease();
+		gbuffer_tile_desc->setTileFunction(gbuffer_tile_function);
+
+		gbuffer_tile_desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
+		for (std::size_t i = 1; auto& format : gbuffer_formats)
+			gbuffer_tile_desc->colorAttachments()->object(i++)->setPixelFormat(format);
+
+		shading_pass_pipeline = NS::TransferPtr(
+			device->newRenderPipelineState(gbuffer_tile_desc, MTL::PipelineOptionNone, nullptr, &error));
+		if (!shading_pass_pipeline) {
+			throw std::runtime_error(fmt::format(
+				"Failed to build shading pipeline {}", error->localizedDescription()->utf8String()));
+		}
+	}
+
+	{
+		auto* auto_exposure_function = renderer.global_library->newFunction(MTLSTR("compute_luminance_histogram"));
+		assert(auto_exposure_function);
+
+		auto* auto_exposure_desc = MTL::TileRenderPipelineDescriptor::alloc()->init()->autorelease();
+		auto_exposure_desc->setTileFunction(auto_exposure_function);
+
+		auto_exposure_desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
+		for (std::size_t i = 1; auto& format : gbuffer_formats)
+			auto_exposure_desc->colorAttachments()->object(i++)->setPixelFormat(format);
+
+		luminance_histogram_pipeline = NS::TransferPtr(
+		device->newRenderPipelineState(auto_exposure_desc, MTL::PipelineOptionNone, nullptr, &error));
+		if (!luminance_histogram_pipeline) {
+			throw std::runtime_error(fmt::format(
+				"Failed to build luminance histogram pipeline: {}", error->localizedDescription()->utf8String()));
+		}
+
+		luminance_histogram = NS::TransferPtr(device->newBuffer(
+			(shaders::num_histogram_bins + 1) * sizeof(std::uint32_t), MTL::ResourceStorageModePrivate));
+		luminance_histogram->setLabel(MTLSTR("Luminance histogram bins"));
+	}
+
+	{
+		auto* average_luminance_function = renderer.global_library->newFunction(MTLSTR("compute_average_luminance"));
+		assert(average_luminance_function);
+
+		auto* average_luminance_desc = MTL::ComputePipelineDescriptor::alloc()->init()->autorelease();
+		average_luminance_desc->setComputeFunction(average_luminance_function);
+
+		average_luminance_pipeline = NS::TransferPtr(
+			device->newComputePipelineState(average_luminance_desc, MTL::PipelineOptionNone, nullptr, &error));
+		if (!average_luminance_pipeline) {
+			throw std::runtime_error(fmt::format(
+				"Failed to build average luminance pipeline: {}", error->localizedDescription()->utf8String()));
+		}
+	}
+
+	{
+		auto* tonemap_function = renderer.global_library->newFunction(MTLSTR("tonemap_output"));
+		assert(tonemap_function);
+
+		auto* tonemap_desc = MTL::TileRenderPipelineDescriptor::alloc()->init()->autorelease();
+		tonemap_desc->setTileFunction(tonemap_function);
+
+		tonemap_desc->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
+
+		tonemap_pipeline = NS::TransferPtr(
+			device->newRenderPipelineState(tonemap_desc, MTL::PipelineOptionNone, nullptr, &error));
+		if (!tonemap_pipeline) {
+			throw std::runtime_error(fmt::format(
+				"Failed to build tonemap pipeline: {}", error->localizedDescription()->utf8String()));
+		}
 	}
 }
 
@@ -253,9 +318,11 @@ void gmtl::shading_pass::update_resolution(meshlet_renderer& renderer) {
 	auto& device = renderer.device;
 }
 
-gmtl::meshlet_renderer::meshlet_renderer(GLFWwindow* window) {
+gmtl::meshlet_renderer::meshlet_renderer(GLFWwindow* window) : renderer(window) {
 	ZoneScoped;
 	// pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+
+	open_alert();
 
 	device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
 
@@ -273,8 +340,9 @@ gmtl::meshlet_renderer::meshlet_renderer(GLFWwindow* window) {
 
 	NS::Error* error = nullptr;
 	global_library = NS::TransferPtr(device->newLibrary(libraryUrl, &error));
-	if (error) {
-		fmt::print("{}", error->localizedDescription()->utf8String());
+	if (error || !global_library) {
+		throw std::runtime_error(fmt::format(
+				"Failed to create the global Metal library: {}", error->localizedDescription()->utf8String()));
 	}
 
 	imgui_renderer = std::make_unique<imgui::imgui_renderer>(
@@ -582,6 +650,16 @@ void gmtl::meshlet_renderer::create_temporal_scaler() {
 	first_frame_temporal = true;
 }
 
+float gmtl::meshlet_renderer::get_display_headroom() const {
+	using enum shaders::color_space_e;
+	if (!shaders::is_hdr_color_space(current_output_color_space))
+		return 1.f;
+	const auto edr = std::max(get_max_edr_value(), 1.f);
+	if (current_output_color_space == bt2100_hlg || current_output_color_space == display_p3_hlg)
+		return std::min(edr, shaders::hlg_nominal_peak_nits / shaders::hdr_reference_white_nits);
+	return edr;
+}
+
 void gmtl::meshlet_renderer::update_resolution(glm::u32vec2 resolution) {
 	ZoneScoped;
 	resolution *= 2; // TODO: Get CA::Layer::contentScale here.
@@ -738,9 +816,21 @@ bool gmtl::meshlet_renderer::draw(const std::size_t frame_index, graphics::scene
 		encoder->endEncoding();
 	}
 
+	{
+		// We need to clear the luminance histogram buffer every frame
+		auto* blit_encoder = buffer->blitCommandEncoder();
+		blit_encoder->fillBuffer(shading_pass.luminance_histogram.get(),
+			NS::Range::Make(sizeof(std::uint32_t), shading_pass.luminance_histogram->length() - sizeof(std::uint32_t)), 0);
+		blit_encoder->endEncoding();
+	}
+
 	if (drawCount > 0) {
 		auto* shading_pass_descriptor = MTL::RenderPassDescriptor::alloc()->init()->autorelease();
 		shading_pass_descriptor->setImageblockSampleLength(visbuffer_pass.gbuffer_tile_pipeline->imageblockSampleLength());
+		shading_pass_descriptor->setThreadgroupMemoryLength(shaders::num_histogram_bins * sizeof(std::uint32_t));
+
+		shading_pass_descriptor->setTileWidth(shaders::histogram_group_size);
+		shading_pass_descriptor->setTileHeight(shaders::histogram_group_size);
 
 		auto* color_attachment = shading_pass_descriptor->colorAttachments()->object(0);
 		color_attachment->setLoadAction(MTL::LoadActionClear);
@@ -771,8 +861,80 @@ bool gmtl::meshlet_renderer::draw(const std::size_t frame_index, graphics::scene
 
 		encoder->setRenderPipelineState(shading_pass.shading_pass_pipeline.get());
 
+		const shaders::shading_constants shading_constants {
+			.internal_color_space = current_internal_color_space,
+			.output_color_space = current_output_color_space,
+			.display_headroom = get_display_headroom(),
+		};
+
 		encoder->setTileBuffer(camera_buffers[frame_index].get(), 0, 0);
+		encoder->setTileBytes(&shading_constants, sizeof shading_constants, 1);
 		encoder->setTileTexture(visbuffer_pass.depth_texture.get(), 0);
+
+		encoder->dispatchThreadsPerTile(
+			MTL::Size::Make(encoder->tileHeight(), encoder->tileWidth(), 1));
+
+		encoder->setRenderPipelineState(shading_pass.luminance_histogram_pipeline.get());
+
+		const shaders::exposure_constants exposure_constants {
+			.internal_color_space = current_internal_color_space,
+			.image_size = get_render_resolution(),
+		};
+		encoder->setTileBytes(&exposure_constants, sizeof exposure_constants, 0);
+		encoder->setTileBuffer(shading_pass.luminance_histogram.get(), sizeof(std::uint32_t), 1);
+		encoder->setThreadgroupMemoryLength(shaders::num_histogram_bins * sizeof(std::uint32_t), 0, 0);
+
+		encoder->dispatchThreadsPerTile(
+			MTL::Size::Make(shaders::histogram_group_size, shaders::histogram_group_size, 1));
+
+		encoder->endEncoding();
+	}
+
+	if (drawCount > 0) {
+		auto* compute_encoder = buffer->computeCommandEncoder();
+
+		compute_encoder->setComputePipelineState(shading_pass.average_luminance_pipeline.get());
+
+		const shaders::exposure_constants exposure_constants {
+			.internal_color_space = current_internal_color_space,
+			.image_size = get_render_resolution(),
+			.time_delta = dt,
+		};
+		compute_encoder->setBytes(&exposure_constants, sizeof exposure_constants, 0);
+		compute_encoder->setBuffer(shading_pass.luminance_histogram.get(), 0, 1);
+		compute_encoder->setBuffer(shading_pass.luminance_histogram.get(), sizeof(std::uint32_t), 2);
+
+		compute_encoder->dispatchThreadgroups(
+			MTL::Size::Make(1, 1, 1),
+			MTL::Size::Make(shaders::histogram_group_size, shaders::histogram_group_size, 1)
+		);
+
+		compute_encoder->endEncoding();
+	}
+
+	if (drawCount > 0) {
+		auto* tonemap_descriptor = MTL::RenderPassDescriptor::alloc()->init()->autorelease();
+		tonemap_descriptor->setImageblockSampleLength(shading_pass.tonemap_pipeline->imageblockSampleLength());
+		tonemap_descriptor->setThreadgroupMemoryLength(shaders::num_histogram_bins * sizeof(std::uint32_t));
+
+		auto* color_attachment = tonemap_descriptor->colorAttachments()->object(0);
+		color_attachment->setLoadAction(MTL::LoadActionLoad);
+		color_attachment->setStoreAction(MTL::StoreActionStore);
+		color_attachment->setTexture(scaling_mode == scaling_modes_e::none ? drawable->texture() : color_texture.get());
+		color_attachment->setClearColor(MTL::ClearColor::Make(0., 0., 0., 1.));
+
+		auto* encoder = buffer->renderCommandEncoder(tonemap_descriptor);
+		encoder->setLabel(MTLSTR("Tonemapping"));
+
+		encoder->setRenderPipelineState(shading_pass.tonemap_pipeline.get());
+
+		const shaders::shading_constants shading_constants {
+			.internal_color_space = current_internal_color_space,
+			.output_color_space = current_output_color_space,
+			.display_headroom = get_display_headroom(),
+		};
+		encoder->setTileBytes(&shading_constants, sizeof shading_constants, 0);
+		encoder->setTileBuffer(shading_pass.luminance_histogram.get(), 0, 1);
 
 		encoder->dispatchThreadsPerTile(
 			MTL::Size::Make(encoder->tileHeight(), encoder->tileWidth(), 1));
@@ -799,7 +961,7 @@ bool gmtl::meshlet_renderer::draw(const std::size_t frame_index, graphics::scene
 		blit_encoder->endEncoding();
 	}
 
-	imgui_renderer->draw(buffer, drawable, get_window_resolution(), frame_index, drawCount == 0);
+	imgui_renderer->draw(buffer, drawable, current_output_color_space, get_window_resolution(), frame_index, drawCount == 0);
 
 	buffer->presentDrawable(drawable);
 
@@ -870,4 +1032,24 @@ void gmtl::meshlet_renderer::use_upscaler(const scaling_modes_e mode, const scal
 
 	render_scale = preset.factor;
 	update_resolution(glm::u32vec2(get_window_resolution().x / 2, get_window_resolution().y / 2));
+}
+
+std::span<const shaders::color_space_e> gmtl::meshlet_renderer::get_internal_color_spaces() const {
+	return internal_color_spaces;
+}
+
+void gmtl::meshlet_renderer::set_internal_color_space(const shaders::color_space_e space) {
+	current_internal_color_space = space;
+}
+
+shaders::color_space_e gmtl::meshlet_renderer::get_internal_color_space() const {
+	return current_internal_color_space;
+}
+
+std::span<const shaders::color_space_e> gmtl::meshlet_renderer::get_output_color_spaces() const {
+	return output_color_spaces;
+}
+
+shaders::color_space_e gmtl::meshlet_renderer::get_output_color_space() const {
+	return current_output_color_space;
 }

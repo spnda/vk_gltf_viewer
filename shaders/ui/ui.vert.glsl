@@ -2,7 +2,6 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "ui.h"
-#include "srgb.h"
 
 layout(location = 0) out FragmentInput outp;
 

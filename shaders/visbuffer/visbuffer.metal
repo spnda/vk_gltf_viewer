@@ -3,7 +3,7 @@
 #include "visbuffer.h"
 #include "mesh_common.h"
 #include "culling.h"
-#include "srgb.h"
+#include "color.h"
 
 namespace mtl = metal;
 
@@ -249,7 +249,7 @@ struct visbuffer_frag_out {
 		if (material.albedo.index != shaders::invalid_handle) {
 			device auto& albedo_tex = resourceTable[material.albedo.index];
 
-			color *= shaders::to_linear(albedo_tex.tex.sample(
+			color *= shaders::srgb_eotf(albedo_tex.tex.sample(
 				albedo_tex.sampler, transform_uv(material.albedo, in.vert.uv)));
 		}
 
@@ -388,7 +388,8 @@ mtl::float3x3 as_transposed_3x3(mtl::float4x4 matrix) {
 	if (!visbuffer.is_valid())
 		return;
 
-	device const auto& draw = draws[visbuffer.draw_index];
+    decltype(auto) draw = draws[visbuffer.draw_index];
+	//device const auto& draw = draws[visbuffer.draw_index];
 	device const auto& transform = transforms[draw.transform_index];
 	device const auto& primitive = primitives[draw.primitive_index];
 	device const auto& material = materials[primitive.material_index];
@@ -425,7 +426,7 @@ mtl::float3x3 as_transposed_3x3(mtl::float4x4 matrix) {
 			albedo_uv_buffer[indices.x], albedo_uv_buffer[indices.y], albedo_uv_buffer[indices.z]);
 
 		// Metal's pixel types don't support *= for some reason...
-		data->albedo = data->albedo * shaders::to_linear(albedo_tex.tex.sample(
+		data->albedo = data->albedo * shaders::srgb_eotf(albedo_tex.tex.sample(
 			albedo_tex.sampler, transform_uv(material.albedo, uv.value), uv.grad));
 	}
 

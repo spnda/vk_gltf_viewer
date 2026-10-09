@@ -10,6 +10,8 @@
 
 #include <fastgltf/types.hpp>
 
+#include "color.h"
+
 namespace graphics {
 	class renderer;
 
@@ -63,15 +65,15 @@ namespace graphics {
 			using enum scaling_modes_e;
 #if defined(VKV_NV_DLSS)
 			case dlss:
-				return "dlss";
+				return "DLSS";
 #endif
 			case mtlfx_temporal:
-				return "mtlfx_temporal";
+				return "MetalFX Temporal";
 			case mtlfx_spatial:
-				return "mtlfx_spatial";
+				return "MetalFX Spatial";
 			default:
 			case none:
-				return "none";
+				return "Native";
 		}
 	}
 
@@ -84,8 +86,11 @@ namespace graphics {
 	 * The abstracted renderer interface.
 	 */
 	class renderer : public std::enable_shared_from_this<renderer> {
+	protected:
+		GLFWwindow* window;
+
 	public:
-		renderer() noexcept = default;
+		explicit renderer(GLFWwindow* window) noexcept : window(window) {}
 		virtual ~renderer() noexcept = default;
 
 		[[nodiscard]] static std::shared_ptr<renderer> create_renderer(GLFWwindow* window);
@@ -137,5 +142,13 @@ namespace graphics {
 		virtual std::vector<scaling_modes_e> get_scaling_modes() const = 0;
 		virtual std::vector<scaling_preset_t> get_scaling_presets(scaling_modes_e mode) const = 0;
 		virtual void use_upscaler(scaling_modes_e mode, scaling_preset_t preset) = 0;
+
+		virtual std::span<const shaders::color_space_e> get_internal_color_spaces() const = 0;
+		virtual void set_internal_color_space(shaders::color_space_e space) = 0;
+		virtual shaders::color_space_e get_internal_color_space() const = 0;
+
+		virtual std::span<const shaders::color_space_e> get_output_color_spaces() const = 0;
+		virtual void set_output_color_space(shaders::color_space_e space) = 0;
+		virtual shaders::color_space_e get_output_color_space() const = 0;
 	};
 }

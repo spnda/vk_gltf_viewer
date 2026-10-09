@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 	SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #elif defined(__APPLE__) || defined(unix)
-	setpriority(PRIO_PROCESS, getpid(), PRIO_MAX);
+	setpriority(PRIO_PROCESS, getpid(), PRIO_MIN);
 #endif
 
 #if defined(__APPLE__)
@@ -50,9 +50,9 @@ int main(int argc, char* argv[]) {
 		app = std::make_unique<application>(gltfs);
 		app->run();
 	} catch (vulkan_error& error) {
-		fmt::print(stderr, "{}: {}", error.what(), error.what_result());
+		fmt::print(stderr, "{}: {}\n", error.what(), error.what_result());
 	} catch (std::runtime_error& error) {
-		fmt::print(stderr, "{}", error.what());
+		fmt::print(stderr, "{}\n", error.what());
 	}
 	app.reset();
 

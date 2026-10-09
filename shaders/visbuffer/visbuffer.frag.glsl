@@ -5,7 +5,6 @@
 #extension GL_EXT_mesh_shader : require // For gl_PrimitiveID
 
 #include "mesh_common.h"
-#include "srgb.h"
 
 #include "visbuffer.h"
 

@@ -65,6 +65,7 @@ namespace shaders {
 #define MEMBER_INIT(Value) = Value
 #define ALIGN_AS(Value) alignas(Value)
 #define FUNCTION_INLINE inline
+#define FUNCTION_CONSTEXPR constexpr
 
 #define PARAMETER_COPY(Name) Name
 #define PARAMETER_REF(Name) thread Name&
@@ -115,6 +116,7 @@ namespace shaders {
 #define MEMBER_INIT(Value) = Value
 #define ALIGN_AS(Value) alignas(Value)
 #define FUNCTION_INLINE inline
+#define FUNCTION_CONSTEXPR constexpr
 
 #define PARAMETER_COPY(Name) Name
 #define PARAMETER_REF(Name) Name&
@@ -159,6 +161,7 @@ namespace shaders {
 #define MEMBER_INIT(Value)
 #define ALIGN_AS(Value)
 #define FUNCTION_INLINE
+#define FUNCTION_CONSTEXPR
 
 #define PARAMETER_COPY(Name) in Name
 #define PARAMETER_REF(Name) inout Name

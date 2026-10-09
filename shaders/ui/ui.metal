@@ -27,5 +27,10 @@ struct RasterizerOutput {
 		constant const shaders::UiPushConstants& constants [[buffer(0)]],
 		const shaders::ResourceTable resourceTable [[buffer(1)]]) {
 	device auto& entry = resourceTable[constants.imageIndex];
-	return input.color * entry.tex.sample(entry.sampler, input.uv);
+	const auto col = input.color * entry.tex.sample(entry.sampler, input.uv);
+	const auto linear = shaders::srgb_eotf(col.xyz);
+	return float4(
+		convert_to_output_color_space(linear, shaders::color_space_e::srgb_linear, constants.output_color_space),
+		col.w
+	);
 }

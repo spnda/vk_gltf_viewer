@@ -7,7 +7,7 @@ std::shared_ptr<graphics::renderer> graphics::renderer::create_renderer(GLFWwind
 	ZoneScoped;
 	// TODO: Make this actually check for Vulkan support and platform support.
 #if defined(_WIN32) || defined(__linux__)
-	return std::make_shared<graphics::vulkan::VkRenderer>();
+	return std::make_shared<graphics::vulkan::VkRenderer>(window);
 #elif defined(VKV_METAL)
 	return std::make_shared<graphics::metal::meshlet_renderer>(window);
 #endif

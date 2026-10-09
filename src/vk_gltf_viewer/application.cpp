@@ -330,11 +330,6 @@ void application::render_ui() {
 				ImGui::Text("FPS: %.2f", 1. / deltaTime);
 				ImGui::Text("AFPS: %.2f rad/s", 2. * std::numbers::pi_v<double> / deltaTime); // Angular FPS
 
-				if (ImGui::BeginChild("##scene_tree_child")) {
-					render_scene_tree(root_scene_node);
-				}
-				ImGui::EndChild();
-
 				ImGui::EndTabItem();
 			}
 
@@ -361,6 +356,27 @@ void application::render_ui() {
 			}
 
 			if (ImGui::BeginTabItem("Graphics")) {
+				auto color_space_combo = [&](const std::span<const shaders::color_space_e> color_spaces, const shaders::color_space_e current, const char* name, auto func) {
+					const auto current_name = shaders::get_color_space_name(current);
+					if (ImGui::BeginCombo(name, current_name.data())) {
+						for (const auto& color_space : color_spaces) {
+							const bool isSelected = color_space == current;
+							const auto color_space_name = shaders::get_color_space_name(color_space);
+							if (ImGui::Selectable(color_space_name.data(), isSelected)) {
+								func(renderer.get(), color_space);
+							}
+							if (isSelected)
+								ImGui::SetItemDefaultFocus();
+						}
+						ImGui::EndCombo();
+					}
+				};
+
+				color_space_combo(renderer->get_internal_color_spaces(), renderer->get_internal_color_space(),
+					"Internal color space", std::mem_fn(&graphics::renderer::set_internal_color_space));
+				color_space_combo(renderer->get_output_color_spaces(), renderer->get_output_color_space(),
+					"Output color space", std::mem_fn(&graphics::renderer::set_output_color_space));
+
 				ImGui::SeparatorText("Resolution scaling");
 
 				const auto modes = renderer->get_scaling_modes();

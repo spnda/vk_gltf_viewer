@@ -38,7 +38,8 @@ namespace graphics::metal::imgui {
 						  MTL::PixelFormat image_format);
 		~imgui_renderer() noexcept;
 
-		void draw(MTL::CommandBuffer* commandBuffer, CA::MetalDrawable* drawable,
-				  glm::u32vec2 framebuffer_size, std::size_t frame_index, bool clear_drawable);
+		void draw(MTL::CommandBuffer* commandBuffer,
+			CA::MetalDrawable* drawable, shaders::color_space_e output_color_space,
+			glm::u32vec2 framebuffer_size, std::size_t frame_index, bool clear_drawable);
 	};
 }

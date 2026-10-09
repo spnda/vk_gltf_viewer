@@ -21,7 +21,7 @@ vec<bool, N> lessThan(vec<T, N> a, vec<T, N> b) {
 	return a < b;
 }
 template <typename T, size_t N>
-vec<bool, N> lessThannEqual(vec<T, N> a, vec<T, N> b) {
+vec<bool, N> lessThanEqual(vec<T, N> a, vec<T, N> b) {
 	return a <= b;
 }
 

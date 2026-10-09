@@ -127,6 +127,12 @@ struct visbuffer_pass {
 struct shading_pass {
 	NS::SharedPtr<MTL::RenderPipelineState> shading_pass_pipeline;
 
+	NS::SharedPtr<MTL::RenderPipelineState> luminance_histogram_pipeline;
+	NS::SharedPtr<MTL::Buffer> luminance_histogram;
+	NS::SharedPtr<MTL::ComputePipelineState> average_luminance_pipeline;
+
+	NS::SharedPtr<MTL::RenderPipelineState> tonemap_pipeline;
+
 	void init_pass(meshlet_renderer& renderer);
 	void update_resolution(meshlet_renderer& renderer);
 };
@@ -174,7 +180,29 @@ class meshlet_renderer : public graphics::renderer {
 	visbuffer_pass visbuffer_pass;
 	shading_pass shading_pass;
 
+	std::array<shaders::color_space_e, 5> internal_color_spaces {{
+		shaders::color_space_e::srgb_linear,
+		shaders::color_space_e::display_p3_linear,
+		shaders::color_space_e::bt709_linear,
+		shaders::color_space_e::bt2020_linear,
+		shaders::color_space_e::cie_1931,
+	}};
+	std::array<shaders::color_space_e, 8> output_color_spaces {{
+		shaders::color_space_e::srgb_nonlinear,
+		shaders::color_space_e::bt709_nonlinear,
+		shaders::color_space_e::display_p3_nonlinear,
+		shaders::color_space_e::display_p3_pq,
+		shaders::color_space_e::display_p3_hlg,
+		shaders::color_space_e::bt2020_nonlinear,
+		shaders::color_space_e::bt2100_pq,
+		shaders::color_space_e::bt2100_hlg,
+	}};
+	shaders::color_space_e current_internal_color_space = shaders::color_space_e::bt2020_linear;
+	shaders::color_space_e current_output_color_space = shaders::color_space_e::display_p3_pq;
+
 	void create_temporal_scaler();
+	float get_max_edr_value() const;
+	float get_display_headroom() const;
 
 public:
 	explicit meshlet_renderer(GLFWwindow* window);
@@ -217,5 +245,13 @@ public:
 	std::vector<scaling_modes_e> get_scaling_modes() const override;
 	std::vector<scaling_preset_t> get_scaling_presets(scaling_modes_e mode) const override;
 	void use_upscaler(scaling_modes_e scaler, scaling_preset_t preset) override;
+
+	std::span<const shaders::color_space_e> get_internal_color_spaces() const override;
+	void set_internal_color_space(shaders::color_space_e space) override;
+	shaders::color_space_e get_internal_color_space() const override;
+
+	std::span<const shaders::color_space_e> get_output_color_spaces() const override;
+	void set_output_color_space(shaders::color_space_e space) override;
+	shaders::color_space_e get_output_color_space() const override;
 };
 }

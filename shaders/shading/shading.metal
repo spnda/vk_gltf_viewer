@@ -2,7 +2,7 @@
 
 #include "shading.h"
 #include "mesh_common.h"
-#include "srgb.h"
+#include "color.h"
 
 namespace mtl = metal;
 
@@ -63,24 +63,14 @@ half3 conductor_fresnel(half3 f0, half3 bsdf, half VdotH) {
 	return bsdf * (f0 + (1 - f0) * mtl::pow(1 - mtl::abs(VdotH), 5.h));
 }
 
-struct gbuffer_tile_data {
-	packed_half4 color [[raster_order_group(0)]];
-	mtl::rgba8unorm<half4> albedo [[raster_order_group(0)]];
-#if GBUFFER_NORMAL_ENCODING == 1
-	mtl::rg16snorm<float2> normal [[raster_order_group(0)]];
-#else
-	mtl::rgba16snorm<float4> normal [[raster_order_group(0)]];
-#endif
-	packed_half2 metallic_roughness [[raster_order_group(0)]];
-};
-
 [[kernel]] void gbuffer_shading(
-		mtl::imageblock<gbuffer_tile_data> tile_data [[alias_implicit_imageblock]],
+		mtl::imageblock<shaders::gbuffer_tile_data> tile_data [[alias_implicit_imageblock]],
 		constant const shaders::camera_t& camera [[buffer(0)]],
+		constant const shaders::shading_constants& constants [[buffer(1)]],
 		mtl::depth2d<float> depth_texture [[texture(0)]],
 		ushort2 local_tid [[thread_position_in_threadgroup]],
 		ushort2 tid [[thread_position_in_grid]]) {
-	threadgroup_imageblock gbuffer_tile_data* data = tile_data.data(local_tid);
+	threadgroup_imageblock auto* data = tile_data.data(local_tid);
 
 	auto depth = depth_texture.read(tid);
 	if (depth == 0.f)
@@ -93,7 +83,9 @@ struct gbuffer_tile_data {
 	auto view = half3(mtl::normalize(camera.position - position));
 	auto halfv = mtl::normalize(light + view);
 
-	auto albedo = half4(data->albedo).xyz;
+	// The albedo texture from the GBuffer is in linear sRGB colorspace, since that's what glTF specifies. We want to
+	// perform calculations in BT.2020, so we convert the colors into that colorspace.
+	auto albedo = half3(convert_linear_color_space(float4(data->albedo).xyz, shaders::color_space_e::srgb_linear, constants.internal_color_space));
 	auto roughness = mtl::pow(data->metallic_roughness.x, 2.h);
 #if GBUFFER_NORMAL_ENCODING == 1
 	auto normal = half3(shaders::normal_decode(data->normal));
@@ -104,11 +96,10 @@ struct gbuffer_tile_data {
 	auto NdotV = mtl::abs(mtl::dot(normal, view)) + 1E-5h;
 	auto NdotH = mtl::saturate(mtl::dot(normal, halfv));
 	auto NdotL = mtl::saturate(mtl::dot(normal, light));
-	auto LdotH = mtl::saturate(mtl::dot(light, halfv));
 	auto VdotH = mtl::dot(view, halfv);
 
 	constexpr auto ambient = half3(0.1h);
-	constexpr auto light_intensity = 2.5h;
+	constexpr auto light_intensity = 250.h;
 
 	auto diffuse = light_intensity * NdotL * diffuse_brdf(albedo);
 	auto specular = light_intensity * NdotL * specular_brdf(roughness, NdotL, NdotV, NdotH, mtl::cross(normal, halfv));
@@ -116,6 +107,34 @@ struct gbuffer_tile_data {
 	auto metal_brdf = conductor_fresnel(albedo, specular, VdotH);
 	auto final = mtl::mix(dielectric_brdf, metal_brdf, data->metallic_roughness.y);
 
-	data->color = shaders::from_linear(half4(ambient * albedo + final, 1.h));
-	//data->color = half4(normal * 0.5h + 0.5h, 1.h);
+	data->color = half4(half3(ambient * albedo + final), 1.h);
+}
+
+struct tonemap_imageblock {
+	packed_half4 color [[raster_order_group(0)]];
+};
+
+[[kernel]] void tonemap_output(
+		mtl::imageblock<tonemap_imageblock> tile_data [[alias_implicit_imageblock]],
+		constant const shaders::shading_constants& constants [[buffer(0)]],
+		device const float* luminance [[buffer(1)]],
+		ushort2 local_tid [[thread_position_in_threadgroup]],
+		ushort2 tid [[thread_position_in_grid]]) {
+	threadgroup_imageblock auto* data = tile_data.data(local_tid);
+
+	// Apply exposure
+	// See https://bruop.github.io/exposure/ for the formula, which is L' = L / (9.6 * Lavg)
+	// The max() guards against a zero average on the first frame (dt == 0 leaves it at its initial 0).
+	const auto adjusted = float3(half4(data->color).xyz) / (9.6f * mtl::max(*luminance, 1e-4f));
+
+	// Tonemap output
+	const auto tonemapped = shaders::gt_mapper(adjusted, shaders::gt_mapper_constants {
+		.contrast              = 1.00f,
+		.startOfLinearSection  = 0.22f,
+		.lengthOfLinearSection = 0.40f,
+		.toeCurviness          = 1.33f,
+		.toeFloor              = 0.00f,
+	}, constants.display_headroom);
+	const auto converted = convert_to_output_color_space(tonemapped, constants.internal_color_space, constants.output_color_space);
+	data->color = half4(half3(converted), 1.h);
 }

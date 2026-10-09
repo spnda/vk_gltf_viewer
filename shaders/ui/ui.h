@@ -2,6 +2,7 @@
 #define SHADERS_UI_H
 
 #include "common.h"
+#include "color.h"
 
 #if defined(SHADER_GLSL)
 #extension GL_EXT_buffer_reference : require
@@ -9,6 +10,7 @@
 #endif
 
 #include "resource_table.h"
+
 SHADER_NAMESPACE_BEGIN
 
 #if !defined(SHADER_CPP)
@@ -30,6 +32,11 @@ layout(buffer_reference, scalar, buffer_reference_align = 4) readonly buffer Ver
 struct UiPushConstants {
 	packed_fvec2 scale;
 	packed_fvec2 translate;
+#if defined(SHADER_GLSL)
+	uint32_t output_color_space;
+#else
+	color_space_e output_color_space;
+#endif
 	BUFFER_REF(Vertices, ImDrawVert) vertices MEMBER_INIT(0);
 	resource_table_handle_t imageIndex MEMBER_INIT(invalid_handle);
 };

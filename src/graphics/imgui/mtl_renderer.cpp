@@ -61,11 +61,11 @@ gmtl::imgui::imgui_renderer::imgui_renderer(NS::SharedPtr<MTL::Device> nDevice, 
 			MTL::PixelFormatA8Unorm, width, height, false);
 	desc->setUsage(MTL::TextureUsageShaderRead);
 	desc->setStorageMode(MTL::StorageModeShared);
-	desc->setSwizzle({
-		.red = MTL::TextureSwizzleOne,
-		.green = MTL::TextureSwizzleOne,
-		.blue = MTL::TextureSwizzleOne,
-		.alpha = MTL::TextureSwizzleAlpha,
+	desc->setSwizzle(MTL::TextureSwizzleChannels {
+		MTL::TextureSwizzleOne,
+		MTL::TextureSwizzleOne,
+		MTL::TextureSwizzleOne,
+		MTL::TextureSwizzleAlpha,
 	});
 
 	font_atlas = NS::TransferPtr(device->newTexture(desc));
@@ -90,8 +90,9 @@ gmtl::imgui::imgui_renderer::~imgui_renderer() noexcept {
 	resource_table->remove_sampled_image_handle(font_atlas_handle);
 }
 
-void gmtl::imgui::imgui_renderer::draw(MTL::CommandBuffer* commandBuffer, CA::MetalDrawable* drawable,
-								 glm::u32vec2 framebuffer_size, std::size_t frame_index, bool clear_drawable) {
+void gmtl::imgui::imgui_renderer::draw(MTL::CommandBuffer* commandBuffer,
+		CA::MetalDrawable* drawable, shaders::color_space_e output_color_space,
+		glm::u32vec2 framebuffer_size, std::size_t frame_index, bool clear_drawable) {
 	ZoneScoped;
 	auto* drawData = ImGui::GetDrawData();
 
@@ -139,6 +140,7 @@ void gmtl::imgui::imgui_renderer::draw(MTL::CommandBuffer* commandBuffer, CA::Me
 	shaders::UiPushConstants constants {
 		.scale = 2.f / displaySize,
 		.translate = -1.0F - displayPos * constants.scale,
+		.output_color_space = output_color_space,
 	};
 
 	auto* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init()->autorelease();

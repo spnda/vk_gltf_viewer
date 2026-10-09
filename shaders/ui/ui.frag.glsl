@@ -3,7 +3,6 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "ui.h"
-#include "srgb.h"
 
 layout(location = 0) in FragmentInput inp;
 
